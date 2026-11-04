@@ -29,7 +29,7 @@ El catálogo admite 100.000 títulos; si se pasara, el plugin se queda con lo qu
 
 ## Estado
 
-0.3.0. Verificado con el ejecutor del kit contra el servicio real y la rama `data` publicada: inicio, búsqueda, episodios, categorías y canales en vivo, resolución de películas, episodios y canales, y el índice de extremo a extremo (descarga, volcado, búsqueda, apertura de un resultado). No probado en un aparato. La guía de programación está implementada pero sin verificar con datos reales, porque el servidor probado no tiene. El TMDB al vuelo se probó con un fixture del kit, no con la clave real de Kino.
+0.3.1. Verificado con el ejecutor del kit contra el servicio real y la rama `data` publicada: inicio, búsqueda, episodios, categorías y canales en vivo, resolución de películas, episodios y canales, y el índice de extremo a extremo (descarga, volcado, búsqueda, apertura de un resultado). No probado en un aparato. La guía de programación está implementada pero sin verificar con datos reales, porque el servidor probado no tiene. El TMDB al vuelo se probó con un fixture del kit, no con la clave real de Kino.
 
 ## Construir y probar
 

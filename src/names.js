@@ -44,7 +44,7 @@ export function titleCase(text) {
 export function prettyLiveTitle(raw) {
   const original = String(raw || "").trim();
   let s = original.replace(/[︎️‍]/g, "");
-  s = s.replace(/[^\p{L}\p{N}\s&+\-./'|,:()]/gu, " ").replace(/\|/g, "   |   ");
+  s = s.replace(/[^\p{L}\p{N}\s&+./'|,:()-]/gu, " ").replace(/\|/g, "   |   ");
   const chunks = s.split(/\s{3,}/).map((c) => c.trim()).filter(Boolean).map((c) => {
     if (c === "|") return "·";
     return /^(?:[\p{L}\p{N}] ){2,}[\p{L}\p{N}]$/u.test(c) ? c.replace(/ /g, "") : c.replace(/\s+/g, " ");
