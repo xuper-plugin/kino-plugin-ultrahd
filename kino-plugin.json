@@ -1,7 +1,7 @@
 {
   "id": "ultra-hd",
   "name": "Ultra Hd",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "apiVersion": 13,
   "entry": "plugin.js",
   "description": "Películas, series y TV en vivo en Ultra HD.",
@@ -72,6 +72,12 @@
       "type": "action",
       "hint": "Vuelve a pedir la lista al servicio",
       "hintEn": "Asks the service for the list again"
+    },
+    {
+      "key": "indexStatus",
+      "label": "Índice de títulos",
+      "labelEn": "Title index",
+      "type": "status"
     },
     {
       "key": "content",
@@ -283,6 +289,12 @@
           "type": "action",
           "hint": "Vuelve a pedir la lista al servicio",
           "hintEn": "Asks the service for the list again"
+        },
+        {
+          "key": "indexStatus",
+          "label": "Índice de títulos",
+          "labelEn": "Title index",
+          "type": "status"
         },
         {
           "key": "content",

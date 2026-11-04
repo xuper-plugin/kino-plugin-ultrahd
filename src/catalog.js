@@ -4,7 +4,7 @@
 
 import { noteRecent } from "./recent.js";
 import { put } from "./store.js";
-import { indexSearch, indexStep, indexReady, indexStale, resolveIdxRef } from "./titleIndex.js";
+import { indexSearch, indexStep, indexReady, indexStale, resolveIdxRef, indexLabel } from "./titleIndex.js";
 import { enrichTmdb } from "./tmdbLazy.js";
 import { LANG_ORDER, titleCase, countryMatch, COUNTRY_PHRASES } from "./names.js";
 import { mergeVod, mergeLive, searchOrder, homeOrder } from "./categories.js";
@@ -145,6 +145,7 @@ async function loadServers(force) {
     writeSrvs(st);
     return st;
   } catch (e) {
+    lastErr = "lista: " + errText(e);
     if (usable) return cached; // bootstrap caído: seguimos con la lista vieja
     throw e;
   }
@@ -194,6 +195,7 @@ async function api(action, extra = {}) {
       } catch (e) {
         if (e && e.code === "rate_limited") throw e;
         last = String((e && e.message) || e).slice(0, 80);
+        lastErr = last;
       }
     }
   }
@@ -211,6 +213,8 @@ async function activeServer() {
 
 // ---- estado y cambio de servidor (ajustes) ---------------------------------------
 
+let lastErr = "";
+const errText = (e) => String((e && (e.message || e.code)) || e).slice(0, 90);
 const hostOf = (srv) => {
   try { return new URL(srv.url).host; } catch (_) { return ""; }
 };
@@ -221,7 +225,8 @@ export async function serverStatus() {
     await api("get_vod_categories");
     const st = readSrvs();
     return { ok: true, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: st.list.length };
-  } catch (_) {
+  } catch (e) {
+    lastErr = errText(e);
     const st = readSrvs();
     return { ok: false, host: st && st.list[st.idx] ? hostOf(st.list[st.idx]) : "", index: st ? st.idx + 1 : 0, total: st ? st.list.length : 0 };
   }
@@ -238,7 +243,7 @@ export async function switchServer() {
       st.ok = true;
       writeSrvs(st);
       return { changed: true, host: hostOf(st.list[i]), index: i + 1, total: n };
-    } catch (_) { /* probar el siguiente */ }
+    } catch (e) { lastErr = errText(e); }
   }
   return { changed: false, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: n };
 }
@@ -253,18 +258,19 @@ export async function refreshServers() {
 
 export async function settingsStatus() {
   const s = await serverStatus();
-  if (!s.ok) return { status: s.host ? `Sin respuesta de ${s.host}` : "Sin conexión con el servicio" };
-  return { status: `Conectado a ${s.host} (${s.index} de ${s.total})` };
+  const idx = await indexLabel();
+  if (!s.ok) return { status: (s.host ? `Sin respuesta de ${s.host}` : "Sin conexión con el servicio") + (lastErr ? ` · ${lastErr}` : ""), indexStatus: idx };
+  return { status: `Conectado a ${s.host} (${s.index} de ${s.total})`, indexStatus: idx };
 }
 
 export async function action(key) {
   if (key === "switchServer") {
     const r = await switchServer();
-    return { message: r.changed ? `Servidor cambiado a ${r.host}` : "No hay otro servidor disponible ahora", refresh: true };
+    return { message: r.changed ? `Servidor cambiado a ${r.host}` : "No hay otro servidor disponible ahora" + (lastErr ? ` (${lastErr})` : ""), refresh: true };
   }
   if (key === "refreshServers") {
     const r = await refreshServers();
-    return { message: r.ok ? `Lista actualizada: ${r.total} servidores` : "No se pudo actualizar la lista", refresh: true };
+    return { message: r.ok ? `Lista actualizada: ${r.total} servidores` : "No se pudo actualizar la lista" + (lastErr ? ` (${lastErr})` : ""), refresh: true };
   }
   throw kino.error("not_found");
 }

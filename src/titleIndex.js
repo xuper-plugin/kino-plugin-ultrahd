@@ -165,6 +165,21 @@ async function upsertKeeping(rows, existing) {
 
 let running = null;
 
+// Texto para los ajustes: cuántos títulos hay y de qué revisión.
+export async function indexLabel() {
+  if (!hasCatalog()) return "Este Kino no tiene catálogo: la búsqueda va en vivo";
+  const st = readState();
+  const n = await safeCount();
+  const cnt = n >= 0 ? String(n) : "?";
+  if (st && st.stage) return `Descargando el índice… ${cnt}${st.stage.total ? " de " + st.stage.total : ""} títulos`;
+  if (st && st.done && st.rev && n > 0) {
+    const when = st.checked ? new Date(st.checked).toISOString().slice(0, 10) : "";
+    return `${cnt} títulos · revisión ${String(st.rev).slice(0, 8)}${when ? " · comprobado " + when : ""}`;
+  }
+  if (st && st.retryAt && Date.now() < st.retryAt) return "No se pudo descargar el índice; se reintentará solo";
+  return "Sin descargar todavía: se descarga al abrir Inicio";
+}
+
 // Un paso del poblado/actualización, acotado por [budgetMs]. Idempotente y reanudable; nunca lanza.
 // Devuelve: "unsupported" | "fresh" | "paused" | "done" | "wait" | "error".
 export function indexStep(opts = {}) {
