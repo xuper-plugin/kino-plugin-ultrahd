@@ -1,7 +1,7 @@
 {
   "id": "ultra-hd",
   "name": "Ultra Hd",
-  "version": "0.3.9",
+  "version": "0.3.10",
   "apiVersion": 13,
   "entry": "plugin.js",
   "description": "Películas, series y TV en vivo en Ultra HD.",
@@ -13,6 +13,10 @@
       "insecureHttp": true
     },
     {
+      "host": "12072.lucadns.com",
+      "insecureHttp": true
+    },
+    {
       "host": "9paday.wtf",
       "insecureHttp": true
     },
@@ -21,7 +25,15 @@
       "insecureHttp": true
     },
     {
+      "host": "ashmedia.site",
+      "insecureHttp": true
+    },
+    {
       "host": "avefenixtv.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "bghahsw.top",
       "insecureHttp": true
     },
     {
@@ -77,11 +89,23 @@
       "insecureHttp": true
     },
     {
+      "host": "line.smart-njot.com",
+      "insecureHttp": true
+    },
+    {
       "host": "line.tmpes.com",
       "insecureHttp": true
     },
     {
       "host": "line.zee-ott.xyz",
+      "insecureHttp": true
+    },
+    {
+      "host": "line.zen8kk.xyz",
+      "insecureHttp": true
+    },
+    {
+      "host": "line.znn8.xyz",
       "insecureHttp": true
     },
     {
@@ -98,6 +122,10 @@
     },
     {
       "host": "myultratv.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "neezfaopro.top",
       "insecureHttp": true
     },
     {
@@ -130,6 +158,10 @@
     },
     {
       "host": "toni-tv.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "topcliente.xyz",
       "insecureHttp": true
     },
     {
