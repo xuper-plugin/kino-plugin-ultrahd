@@ -1,0 +1,24 @@
+{
+  "id": "vegeta-iptv",
+  "name": "Ultra Hd",
+  "version": "0.1.0",
+  "apiVersion": 9,
+  "entry": "plugin.js",
+  "description": "Películas, series y TV en vivo en Ultra HD.",
+  "author": "xuper-plugin",
+  "homepage": "https://github.com/xuper-plugin/kino-plugin-xtream",
+  "hosts": [{ "host": "vegetatvv2.duckdns.org", "insecureHttp": true }],
+  "fetchHosts": "any",
+  "streamHosts": "any",
+  "capabilities": ["home", "browse", "search", "resolve", "episodes", "channels"],
+  "categories": ["movies", "series"],
+  "color": "#FF6B00",
+  "icon": "icon.png",
+  "theme": {
+    "accent": "#FF6B00",
+    "onAccent": "#000000",
+    "background": "#0A0A0A",
+    "surface": "#1A1A1A",
+    "highlight": "#FFB280"
+  }
+}
