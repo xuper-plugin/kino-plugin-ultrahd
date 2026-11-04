@@ -15,7 +15,7 @@ const LANG_KEY = "browseLang";
 const HIST_KEY = "searchHist:v1";
 const HIST_MAX = 24;
 const CHANNELS_CAP = 60;
-const RAILS_PER_TAB = 8;
+const RAILS_PER_TAB = 12;
 const RAIL_ITEMS = 20;
 const FEATURED = 6;
 const SCREEN_ROUTES = ["main", "search", "live", "settings"];
@@ -72,18 +72,22 @@ const railCards = (rails) => rails.map((r) => ({ id: r.id, title: r.title, ref: 
 const channelCard = (i) => ({ id: i.id, ref: i.ref, title: i.title, kind: "live", poster: i.logo, ...(i.adult ? { adult: true } : {}) });
 
 // Cada fila es una petición y el servidor IPTV admite 60 por minuto: el Home pide pocas filas y solo fichas de películas.
-async function loadVodTab(tab, lang, { home = false } = {}) {
+async function loadVodTab(tab, lang, { home = false, offset = 0 } = {}) {
   const kind = tab === "movies" ? "vod" : "series";
-  const maxRails = home ? (tab === "movies" ? 3 : 2) : RAILS_PER_TAB;
+  const maxRails = home ? (tab === "movies" ? 7 : 4) : RAILS_PER_TAB;
   // El índice de títulos se puebla/actualiza mientras carga el Home de la pantalla (un paso acotado en tiempo; nunca lanza).
   const indexing = home ? indexStep({ budgetMs: 6000 }) : null;
-  const info = await cat.loadRailsInfo(kind, maxRails, RAIL_ITEMS, { lang, home });
+  const info = await cat.loadRailsInfo(kind, maxRails, RAIL_ITEMS, { lang, home, offset });
   if (indexing) await indexing;
   const wantFeatured = home && tab === "series" ? 0 : FEATURED;
   const featured = info.rails.flatMap((r) => r.items).filter((i) => i.overview).slice(0, wantFeatured);
   if (featured.length) await cat.enrichFeatured(kind, featured, wantFeatured);
   const rails = info.rails.map((r) => ({ ...r, items: r.items.map(cat.withFicha) }));
-  memo.set(`${home ? "home-" : ""}${tab}:${lang}`, { slides: slidesOf(rails), rails: railCards(rails), langs: info.langs, lang: info.lang, partial: info.failed > 0 });
+  const key = `${home ? "home-" : ""}${tab}:${lang}`;
+  const prev = offset > 0 ? memo.get(key) : null;
+  const have = new Set(prev ? prev.rails.map((r) => r.id) : []);
+  const fresh = railCards(rails).filter((r) => !have.has(r.id));
+  memo.set(key, { slides: prev ? prev.slides : slidesOf(rails), rails: prev ? [...prev.rails, ...fresh] : fresh, langs: info.langs, lang: info.lang, partial: info.failed > 0, hasMore: !home && !!info.hasMore, next: info.next });
 }
 
 async function loadLiveTab() {
@@ -251,6 +255,16 @@ const events = {
       if (memo.has(key) && memo.get(key).partial) memo.delete(key);
     }
     return { state: { failed: null, ...bump(state) } };
+  },
+  async more({ state }) {
+    const tab = tabOf(state);
+    if (tab === "live" || tab === "home") return null;
+    const lang = wantedLang(state);
+    const m = memo.get(`${tab}:${lang}`);
+    if (!m || !m.hasMore) return null;
+    await loadVodTab(tab, lang, { offset: m.next });
+    cacheKey = cat.serverKey();
+    return { state: { ...bump(state) } };
   },
   async tick({ state, device }) {
     const tab = tabOf(state);

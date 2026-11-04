@@ -1,5 +1,6 @@
 // Los árboles de la pantalla de Ultra Hd: funciones puras sobre lo que screen.js guarda en memoria. Sin red.
 import { twin } from "./i18n.js";
+import { LOGO_DATA } from "./logo.js";
 import { LANG_LABELS } from "./names.js";
 
 export const TAB_IDS = ["home", "movies", "series", "live"];
@@ -77,7 +78,11 @@ const hero = (slides) => (slides.length === 1 ? slideNode(slides[0]) : {
   type: "PageView", key: "hero" + slides.length, autoPlayMs: 6_000, children: slides.map(slideNode),
 });
 
-const title = () => ({ type: "Text", key: "brand", text: "Ultra Hd", textEn: "Ultra Hd", style: "h4" });
+const brandText = () => ({ type: "Text", key: "brandText", text: "Ultra Hd", textEn: "Ultra Hd", style: "h4" });
+const title = () => ({
+  type: "Row", key: "brand", gap: 8, crossAxisAlignment: "center",
+  children: [{ type: "Image", key: "logo", url: LOGO_DATA, aspect: "1:1", fit: "contain", h: 32, alt: "Ultra Hd", altEn: "Ultra Hd" }, brandText()],
+});
 
 const tabBar = (active) => ({
   type: "TabBar", key: "tabs", divider: false, value: active, onChanged: "tab",
@@ -128,6 +133,7 @@ export function browseView({ tab, data, recent, country, loading, failed, device
     if (active === "home" && country.length > 0) {
       body.push(tv ? roundRail(country, "country", twin("liveCountry", "text")) : rail({ items: country }, "country", twin("liveCountry", "title")));
     }
+    if (data.hasMore && active !== "home" && active !== "live") body.push({ type: "ElevatedButton", key: "moreCats", ...twin("more", "labelText"), icon: "expand_more", onPressed: "more" });
     if (active === "live") body.push({ type: "ElevatedButton", key: "seeLive", ...twin("seeLive", "labelText"), icon: "tv", onPressed: { event: "go", arg: "live" } });
     if (data.rails.length === 0 && country.length === 0) body.push({ type: "Text", ...twin("empty", "text"), color: "muted" });
     if (data.partial) body.push({ type: "MaterialBanner", key: "partialRows", role: "warning", ...twin("partial"), action: { ...twin("retry", "label"), onTap: "retry" } });

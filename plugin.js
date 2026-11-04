@@ -314,17 +314,26 @@ async function upsertKeeping(rows, existing) {
 }
 var running = null;
 async function indexLabel() {
-  if (!hasCatalog()) return "Este Kino no tiene cat\xE1logo: la b\xFAsqueda va en vivo";
+  if (!hasCatalog()) return "No cargada: este Kino no trae cat\xE1logo, la b\xFAsqueda va en vivo";
   const st = readState();
   const n = await safeCount();
-  const cnt = n >= 0 ? String(n) : "?";
-  if (st && st.stage) return `Descargando el \xEDndice\u2026 ${cnt}${st.stage.total ? " de " + st.stage.total : ""} t\xEDtulos`;
+  const fmt = (x) => String(x).replace(/B(?=(d{3})+(?!d))/g, ".");
+  const ago = (ts) => {
+    const m = Math.max(0, Math.round((Date.now() - ts) / 6e4));
+    return m < 60 ? `${m} min` : m < 2880 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`;
+  };
+  if (st && st.stage) return `Descargando\u2026 ${fmt(Math.max(n, 0))}${st.stage.total ? " de " + fmt(st.stage.total) : ""} t\xEDtulos`;
   if (st && st.done && st.rev && n > 0) {
-    const when = st.checked ? new Date(st.checked).toISOString().slice(0, 10) : "";
-    return `${cnt} t\xEDtulos \xB7 revisi\xF3n ${String(st.rev).slice(0, 8)}${when ? " \xB7 comprobado " + when : ""}`;
+    const parts = ["Cargada", st.mc ? `${fmt(st.mc)} pel\xEDculas \xB7 ${fmt(st.sc || 0)} series` : `${fmt(n)} t\xEDtulos`];
+    const gen = st.gen ? String(st.gen).replace("T", " ").slice(0, 16) + " UTC" : "";
+    if (gen) parts.push("lista del " + gen);
+    if (st.checked) parts.push("comprobada hace " + ago(st.checked));
+    parts.push("en el aparato: " + fmt(n));
+    return parts.join(" \xB7 ");
   }
-  if (st && st.retryAt && Date.now() < st.retryAt) return "No se pudo descargar el \xEDndice; se reintentar\xE1 solo";
-  return "Sin descargar todav\xEDa: se descarga al abrir Inicio";
+  if (st && st.done && n === 0) return "Vac\xEDa: se volver\xE1 a descargar al abrir Inicio";
+  if (st && st.retryAt && Date.now() < st.retryAt) return "No se pudo descargar; se reintenta sola (sin red o GitHub no responde)";
+  return "No cargada todav\xEDa: se descarga al abrir Inicio";
 }
 function indexStep(opts = {}) {
   if (!hasCatalog()) return Promise.resolve("unsupported");
@@ -346,6 +355,8 @@ function snapshotStage(m, fresh) {
     target: m.revision,
     hash: m.hash,
     gen: m.generated,
+    mc: m.movies.count,
+    sc: m.series.count,
     total: m.movies.count + m.series.count,
     fresh,
     files: [...m.movies.parts.map((f, i) => [f, m.movies.hashes[i]]), ...m.series.parts.map((f, i) => [f, m.series.hashes[i]])],
@@ -386,7 +397,7 @@ async function step({ budgetMs = 6e3 } = {}) {
     const usable = !!st && st.done && await safeCount() > 0;
     const chain = usable ? chainFor(st.rev, m) : null;
     if (usable && chain) {
-      st.stage = { mode: "delta", target: m.revision, hash: m.hash, gen: m.generated, chain, next: 0, offA: 0, offR: 0, fails: 0, snap: snapshotStage(m, false) };
+      st.stage = { mode: "delta", target: m.revision, hash: m.hash, gen: m.generated, mc: m.movies.count, sc: m.series.count, chain, next: 0, offA: 0, offR: 0, fails: 0, snap: snapshotStage(m, false) };
     } else if (usable) {
       st.stage = snapshotStage(m, false);
     } else {
@@ -471,6 +482,8 @@ async function runDelta(st, deadline) {
   }
   st.hash = sg.hash;
   st.gen = sg.gen;
+  st.mc = sg.mc || 0;
+  st.sc = sg.sc || 0;
   st.done = true;
   st.checked = Date.now();
   st.retryAt = 0;
@@ -565,6 +578,8 @@ async function runSnapshot(st, deadline) {
   st.rev = sg.target;
   st.hash = sg.hash;
   st.gen = sg.gen;
+  st.mc = sg.mc || 0;
+  st.sc = sg.sc || 0;
   st.total = sg.total;
   st.done = true;
   st.checked = Date.now();
@@ -1512,9 +1527,10 @@ async function api(action2, extra = {}) {
       const i = (st.idx + n) % st.list.length;
       try {
         const data = await callServer(st.list[i], action2, extra);
-        if (i !== st.idx || !st.ok) {
+        if (i !== st.idx || !st.ok || Date.now() - (st.okAt || 0) > 5e3) {
           st.idx = i;
           st.ok = true;
+          st.okAt = Date.now();
           writeSrvs(st);
         }
         return data;
@@ -1546,11 +1562,11 @@ var hostOf = (srv) => {
 };
 async function serverStatus() {
   const cached = readSrvs();
-  if (cached && cached.ok && cached.list && cached.list[cached.idx]) return { ok: true, host: hostOf(cached.list[cached.idx]), index: cached.idx + 1, total: cached.list.length };
+  if (cached && cached.ok && cached.list && cached.list[cached.idx] && Date.now() - (cached.okAt || 0) < 2e4) return { ok: true, host: hostOf(cached.list[cached.idx]), index: cached.idx + 1, total: cached.list.length, at: cached.okAt };
   try {
     await api("get_vod_categories");
     const st = readSrvs();
-    return { ok: true, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: st.list.length };
+    return { ok: true, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: st.list.length, at: st.okAt };
   } catch (e) {
     lastErr = errText(e);
     const st = readSrvs();
@@ -1560,19 +1576,22 @@ async function serverStatus() {
 async function switchServer() {
   const st = await loadServers(false);
   const n = st.list.length;
+  const https = st.list.filter((s) => String(s.url).startsWith("https://")).length;
   for (let k = 1; k < n; k++) {
     const i = (st.idx + k) % n;
+    if (!String(st.list[i].url).startsWith("https://")) continue;
     try {
       await callServer(st.list[i], "get_vod_categories", {});
       st.idx = i;
       st.ok = true;
+      st.okAt = Date.now();
       writeSrvs(st);
       return { changed: true, host: hostOf(st.list[i]), index: i + 1, total: n };
     } catch (e) {
       lastErr = errText(e);
     }
   }
-  return { changed: false, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: n };
+  return { changed: false, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: n, https };
 }
 async function refreshServers() {
   const before = readSrvs();
@@ -1592,12 +1611,12 @@ async function settingsStatus() {
   const s = await serverStatus();
   const idx = await indexLabel();
   if (!s.ok) return { status: (s.host ? `Sin respuesta de ${s.host}` : "Sin conexi\xF3n con el servicio") + (lastErr ? ` \xB7 ${lastErr}` : ""), indexStatus: idx };
-  return { status: `Conectado a ${s.host} (${s.index} de ${s.total})`, indexStatus: idx };
+  return { status: `Conectado a ${s.host} (${s.index} de ${s.total}) \xB7 comprobado ${s.at ? "hace " + Math.max(0, Math.round((Date.now() - s.at) / 1e3)) + " s" : "ahora"}`, indexStatus: idx };
 }
 async function action(key) {
   if (key === "switchServer") {
     const r = await switchServer();
-    return { message: r.changed ? `Servidor cambiado a ${r.host}` : "No hay otro servidor disponible ahora" + (lastErr ? ` (${lastErr})` : ""), refresh: true };
+    return { message: r.changed ? `Servidor cambiado a ${r.host}` : r.https <= 1 ? `No hay otro servidor: solo ${r.https} de ${r.total} usa HTTPS, lo \xFAnico que Kino permite con servidores externos` : "No hay otro servidor disponible ahora" + (lastErr ? ` (${lastErr})` : ""), refresh: true };
   }
   if (key === "refreshServers") {
     const r = await refreshServers();
@@ -1796,8 +1815,11 @@ async function loadRailsInfo(kind, maxRails, perRail, opts = {}) {
   const langs = LANG_ORDER.filter((l) => cats.some((c) => c.lang === l));
   const lang = opts.lang && langs.includes(opts.lang) ? opts.lang : langs[0] || null;
   const inLang = lang ? cats.filter((c) => c.lang === lang) : cats;
-  const plain = (opts.home ? homeOrder(inLang) : inLang.filter((c) => !c.adult)).slice(0, maxRails);
-  const chosen = opts.home ? plain : [...plain, ...inLang.filter((c) => c.adult).slice(0, 1)];
+  const ordered = opts.home ? homeOrder(inLang) : inLang.filter((c) => !c.adult);
+  const offset = Math.max(0, opts.offset || 0);
+  const plain = ordered.slice(offset, offset + maxRails);
+  const hasMore = ordered.length > offset + maxRails;
+  const chosen = opts.home || offset > 0 ? plain : [...plain, ...inLang.filter((c) => c.adult).slice(0, 1)];
   const fetched = await pool(chosen, 3, async (cat) => {
     try {
       return { cat, data: await fetchCategory(vod ? "get_vod_streams" : "get_series", cat.id) };
@@ -1833,12 +1855,12 @@ async function loadRailsInfo(kind, maxRails, perRail, opts = {}) {
   }
   if (!rails.length && failed) throw kino.error("unavailable", "ninguna categor\xEDa carg\xF3", { userMessage: "No se pudo cargar el cat\xE1logo." });
   await enrichTmdb(rails.slice(0, vod ? 2 : 1).flatMap((r) => r.items.slice(0, 8)), { max: vod ? 16 : 8, budgetMs: 2500 });
-  return { rails, langs, lang, failed };
+  return { rails, langs, lang, failed, hasMore, next: offset + maxRails };
 }
 async function home() {
   const indexing = indexStep({ budgetMs: 7e3 });
-  const vod = await loadRailsInfo("vod", 4, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
-  const series = await loadRailsInfo("series", 3, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
+  const vod = await loadRailsInfo("vod", 7, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
+  const series = await loadRailsInfo("series", 4, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
   const live = await countryRow().catch(() => null);
   await indexing;
   const rows = [...vod.rails, ...series.rails].map(({ lang, ...r }) => r);
@@ -2185,6 +2207,7 @@ var TEXTS = Object.freeze({
   noResults: ["No encontramos nada con esas palabras.", "Nothing found for those words."],
   searchedBefore: ["Buscado antes", "Searched before"],
   retry: ["Reintentar", "Retry"],
+  more: ["Cargar m\xE1s categor\xEDas", "Load more categories"],
   back: ["Atr\xE1s", "Back"],
   close: ["Cerrar", "Close"],
   settings: ["Ajustes", "Settings"],
@@ -2238,6 +2261,9 @@ var say = (key, lang, vars) => {
   const [es, en] = TEXTS[key] || [key, key];
   return fill(lang === "en" ? en : es, vars);
 };
+
+// src/logo.js
+var LOGO_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAIAAABt+uBvAAABV0lEQVR4nO3dQZKCMBgFYddzBK/o/dczaxGTAdFuyv7rbQRJvXwHSC7XXfN7u5wu+3b638/w7VFek//h28ClRq/x6gaj9Xd4Yw/TylO8qMpo+QiviGcEhJeTJKBdQHgtVZZAeCFhAgroKCC8ijYBBRRQQDQQXkIevoE8fAN5+Aby8A3k4RvIwzeQh28gD99AHr6BPHwDefgG8ix//9zPprXG335s5U0TUEABBRTQaVcOKKCAAgpIvHJAAQUU0LcCvTIBBRRQQAG9GegUKwcUUEABBSReOaCAAgpIBjT+fjwvVjkK6MDOAQUUUEBuoMI3kIdvIA/fQB6+gTx8A3n4BvLwDeThG8jDN5CHbyAP30AevoE8HW4ySqe/BBRQQAKgjJ7pBBTQUUAZrep0XPJEJ6CNQBlNjmzP6FGjayNGOl08MqKZA32J0Vigy48ms/NSKXx77xNZzB/7TgYOhL71YQAAAABJRU5ErkJggg==";
 
 // src/screenView.js
 var TAB_IDS = ["home", "movies", "series", "live"];
@@ -2333,7 +2359,14 @@ var hero = (slides) => slides.length === 1 ? slideNode(slides[0]) : {
   autoPlayMs: 6e3,
   children: slides.map(slideNode)
 };
-var title = () => ({ type: "Text", key: "brand", text: "Ultra Hd", textEn: "Ultra Hd", style: "h4" });
+var brandText = () => ({ type: "Text", key: "brandText", text: "Ultra Hd", textEn: "Ultra Hd", style: "h4" });
+var title = () => ({
+  type: "Row",
+  key: "brand",
+  gap: 8,
+  crossAxisAlignment: "center",
+  children: [{ type: "Image", key: "logo", url: LOGO_DATA, aspect: "1:1", fit: "contain", h: 32, alt: "Ultra Hd", altEn: "Ultra Hd" }, brandText()]
+});
 var tabBar = (active) => ({
   type: "TabBar",
   key: "tabs",
@@ -2392,6 +2425,7 @@ function browseView({ tab, data, recent, country, loading, failed, device = "pho
     if (active === "home" && country.length > 0) {
       body.push(tv ? roundRail(country, "country", twin("liveCountry", "text")) : rail({ items: country }, "country", twin("liveCountry", "title")));
     }
+    if (data.hasMore && active !== "home" && active !== "live") body.push({ type: "ElevatedButton", key: "moreCats", ...twin("more", "labelText"), icon: "expand_more", onPressed: "more" });
     if (active === "live") body.push({ type: "ElevatedButton", key: "seeLive", ...twin("seeLive", "labelText"), icon: "tv", onPressed: { event: "go", arg: "live" } });
     if (data.rails.length === 0 && country.length === 0) body.push({ type: "Text", ...twin("empty", "text"), color: "muted" });
     if (data.partial) body.push({ type: "MaterialBanner", key: "partialRows", role: "warning", ...twin("partial"), action: { ...twin("retry", "label"), onTap: "retry" } });
@@ -2557,7 +2591,7 @@ var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
 var HIST_MAX = 24;
 var CHANNELS_CAP = 60;
-var RAILS_PER_TAB = 8;
+var RAILS_PER_TAB = 12;
 var RAIL_ITEMS = 20;
 var FEATURED = 6;
 var SCREEN_ROUTES = ["main", "search", "live", "settings"];
@@ -2624,17 +2658,21 @@ function rememberFound(cards) {
 }
 var railCards = (rails) => rails.map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items.map(cardOf) }));
 var channelCard = (i) => ({ id: i.id, ref: i.ref, title: i.title, kind: "live", poster: i.logo, ...i.adult ? { adult: true } : {} });
-async function loadVodTab(tab, lang, { home: home2 = false } = {}) {
+async function loadVodTab(tab, lang, { home: home2 = false, offset = 0 } = {}) {
   const kind = tab === "movies" ? "vod" : "series";
-  const maxRails = home2 ? tab === "movies" ? 3 : 2 : RAILS_PER_TAB;
+  const maxRails = home2 ? tab === "movies" ? 7 : 4 : RAILS_PER_TAB;
   const indexing = home2 ? indexStep({ budgetMs: 6e3 }) : null;
-  const info = await loadRailsInfo(kind, maxRails, RAIL_ITEMS, { lang, home: home2 });
+  const info = await loadRailsInfo(kind, maxRails, RAIL_ITEMS, { lang, home: home2, offset });
   if (indexing) await indexing;
   const wantFeatured = home2 && tab === "series" ? 0 : FEATURED;
   const featured = info.rails.flatMap((r) => r.items).filter((i) => i.overview).slice(0, wantFeatured);
   if (featured.length) await enrichFeatured(kind, featured, wantFeatured);
   const rails = info.rails.map((r) => ({ ...r, items: r.items.map(withFicha) }));
-  memo.set(`${home2 ? "home-" : ""}${tab}:${lang}`, { slides: slidesOf(rails), rails: railCards(rails), langs: info.langs, lang: info.lang, partial: info.failed > 0 });
+  const key = `${home2 ? "home-" : ""}${tab}:${lang}`;
+  const prev = offset > 0 ? memo.get(key) : null;
+  const have = new Set(prev ? prev.rails.map((r) => r.id) : []);
+  const fresh = railCards(rails).filter((r) => !have.has(r.id));
+  memo.set(key, { slides: prev ? prev.slides : slidesOf(rails), rails: prev ? [...prev.rails, ...fresh] : fresh, langs: info.langs, lang: info.lang, partial: info.failed > 0, hasMore: !home2 && !!info.hasMore, next: info.next });
 }
 async function loadLiveTab() {
   const cats = (await liveCategories()).slice(0, RAILS_PER_TAB);
@@ -2804,6 +2842,16 @@ var events = {
       if (memo.has(key) && memo.get(key).partial) memo.delete(key);
     }
     return { state: { failed: null, ...bump(state) } };
+  },
+  async more({ state }) {
+    const tab = tabOf(state);
+    if (tab === "live" || tab === "home") return null;
+    const lang = wantedLang(state);
+    const m = memo.get(`${tab}:${lang}`);
+    if (!m || !m.hasMore) return null;
+    await loadVodTab(tab, lang, { offset: m.next });
+    cacheKey = serverKey();
+    return { state: { ...bump(state) } };
   },
   async tick({ state, device }) {
     const tab = tabOf(state);

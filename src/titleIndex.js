@@ -167,17 +167,26 @@ let running = null;
 
 // Texto para los ajustes: cuántos títulos hay y de qué revisión.
 export async function indexLabel() {
-  if (!hasCatalog()) return "Este Kino no tiene catálogo: la búsqueda va en vivo";
+  if (!hasCatalog()) return "No cargada: este Kino no trae catálogo, la búsqueda va en vivo";
   const st = readState();
   const n = await safeCount();
-  const cnt = n >= 0 ? String(n) : "?";
-  if (st && st.stage) return `Descargando el índice… ${cnt}${st.stage.total ? " de " + st.stage.total : ""} títulos`;
+  const fmt = (x) => String(x).replace(/B(?=(d{3})+(?!d))/g, ".");
+  const ago = (ts) => {
+    const m = Math.max(0, Math.round((Date.now() - ts) / 60000));
+    return m < 60 ? `${m} min` : m < 2880 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`;
+  };
+  if (st && st.stage) return `Descargando… ${fmt(Math.max(n, 0))}${st.stage.total ? " de " + fmt(st.stage.total) : ""} títulos`;
   if (st && st.done && st.rev && n > 0) {
-    const when = st.checked ? new Date(st.checked).toISOString().slice(0, 10) : "";
-    return `${cnt} títulos · revisión ${String(st.rev).slice(0, 8)}${when ? " · comprobado " + when : ""}`;
+    const parts = ["Cargada", st.mc ? `${fmt(st.mc)} películas · ${fmt(st.sc || 0)} series` : `${fmt(n)} títulos`];
+    const gen = st.gen ? String(st.gen).replace("T", " ").slice(0, 16) + " UTC" : "";
+    if (gen) parts.push("lista del " + gen);
+    if (st.checked) parts.push("comprobada hace " + ago(st.checked));
+    parts.push("en el aparato: " + fmt(n));
+    return parts.join(" · ");
   }
-  if (st && st.retryAt && Date.now() < st.retryAt) return "No se pudo descargar el índice; se reintentará solo";
-  return "Sin descargar todavía: se descarga al abrir Inicio";
+  if (st && st.done && n === 0) return "Vacía: se volverá a descargar al abrir Inicio";
+  if (st && st.retryAt && Date.now() < st.retryAt) return "No se pudo descargar; se reintenta sola (sin red o GitHub no responde)";
+  return "No cargada todavía: se descarga al abrir Inicio";
 }
 
 // Un paso del poblado/actualización, acotado por [budgetMs]. Idempotente y reanudable; nunca lanza.
@@ -200,7 +209,7 @@ async function download(file, hash, tries) {
 
 function snapshotStage(m, fresh) {
   return {
-    mode: "snapshot", target: m.revision, hash: m.hash, gen: m.generated, total: m.movies.count + m.series.count, fresh,
+    mode: "snapshot", target: m.revision, hash: m.hash, gen: m.generated, mc: m.movies.count, sc: m.series.count, total: m.movies.count + m.series.count, fresh,
     files: [...m.movies.parts.map((f, i) => [f, m.movies.hashes[i]]), ...m.series.parts.map((f, i) => [f, m.series.hashes[i]])],
     next: 0, offset: 0, fails: 0, purge: null,
   };
@@ -239,7 +248,7 @@ async function step({ budgetMs = 6000 } = {}) {
     const usable = !!st && st.done && (await safeCount()) > 0;
     const chain = usable ? chainFor(st.rev, m) : null;
     if (usable && chain) {
-      st.stage = { mode: "delta", target: m.revision, hash: m.hash, gen: m.generated, chain, next: 0, offA: 0, offR: 0, fails: 0, snap: snapshotStage(m, false) };
+      st.stage = { mode: "delta", target: m.revision, hash: m.hash, gen: m.generated, mc: m.movies.count, sc: m.series.count, chain, next: 0, offA: 0, offR: 0, fails: 0, snap: snapshotStage(m, false) };
     } else if (usable) {
       st.stage = snapshotStage(m, false); // atrasado más de 7 revisiones: snapshot completo sobre el catálogo actual
     } else {
@@ -307,7 +316,7 @@ async function runDelta(st, deadline) {
     writeState(st);
   }
   st.hash = sg.hash;
-  st.gen = sg.gen;
+  st.gen = sg.gen; st.mc = sg.mc || 0; st.sc = sg.sc || 0;
   st.done = true;
   st.checked = Date.now();
   st.retryAt = 0;
@@ -375,7 +384,7 @@ async function runSnapshot(st, deadline) {
 
   st.rev = sg.target;
   st.hash = sg.hash;
-  st.gen = sg.gen;
+  st.gen = sg.gen; st.mc = sg.mc || 0; st.sc = sg.sc || 0;
   st.total = sg.total;
   st.done = true;
   st.checked = Date.now();

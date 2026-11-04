@@ -186,9 +186,10 @@ async function api(action, extra = {}) {
       const i = (st.idx + n) % st.list.length;
       try {
         const data = await callServer(st.list[i], action, extra);
-        if (i !== st.idx || !st.ok) {
+        if (i !== st.idx || !st.ok || Date.now() - (st.okAt || 0) > 5000) {
           st.idx = i;
           st.ok = true;
+          st.okAt = Date.now();
           writeSrvs(st);
         }
         return data;
@@ -223,11 +224,11 @@ const hostOf = (srv) => {
 export async function serverStatus() {
   const cached = readSrvs();
   // Si ya hubo una respuesta buena de este servidor, se informa sin otra petición (el servicio puede tardar y el estado caducaba).
-  if (cached && cached.ok && cached.list && cached.list[cached.idx]) return { ok: true, host: hostOf(cached.list[cached.idx]), index: cached.idx + 1, total: cached.list.length };
+  if (cached && cached.ok && cached.list && cached.list[cached.idx] && Date.now() - (cached.okAt || 0) < 20000) return { ok: true, host: hostOf(cached.list[cached.idx]), index: cached.idx + 1, total: cached.list.length, at: cached.okAt };
   try {
     await api("get_vod_categories");
     const st = readSrvs();
-    return { ok: true, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: st.list.length };
+    return { ok: true, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: st.list.length, at: st.okAt };
   } catch (e) {
     lastErr = errText(e);
     const st = readSrvs();
@@ -238,17 +239,20 @@ export async function serverStatus() {
 export async function switchServer() {
   const st = await loadServers(false);
   const n = st.list.length;
+  const https = st.list.filter((s) => String(s.url).startsWith("https://")).length;
   for (let k = 1; k < n; k++) {
     const i = (st.idx + k) % n;
+    if (!String(st.list[i].url).startsWith("https://")) continue; // Kino solo deja HTTPS con servidores externos
     try {
       await callServer(st.list[i], "get_vod_categories", {});
       st.idx = i;
       st.ok = true;
+      st.okAt = Date.now();
       writeSrvs(st);
       return { changed: true, host: hostOf(st.list[i]), index: i + 1, total: n };
     } catch (e) { lastErr = errText(e); }
   }
-  return { changed: false, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: n };
+  return { changed: false, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: n, https };
 }
 
 export async function refreshServers() {
@@ -265,13 +269,13 @@ export async function settingsStatus() {
   const s = await serverStatus();
   const idx = await indexLabel();
   if (!s.ok) return { status: (s.host ? `Sin respuesta de ${s.host}` : "Sin conexión con el servicio") + (lastErr ? ` · ${lastErr}` : ""), indexStatus: idx };
-  return { status: `Conectado a ${s.host} (${s.index} de ${s.total})`, indexStatus: idx };
+  return { status: `Conectado a ${s.host} (${s.index} de ${s.total}) · comprobado ${s.at ? "hace " + Math.max(0, Math.round((Date.now() - s.at) / 1000)) + " s" : "ahora"}`, indexStatus: idx };
 }
 
 export async function action(key) {
   if (key === "switchServer") {
     const r = await switchServer();
-    return { message: r.changed ? `Servidor cambiado a ${r.host}` : "No hay otro servidor disponible ahora" + (lastErr ? ` (${lastErr})` : ""), refresh: true };
+    return { message: r.changed ? `Servidor cambiado a ${r.host}` : r.https <= 1 ? `No hay otro servidor: solo ${r.https} de ${r.total} usa HTTPS, lo único que Kino permite con servidores externos` : "No hay otro servidor disponible ahora" + (lastErr ? ` (${lastErr})` : ""), refresh: true };
   }
   if (key === "refreshServers") {
     const r = await refreshServers();
@@ -500,8 +504,11 @@ export async function loadRailsInfo(kind, maxRails, perRail, opts = {}) {
   const lang = opts.lang && langs.includes(opts.lang) ? opts.lang : langs[0] || null;
   const inLang = lang ? cats.filter((c) => c.lang === lang) : cats;
   // Con el 18+ encendido, una fila adulta (marcada) se suma al final aunque pase del tope.
-  const plain = (opts.home ? homeOrder(inLang) : inLang.filter((c) => !c.adult)).slice(0, maxRails);
-  const chosen = opts.home ? plain : [...plain, ...inLang.filter((c) => c.adult).slice(0, 1)];
+  const ordered = opts.home ? homeOrder(inLang) : inLang.filter((c) => !c.adult);
+  const offset = Math.max(0, opts.offset || 0);
+  const plain = ordered.slice(offset, offset + maxRails);
+  const hasMore = ordered.length > offset + maxRails;
+  const chosen = opts.home || offset > 0 ? plain : [...plain, ...inLang.filter((c) => c.adult).slice(0, 1)];
 
   const fetched = await pool(chosen, 3, async (cat) => {
     try { return { cat, data: await fetchCategory(vod ? "get_vod_streams" : "get_series", cat.id) }; } catch (_) { return { cat, failed: true }; }
@@ -533,7 +540,7 @@ export async function loadRailsInfo(kind, maxRails, perRail, opts = {}) {
   if (!rails.length && failed) throw kino.error("unavailable", "ninguna categoría cargó", { userMessage: "No se pudo cargar el catálogo." });
   // TMDB perezoso: solo el id de lo que se ve al abrir (primeras filas), con tope por llamada; Kino completa el resto con él.
   await enrichTmdb(rails.slice(0, vod ? 2 : 1).flatMap((r) => r.items.slice(0, 8)), { max: vod ? 16 : 8, budgetMs: 2500 });
-  return { rails, langs, lang, failed };
+  return { rails, langs, lang, failed, hasMore, next: offset + maxRails };
 }
 
 export async function loadRails(kind, maxRails, perRail, opts) {
@@ -545,8 +552,8 @@ export async function loadRails(kind, maxRails, perRail, opts) {
 export async function home() {
   // El índice de títulos se puebla/actualiza mientras carga el Home (un paso acotado en tiempo; nunca lanza).
   const indexing = indexStep({ budgetMs: 7000 });
-  const vod = await loadRailsInfo("vod", 4, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
-  const series = await loadRailsInfo("series", 3, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
+  const vod = await loadRailsInfo("vod", 7, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
+  const series = await loadRailsInfo("series", 4, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
   const live = await countryRow().catch(() => null);
   await indexing;
   const rows = [...vod.rails, ...series.rails].map(({ lang, ...r }) => r);
