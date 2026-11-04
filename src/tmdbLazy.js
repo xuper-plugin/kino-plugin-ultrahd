@@ -28,14 +28,17 @@ const yearOfResult = (r) => {
 };
 
 // Coincidencia segura: título (o título original) igual y año ±1, o un único resultado compatible con el año.
-export function pickTmdb(results, entry) {
+export function pickTmdbFull(results, entry) {
   const list = Array.isArray(results) ? results : [];
   const okYear = (r) => !entry.year || !yearOfResult(r) || Math.abs(yearOfResult(r) - entry.year) <= 1;
   const same = list.filter((r) => [r.title, r.name, r.original_title, r.original_name].some((t) => t && findKey(t) === entry.find) && okYear(r));
-  if (same.length) return same[0].id;
-  if (list.length === 1 && okYear(list[0]) && entry.year) return list[0].id;
-  return 0;
+  if (same.length) return same[0];
+  if (list.length === 1 && okYear(list[0]) && entry.year) return list[0];
+  return null;
 }
+export const pickTmdb = (results, entry) => { const r = pickTmdbFull(results, entry); return r ? r.id : 0; };
+const POSTER = "https://image.tmdb.org/t/p/w342";
+const posterUrl = (p) => (p && p !== "-" ? POSTER + p : undefined); // "-": TMDB no tiene póster, no se vuelve a pedir
 
 function readMap() {
   try { const o = JSON.parse(sget(MAP_KEY) || "{}"); return o && typeof o === "object" && !Array.isArray(o) ? o : {}; } catch (_) { return {}; }
@@ -62,7 +65,8 @@ async function queryOne(c) {
   const params = { query: c.name, language: "es-MX", include_adult: false };
   if (c.year) params[c.tv ? "first_air_date_year" : "year"] = c.year;
   const res = await kino.tmdb(c.tv ? "/search/tv" : "/search/movie", params);
-  return pickTmdb(res && res.results, c);
+  const r = pickTmdbFull(res && res.results, c);
+  return r ? { id: r.id, p: typeof r.poster_path === "string" ? r.poster_path : "" } : { id: 0, p: "" };
 }
 
 const hasCatalogGet = () => { try { return typeof kino.catalog === "object" && kino.catalog && typeof kino.catalog.get === "function"; } catch (_) { return false; } };
@@ -76,7 +80,7 @@ export async function enrichTmdb(items, { max = 24, budgetMs = 2500 } = {}) {
     const cands = [];
     const seen = new Set();
     for (const it of items.slice(0, 48)) {
-      if (!it || (it.ids && it.ids.tmdb) || (it.kind !== "movie" && it.kind !== "series") || !it.title) continue;
+      if (!it || it.poster || (it.kind !== "movie" && it.kind !== "series") || !it.title) continue;
       const { name, year } = cleanTitle(it.title, it.year);
       const find = findKey(name);
       if (!find) continue;
@@ -101,7 +105,9 @@ export async function enrichTmdb(items, { max = 24, budgetMs = 2500 } = {}) {
       const d = row ? dataOf(row) : null;
       const t = d ? Number(d.t) || 0 : (map[c.id] && map[c.id][0]) || 0;
       const tried = d ? Number(d.a) || 0 : (map[c.id] && map[c.id][1]) || 0;
-      if (t > 0) { c.item.ids = { ...(c.item.ids || {}), tmdb: t }; stats.cached++; continue; }
+      const p = d ? (typeof d.p === "string" ? d.p : "") : (map[c.id] && typeof map[c.id][2] === "string" ? map[c.id][2] : "");
+      if (t > 0 && p) { c.item.ids = { ...(c.item.ids || {}), tmdb: t }; if (!c.item.poster) c.item.poster = posterUrl(p); stats.cached++; continue; }
+      if (t > 0) { c.item.ids = { ...(c.item.ids || {}), tmdb: t }; } // ya hay id pero falta el póster: se pide una vez más
       if (tried && now - tried < RETRY_DAYS) { stats.skippedFresh++; continue; }
       queue.push(c);
     }
@@ -116,9 +122,10 @@ export async function enrichTmdb(items, { max = 24, budgetMs = 2500 } = {}) {
         const c = work[next++];
         try {
           stats.queries++;
-          const id = await withTimeout(queryOne(c), deadline - Date.now());
-          done.push([c, id]);
-          if (id) { stats.found++; c.item.ids = { ...(c.item.ids || {}), tmdb: id }; } else stats.missed++;
+          const r = await withTimeout(queryOne(c), deadline - Date.now());
+          const id = r.id;
+          done.push([c, id, r.p]);
+          if (id) { stats.found++; c.item.ids = { ...(c.item.ids || {}), tmdb: id }; if (r.p && !c.item.poster) c.item.poster = posterUrl(r.p); } else stats.missed++;
         } catch (e) {
           stats.errors++;
           const code = e && e.code;
@@ -133,10 +140,10 @@ export async function enrichTmdb(items, { max = 24, budgetMs = 2500 } = {}) {
     if (done.length) {
       const upserts = [];
       let mapDirty = false;
-      for (const [c, id] of done) {
+      for (const [c, id, p] of done) {
         const row = rows.get(c.id);
-        if (row) upserts.push({ id: row.id, title: row.title, sort: row.sort, data: { ...dataOf(row), t: id, ...(id ? { a: 0 } : { a: now }) } });
-        else { delete map[c.id]; map[c.id] = [id, now]; mapDirty = true; }
+        if (row) upserts.push({ id: row.id, title: row.title, sort: row.sort, data: { ...dataOf(row), t: id, ...(id ? { p: p || "-" } : {}), ...(id ? { a: 0 } : { a: now }) } });
+        else { delete map[c.id]; map[c.id] = id ? [id, now, p || "-"] : [id, now]; mapDirty = true; }
       }
       if (upserts.length) { try { await kino.catalog.upsert(upserts); } catch (_) { /* se vuelve a consultar */ } }
       if (mapDirty) writeMap(map);

@@ -664,14 +664,16 @@ var yearOfResult = (r) => {
   const d = r.release_date || r.first_air_date || "";
   return /^\d{4}/.test(d) ? Number(d.slice(0, 4)) : 0;
 };
-function pickTmdb(results, entry) {
+function pickTmdbFull(results, entry) {
   const list = Array.isArray(results) ? results : [];
   const okYear = (r) => !entry.year || !yearOfResult(r) || Math.abs(yearOfResult(r) - entry.year) <= 1;
   const same = list.filter((r) => [r.title, r.name, r.original_title, r.original_name].some((t) => t && findKey(t) === entry.find) && okYear(r));
-  if (same.length) return same[0].id;
-  if (list.length === 1 && okYear(list[0]) && entry.year) return list[0].id;
-  return 0;
+  if (same.length) return same[0];
+  if (list.length === 1 && okYear(list[0]) && entry.year) return list[0];
+  return null;
 }
+var POSTER = "https://image.tmdb.org/t/p/w342";
+var posterUrl = (p) => p && p !== "-" ? POSTER + p : void 0;
 function readMap() {
   try {
     const o = JSON.parse(get(MAP_KEY) || "{}");
@@ -703,7 +705,8 @@ async function queryOne(c) {
   const params = { query: c.name, language: "es-MX", include_adult: false };
   if (c.year) params[c.tv ? "first_air_date_year" : "year"] = c.year;
   const res = await kino.tmdb(c.tv ? "/search/tv" : "/search/movie", params);
-  return pickTmdb(res && res.results, c);
+  const r = pickTmdbFull(res && res.results, c);
+  return r ? { id: r.id, p: typeof r.poster_path === "string" ? r.poster_path : "" } : { id: 0, p: "" };
 }
 var hasCatalogGet = () => {
   try {
@@ -719,7 +722,7 @@ async function enrichTmdb(items, { max = 24, budgetMs = 2500 } = {}) {
     const cands = [];
     const seen = /* @__PURE__ */ new Set();
     for (const it of items.slice(0, 48)) {
-      if (!it || it.ids && it.ids.tmdb || it.kind !== "movie" && it.kind !== "series" || !it.title) continue;
+      if (!it || it.poster || it.kind !== "movie" && it.kind !== "series" || !it.title) continue;
       const { name, year } = cleanTitle(it.title, it.year);
       const find = findKey(name);
       if (!find) continue;
@@ -745,10 +748,15 @@ async function enrichTmdb(items, { max = 24, budgetMs = 2500 } = {}) {
       const d = row ? dataOf(row) : null;
       const t = d ? Number(d.t) || 0 : map[c.id] && map[c.id][0] || 0;
       const tried = d ? Number(d.a) || 0 : map[c.id] && map[c.id][1] || 0;
-      if (t > 0) {
+      const p = d ? typeof d.p === "string" ? d.p : "" : map[c.id] && typeof map[c.id][2] === "string" ? map[c.id][2] : "";
+      if (t > 0 && p) {
         c.item.ids = { ...c.item.ids || {}, tmdb: t };
+        if (!c.item.poster) c.item.poster = posterUrl(p);
         stats2.cached++;
         continue;
+      }
+      if (t > 0) {
+        c.item.ids = { ...c.item.ids || {}, tmdb: t };
       }
       if (tried && now - tried < RETRY_DAYS) {
         stats2.skippedFresh++;
@@ -765,11 +773,13 @@ async function enrichTmdb(items, { max = 24, budgetMs = 2500 } = {}) {
         const c = work[next++];
         try {
           stats2.queries++;
-          const id = await withTimeout(queryOne(c), deadline - Date.now());
-          done.push([c, id]);
+          const r = await withTimeout(queryOne(c), deadline - Date.now());
+          const id = r.id;
+          done.push([c, id, r.p]);
           if (id) {
             stats2.found++;
             c.item.ids = { ...c.item.ids || {}, tmdb: id };
+            if (r.p && !c.item.poster) c.item.poster = posterUrl(r.p);
           } else stats2.missed++;
         } catch (e) {
           stats2.errors++;
@@ -787,12 +797,12 @@ async function enrichTmdb(items, { max = 24, budgetMs = 2500 } = {}) {
     if (done.length) {
       const upserts = [];
       let mapDirty = false;
-      for (const [c, id] of done) {
+      for (const [c, id, p] of done) {
         const row = rows.get(c.id);
-        if (row) upserts.push({ id: row.id, title: row.title, sort: row.sort, data: { ...dataOf(row), t: id, ...id ? { a: 0 } : { a: now } } });
+        if (row) upserts.push({ id: row.id, title: row.title, sort: row.sort, data: { ...dataOf(row), t: id, ...id ? { p: p || "-" } : {}, ...id ? { a: 0 } : { a: now } } });
         else {
           delete map[c.id];
-          map[c.id] = [id, now];
+          map[c.id] = id ? [id, now, p || "-"] : [id, now];
           mapDirty = true;
         }
       }
