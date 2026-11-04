@@ -1,17 +1,34 @@
 {
-  "id": "vegeta-iptv",
+  "id": "ultra-hd",
   "name": "Ultra Hd",
-  "version": "0.1.0",
-  "apiVersion": 9,
+  "version": "0.3.0",
+  "apiVersion": 13,
   "entry": "plugin.js",
   "description": "Películas, series y TV en vivo en Ultra HD.",
   "author": "xuper-plugin",
   "homepage": "https://github.com/xuper-plugin/kino-plugin-ultrahd",
-  "hosts": [{ "host": "vegetatvv2.duckdns.org", "insecureHttp": true }],
+  "hosts": [
+    {
+      "host": "vegetatvv2.duckdns.org",
+      "insecureHttp": true
+    }
+  ],
   "fetchHosts": "any",
   "streamHosts": "any",
-  "capabilities": ["home", "browse", "search", "resolve", "episodes", "channels"],
-  "categories": ["movies", "series"],
+  "capabilities": [
+    "home",
+    "browse",
+    "search",
+    "resolve",
+    "episodes",
+    "channels",
+    "catalog"
+  ],
+  "categories": [
+    "movies",
+    "series",
+    "live"
+  ],
   "color": "#FF6B00",
   "icon": "icon.png",
   "theme": {
@@ -20,5 +37,419 @@
     "background": "#0A0A0A",
     "surface": "#1A1A1A",
     "highlight": "#FFB280"
+  },
+  "section": {
+    "labelEn": "Ultra Hd",
+    "label": "Ultra Hd"
+  },
+  "settings": [
+    {
+      "key": "connection",
+      "label": "Conexión",
+      "labelEn": "Connection",
+      "type": "section",
+      "hint": "Los servidores se obtienen solos. Cambia de uno si va mal.",
+      "hintEn": "Servers are picked automatically. Switch if one misbehaves."
+    },
+    {
+      "key": "status",
+      "label": "Servidor activo",
+      "labelEn": "Active server",
+      "type": "status"
+    },
+    {
+      "key": "switchServer",
+      "label": "Cambiar servidor",
+      "labelEn": "Switch server",
+      "type": "action",
+      "hint": "Prueba el siguiente de la lista",
+      "hintEn": "Tries the next one in the list"
+    },
+    {
+      "key": "refreshServers",
+      "label": "Actualizar lista de servidores",
+      "labelEn": "Update server list",
+      "type": "action",
+      "hint": "Vuelve a pedir la lista al servicio",
+      "hintEn": "Asks the service for the list again"
+    },
+    {
+      "key": "content",
+      "label": "Contenido",
+      "labelEn": "Content",
+      "type": "section"
+    },
+    {
+      "key": "showAdult",
+      "label": "Mostrar contenido 18+",
+      "labelEn": "Show 18+ content",
+      "type": "toggle",
+      "default": false,
+      "hint": "Apagado, las categorías adultas se ocultan",
+      "hintEn": "Off, adult categories are hidden"
+    },
+    {
+      "key": "liveSection",
+      "label": "En vivo",
+      "labelEn": "Live",
+      "type": "section"
+    },
+    {
+      "key": "liveFormat",
+      "label": "Formato del en vivo",
+      "labelEn": "Live format",
+      "type": "select",
+      "default": "m3u8",
+      "options": [
+        {
+          "value": "m3u8",
+          "label": "HLS (m3u8)",
+          "labelEn": "HLS (m3u8)"
+        },
+        {
+          "value": "ts",
+          "label": "MPEG-TS (ts)",
+          "labelEn": "MPEG-TS (ts)"
+        }
+      ],
+      "hint": "Si un canal no carga, prueba el otro",
+      "hintEn": "If a channel will not play, try the other"
+    },
+    {
+      "key": "homeSection",
+      "label": "Inicio",
+      "labelEn": "Home",
+      "type": "section",
+      "hint": "Una fila con los canales de tu país al final de Inicio.",
+      "hintEn": "A row with your country's channels at the end of Home."
+    },
+    {
+      "key": "homeCountry",
+      "label": "Canales de tu país en Inicio",
+      "labelEn": "Channels from your country",
+      "type": "select",
+      "default": "none",
+      "options": [
+        {
+          "value": "none",
+          "label": "Ninguno",
+          "labelEn": "None"
+        },
+        {
+          "value": "AR",
+          "label": "Argentina",
+          "labelEn": "Argentina"
+        },
+        {
+          "value": "BO",
+          "label": "Bolivia",
+          "labelEn": "Bolivia"
+        },
+        {
+          "value": "CL",
+          "label": "Chile",
+          "labelEn": "Chile"
+        },
+        {
+          "value": "CO",
+          "label": "Colombia",
+          "labelEn": "Colombia"
+        },
+        {
+          "value": "CR",
+          "label": "Costa Rica",
+          "labelEn": "Costa Rica"
+        },
+        {
+          "value": "EC",
+          "label": "Ecuador",
+          "labelEn": "Ecuador"
+        },
+        {
+          "value": "SV",
+          "label": "El Salvador",
+          "labelEn": "El Salvador"
+        },
+        {
+          "value": "ES",
+          "label": "España",
+          "labelEn": "Spain"
+        },
+        {
+          "value": "US",
+          "label": "Estados Unidos",
+          "labelEn": "United States"
+        },
+        {
+          "value": "GT",
+          "label": "Guatemala",
+          "labelEn": "Guatemala"
+        },
+        {
+          "value": "HN",
+          "label": "Honduras",
+          "labelEn": "Honduras"
+        },
+        {
+          "value": "MX",
+          "label": "México",
+          "labelEn": "Mexico"
+        },
+        {
+          "value": "PA",
+          "label": "Panamá",
+          "labelEn": "Panama"
+        },
+        {
+          "value": "PY",
+          "label": "Paraguay",
+          "labelEn": "Paraguay"
+        },
+        {
+          "value": "PE",
+          "label": "Perú",
+          "labelEn": "Peru"
+        },
+        {
+          "value": "PR",
+          "label": "Puerto Rico",
+          "labelEn": "Puerto Rico"
+        },
+        {
+          "value": "DO",
+          "label": "República Dominicana",
+          "labelEn": "Dominican Republic"
+        },
+        {
+          "value": "UY",
+          "label": "Uruguay",
+          "labelEn": "Uruguay"
+        },
+        {
+          "value": "VE",
+          "label": "Venezuela",
+          "labelEn": "Venezuela"
+        }
+      ]
+    }
+  ],
+  "enhancements": {
+    "14": {
+      "capabilities": [
+        "screen"
+      ],
+      "screen": {
+        "label": "Ultra Hd",
+        "labelEn": "Ultra Hd",
+        "icon": "movie",
+        "menuOpens": "screen",
+        "opensFrom": [
+          "menu",
+          "settings"
+        ],
+        "settingsButton": {
+          "label": "Abrir Ultra Hd",
+          "labelEn": "Open Ultra Hd"
+        },
+        "settingsIn": "screen"
+      },
+      "settings": [
+        {
+          "key": "connection",
+          "label": "Conexión",
+          "labelEn": "Connection",
+          "type": "section",
+          "hint": "Los servidores se obtienen solos. Cambia de uno si va mal.",
+          "hintEn": "Servers are picked automatically. Switch if one misbehaves."
+        },
+        {
+          "key": "status",
+          "label": "Servidor activo",
+          "labelEn": "Active server",
+          "type": "status"
+        },
+        {
+          "key": "switchServer",
+          "label": "Cambiar servidor",
+          "labelEn": "Switch server",
+          "type": "action",
+          "hint": "Prueba el siguiente de la lista",
+          "hintEn": "Tries the next one in the list"
+        },
+        {
+          "key": "refreshServers",
+          "label": "Actualizar lista de servidores",
+          "labelEn": "Update server list",
+          "type": "action",
+          "hint": "Vuelve a pedir la lista al servicio",
+          "hintEn": "Asks the service for the list again"
+        },
+        {
+          "key": "content",
+          "label": "Contenido",
+          "labelEn": "Content",
+          "type": "section"
+        },
+        {
+          "key": "showAdult",
+          "label": "Mostrar contenido 18+",
+          "labelEn": "Show 18+ content",
+          "type": "toggle",
+          "default": false,
+          "hint": "Apagado, las categorías adultas se ocultan",
+          "hintEn": "Off, adult categories are hidden",
+          "unlockWith": "adultCode"
+        },
+        {
+          "key": "liveSection",
+          "label": "En vivo",
+          "labelEn": "Live",
+          "type": "section"
+        },
+        {
+          "key": "liveFormat",
+          "label": "Formato del en vivo",
+          "labelEn": "Live format",
+          "type": "select",
+          "default": "m3u8",
+          "options": [
+            {
+              "value": "m3u8",
+              "label": "HLS (m3u8)",
+              "labelEn": "HLS (m3u8)"
+            },
+            {
+              "value": "ts",
+              "label": "MPEG-TS (ts)",
+              "labelEn": "MPEG-TS (ts)"
+            }
+          ],
+          "hint": "Si un canal no carga, prueba el otro",
+          "hintEn": "If a channel will not play, try the other"
+        },
+        {
+          "key": "homeSection",
+          "label": "Inicio",
+          "labelEn": "Home",
+          "type": "section",
+          "hint": "Una fila con los canales de tu país al final de Inicio.",
+          "hintEn": "A row with your country's channels at the end of Home."
+        },
+        {
+          "key": "homeCountry",
+          "label": "Canales de tu país en Inicio",
+          "labelEn": "Channels from your country",
+          "type": "select",
+          "default": "none",
+          "options": [
+            {
+              "value": "none",
+              "label": "Ninguno",
+              "labelEn": "None"
+            },
+            {
+              "value": "AR",
+              "label": "Argentina",
+              "labelEn": "Argentina"
+            },
+            {
+              "value": "BO",
+              "label": "Bolivia",
+              "labelEn": "Bolivia"
+            },
+            {
+              "value": "CL",
+              "label": "Chile",
+              "labelEn": "Chile"
+            },
+            {
+              "value": "CO",
+              "label": "Colombia",
+              "labelEn": "Colombia"
+            },
+            {
+              "value": "CR",
+              "label": "Costa Rica",
+              "labelEn": "Costa Rica"
+            },
+            {
+              "value": "EC",
+              "label": "Ecuador",
+              "labelEn": "Ecuador"
+            },
+            {
+              "value": "SV",
+              "label": "El Salvador",
+              "labelEn": "El Salvador"
+            },
+            {
+              "value": "ES",
+              "label": "España",
+              "labelEn": "Spain"
+            },
+            {
+              "value": "US",
+              "label": "Estados Unidos",
+              "labelEn": "United States"
+            },
+            {
+              "value": "GT",
+              "label": "Guatemala",
+              "labelEn": "Guatemala"
+            },
+            {
+              "value": "HN",
+              "label": "Honduras",
+              "labelEn": "Honduras"
+            },
+            {
+              "value": "MX",
+              "label": "México",
+              "labelEn": "Mexico"
+            },
+            {
+              "value": "PA",
+              "label": "Panamá",
+              "labelEn": "Panama"
+            },
+            {
+              "value": "PY",
+              "label": "Paraguay",
+              "labelEn": "Paraguay"
+            },
+            {
+              "value": "PE",
+              "label": "Perú",
+              "labelEn": "Peru"
+            },
+            {
+              "value": "PR",
+              "label": "Puerto Rico",
+              "labelEn": "Puerto Rico"
+            },
+            {
+              "value": "DO",
+              "label": "República Dominicana",
+              "labelEn": "Dominican Republic"
+            },
+            {
+              "value": "UY",
+              "label": "Uruguay",
+              "labelEn": "Uruguay"
+            },
+            {
+              "value": "VE",
+              "label": "Venezuela",
+              "labelEn": "Venezuela"
+            }
+          ]
+        }
+      ]
+    },
+    "19": {
+      "capabilities": [
+        "screen"
+      ]
+    }
   }
 }

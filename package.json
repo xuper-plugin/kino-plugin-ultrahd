@@ -4,7 +4,12 @@
   "type": "module",
   "scripts": {
     "build": "esbuild src/plugin.js --bundle --format=esm --target=es2020 --outfile=plugin.js",
-    "validate": "npm run build && node sdk/validate.mjs ."
+    "validate": "npm run build && node sdk/validate.mjs .",
+    "test:index": "node scripts/test-index.mjs",
+    "test:storage": "node scripts/test-storage.mjs",
+    "e2e": "node scripts/e2e-real.mjs"
   },
-  "devDependencies": { "esbuild": "^0.21.0" }
+  "devDependencies": {
+    "esbuild": "^0.21.0"
+  }
 }
