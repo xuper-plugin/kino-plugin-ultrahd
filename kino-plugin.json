@@ -6,7 +6,7 @@
   "entry": "plugin.js",
   "description": "Películas, series y TV en vivo en Ultra HD.",
   "author": "xuper-plugin",
-  "homepage": "https://github.com/xuper-plugin/kino-plugin-xtream",
+  "homepage": "https://github.com/xuper-plugin/kino-plugin-ultrahd",
   "hosts": [{ "host": "vegetatvv2.duckdns.org", "insecureHttp": true }],
   "fetchHosts": "any",
   "streamHosts": "any",
