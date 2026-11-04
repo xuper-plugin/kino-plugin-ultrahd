@@ -221,6 +221,9 @@ const hostOf = (srv) => {
 
 // Nunca expone usuario ni contraseña: solo el host y la posición en la lista.
 export async function serverStatus() {
+  const cached = readSrvs();
+  // Si ya hubo una respuesta buena de este servidor, se informa sin otra petición (el servicio puede tardar y el estado caducaba).
+  if (cached && cached.ok && cached.list && cached.list[cached.idx]) return { ok: true, host: hostOf(cached.list[cached.idx]), index: cached.idx + 1, total: cached.list.length };
   try {
     await api("get_vod_categories");
     const st = readSrvs();
@@ -249,9 +252,11 @@ export async function switchServer() {
 }
 
 export async function refreshServers() {
+  const before = readSrvs();
   const st = await loadServers(true);
-  let ok = true;
-  try { await api("get_vod_categories"); } catch (_) { ok = false; }
+  const fresh = !before || st.ts !== before.ts; // la lista se pidió de nuevo (si el arranque falla, loadServers devuelve la vieja)
+  let ok = fresh;
+  if (fresh) { try { await api("get_vod_categories"); } catch (_) { /* la lista nueva ya está; el servidor se prueba al usarlo */ } }
   const now = readSrvs() || st;
   return { ok, total: now.list.length, host: hostOf(now.list[now.idx]) };
 }

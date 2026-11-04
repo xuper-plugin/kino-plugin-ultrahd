@@ -1535,6 +1535,8 @@ var hostOf = (srv) => {
   }
 };
 async function serverStatus() {
+  const cached = readSrvs();
+  if (cached && cached.ok && cached.list && cached.list[cached.idx]) return { ok: true, host: hostOf(cached.list[cached.idx]), index: cached.idx + 1, total: cached.list.length };
   try {
     await api("get_vod_categories");
     const st = readSrvs();
@@ -1563,12 +1565,15 @@ async function switchServer() {
   return { changed: false, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: n };
 }
 async function refreshServers() {
+  const before = readSrvs();
   const st = await loadServers(true);
-  let ok = true;
-  try {
-    await api("get_vod_categories");
-  } catch (_) {
-    ok = false;
+  const fresh = !before || st.ts !== before.ts;
+  let ok = fresh;
+  if (fresh) {
+    try {
+      await api("get_vod_categories");
+    } catch (_) {
+    }
   }
   const now = readSrvs() || st;
   return { ok, total: now.list.length, host: hostOf(now.list[now.idx]) };
