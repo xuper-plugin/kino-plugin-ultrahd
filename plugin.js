@@ -1615,7 +1615,8 @@ async function loadServers(force) {
   const usable = cached && Array.isArray(cached.list) && cached.list.length;
   if (!force && usable && cached.ts && Date.now() - cached.ts < CACHE_TTL_MS) return cached;
   try {
-    const st = { ts: Date.now(), list: await fetchServerList(), idx: 0, ok: false };
+    const list = await fetchServerList();
+    const st = { ts: Date.now(), list, idx: Math.max(0, list.findIndex((s) => indexFitsServer(s.url))), ok: false };
     writeSrvs(st);
     return st;
   } catch (e) {
@@ -1647,10 +1648,36 @@ async function callServer(srv, action2, extra) {
   if (badAnswer(action2, data)) throw new Error("respuesta inv\xE1lida");
   return data;
 }
+function homeIdx(st) {
+  const i = st.list.findIndex((s) => indexFitsServer(s.url));
+  return i >= 0 ? i : 0;
+}
+async function backHome() {
+  const st = await loadServers(false);
+  const home2 = homeIdx(st);
+  if (st.idx === home2 || st.pin || Date.now() - (st.homeAt || 0) < 3e5) return;
+  st.homeAt = Date.now();
+  try {
+    await callServer(st.list[home2], "get_vod_categories", {});
+    st.idx = home2;
+    st.ok = true;
+    st.okAt = Date.now();
+  } catch (_) {
+  }
+  writeSrvs(st);
+}
 async function api(action2, extra = {}) {
   let last = "";
   for (let pass = 0; pass < 2; pass++) {
     const st = await loadServers(pass === 1);
+    if (pass === 0) await backHome();
+    const st2 = readSrvs();
+    if (st2 && pass === 0) {
+      st.idx = st2.idx;
+      st.ok = st2.ok;
+      st.okAt = st2.okAt;
+      st.homeAt = st2.homeAt;
+    }
     for (let n = 0; n < st.list.length; n++) {
       const i = (st.idx + n) % st.list.length;
       try {
@@ -1717,6 +1744,7 @@ async function switchServer() {
       st.idx = i;
       st.ok = true;
       st.okAt = Date.now();
+      st.pin = i !== homeIdx(st);
       writeSrvs(st);
       return { changed: true, host: hostOf(st.list[i]), index: i + 1, total: n };
     } catch (e) {
@@ -2071,6 +2099,8 @@ async function searchKind(kind, cats, q, limit, seen, { maxCats, deadline }) {
   return { items, failed, capped };
 }
 async function viaIndex(q, type) {
+  await backHome().catch(() => {
+  });
   const fits = (() => {
     try {
       const st = readSrvs();

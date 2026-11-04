@@ -141,7 +141,8 @@ async function loadServers(force) {
   const usable = cached && Array.isArray(cached.list) && cached.list.length;
   if (!force && usable && cached.ts && Date.now() - cached.ts < CACHE_TTL_MS) return cached;
   try {
-    const st = { ts: Date.now(), list: await fetchServerList(), idx: 0, ok: false };
+    const list = await fetchServerList();
+    const st = { ts: Date.now(), list, idx: Math.max(0, list.findIndex((s) => indexFitsServer(s.url))), ok: false };
     writeSrvs(st);
     return st;
   } catch (e) {
@@ -178,10 +179,33 @@ async function callServer(srv, action, extra) {
   return data;
 }
 
+// El servidor "de casa" es el que generó el índice de títulos (sus ids y categorías son los del índice); si no se sabe, el primero.
+function homeIdx(st) {
+  const i = st.list.findIndex((s) => indexFitsServer(s.url));
+  return i >= 0 ? i : 0;
+}
+
+// Tras un fallo se pasó a otro servidor: se vuelve al de casa en cuanto responde (se mira cada 5 min), salvo que la persona haya
+// elegido otro a mano con «Cambiar servidor».
+async function backHome() {
+  const st = await loadServers(false);
+  const home = homeIdx(st);
+  if (st.idx === home || st.pin || Date.now() - (st.homeAt || 0) < 300000) return;
+  st.homeAt = Date.now();
+  try {
+    await callServer(st.list[home], "get_vod_categories", {});
+    st.idx = home; st.ok = true; st.okAt = Date.now();
+  } catch (_) { /* sigue en el actual */ }
+  writeSrvs(st);
+}
+
 async function api(action, extra = {}) {
   let last = "";
   for (let pass = 0; pass < 2; pass++) {
     const st = await loadServers(pass === 1);
+    if (pass === 0) await backHome();
+    const st2 = readSrvs();
+    if (st2 && pass === 0) { st.idx = st2.idx; st.ok = st2.ok; st.okAt = st2.okAt; st.homeAt = st2.homeAt; }
     for (let n = 0; n < st.list.length; n++) {
       const i = (st.idx + n) % st.list.length;
       try {
@@ -253,6 +277,7 @@ export async function switchServer() {
       st.idx = i;
       st.ok = true;
       st.okAt = Date.now();
+      st.pin = i !== homeIdx(st); // elegido a mano: no se vuelve solo al de casa
       writeSrvs(st);
       return { changed: true, host: hostOf(st.list[i]), index: i + 1, total: n };
     } catch (e) { lastErr = errText(e); }
@@ -638,6 +663,7 @@ async function searchKind(kind, cats, q, limit, seen, { maxCats, deadline }) {
 
 // Primero el índice de títulos (kino.catalog). Sin catálogo, sin índice listo o sin resultados devuelve null y se busca en vivo.
 async function viaIndex(q, type) {
+  await backHome().catch(() => {});
   const fits = (() => { try { const st = readSrvs(); return indexFitsServer(st.list[st.idx].url); } catch (_) { return true; } })();
   if (!fits) return null; // el índice es de otro servidor: se busca en vivo en el activo
   const ready = indexReady();
