@@ -168,7 +168,7 @@ function langLabel(l) {
 }
 function displayTitle(raw) {
   const s = String(raw || "");
-  const out = s.replace(/^\s*\|[^|]{1,24}\|\s*/, "").replace(/\s*\[[^\]]*\]/g, "").replace(/\s*\(\s*(?:(?:19|20)\d\d|LAT|CAST|ENG|SUB|DUAL|4K|UHD|FHD|HD)\s*\)/gi, "").replace(/^\s*(?:MULTI|LAT|CAST|ENG|SUB|DUAL)\s*[:\-–]\s+/i, "").replace(/(?:\s+[-–]?\s*(?:2160p|1080p|720p|480p|4K|UHD|FHD|HDR\d*|HD|WEB-?DL|BluRay|BDRip|HDRip|x26[45]|HEVC))+\s*$/i, "").replace(/^[\s\-–—|:·•★☆▪■●]+|[\s\-–—|:·•★☆]+$/gu, "").replace(/\s+/g, " ").trim();
+  const out = s.replace(/^\s*\|[^|]{1,24}\|\s*/, "").replace(/\s*\[[^\]]*\]/g, "").replace(/\s*\(\s*(?:(?:19|20)\d\d|LAT|CAST|ENG|SUB|DUAL|4K|UHD|FHD|HD)\s*\)/gi, "").replace(/^\s*(?:MULTI|LAT|CAST|ENG|SUB|DUAL)\s*[:\-–]\s+/i, "").replace(/(?:\s+[-–]?\s*(?:2160p|1080p|720p|480p|4K|UHD|FHD|HDR\d*|HD|WEB-?DL|BluRay|BDRip|HDRip|x26[45]|HEVC))+\s*$/i, "").replace(/^[\s|:·•★☆▪■●–—-]+|[\s|:·•★☆–—-]+$/g, "").replace(/\s+/g, " ").trim();
   return out || s.trim();
 }
 var SUFFIX_LANG = { LAT: "es-419", CAST: "es-ES", ENG: "en" };

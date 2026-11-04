@@ -21,7 +21,7 @@ export function displayTitle(raw) {
     .replace(/\s*\(\s*(?:(?:19|20)\d\d|LAT|CAST|ENG|SUB|DUAL|4K|UHD|FHD|HD)\s*\)/gi, "")
     .replace(/^\s*(?:MULTI|LAT|CAST|ENG|SUB|DUAL)\s*[:\-–]\s+/i, "") // "MULTI: Jet"
     .replace(/(?:\s+[-–]?\s*(?:2160p|1080p|720p|480p|4K|UHD|FHD|HDR\d*|HD|WEB-?DL|BluRay|BDRip|HDRip|x26[45]|HEVC))+\s*$/i, "") // calidad al final
-    .replace(/^[\s\-–—|:·•★☆▪■●]+|[\s\-–—|:·•★☆]+$/gu, "") // adornos sueltos en los extremos
+    .replace(/^[\s|:·•★☆▪■●–—-]+|[\s|:·•★☆–—-]+$/g, "") // adornos sueltos en los extremos (sin /u: QuickJS no admite \- con ese flag)
     .replace(/\s+/g, " ")
     .trim();
   return out || s.trim();
