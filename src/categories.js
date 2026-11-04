@@ -7,7 +7,7 @@ import { normKey, fallbackVod, fallbackLive, GROUPS } from "./categoryRules.js";
 
 const langRank = (l) => {
   const i = LANG_ORDER.indexOf(l);
-  return i < 0 ? LANG_ORDER.length : i;
+  return i < 0 ? LANG_ORDER.length : i; // es-419 va antes que es-ES
 };
 
 // Para buscar se recorren primero los géneros.

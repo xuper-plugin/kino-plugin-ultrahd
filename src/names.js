@@ -1,10 +1,37 @@
 // Nombres de categorías: limpieza, idioma, basura, adultos, país y género. Funciones puras (sin kino).
 
-export const LANG_ORDER = ["es-419", "es-ES", "en"];
+// "es" no es un idioma de categoría: junta Latino y España (el de por defecto); el resto filtra por un solo idioma.
+export const LANG_ORDER = ["es", "es-419", "es-ES", "en", "other"];
+
+// Título para mostrar: sin etiquetas entre corchetes ([TRIAL AUDIO], [LAT]…) ni el año/idioma entre paréntesis al final: el año va en su propio campo.
+export function displayTitle(raw) {
+  const s = String(raw || "");
+  const out = s
+    .replace(/^\s*\|[^|]{1,24}\|\s*/, "") // prefijo de idioma: "| MULTI | Título"
+    .replace(/\s*\[[^\]]*\]/g, "")
+    .replace(/\s*\(\s*(?:(?:19|20)\d\d|LAT|CAST|ENG|SUB|DUAL|4K|UHD|FHD|HD)\s*\)/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return out || s.trim();
+}
 const SUFFIX_LANG = { LAT: "es-419", CAST: "es-ES", ENG: "en" };
+
+const PREFIX_LANG = { LAT: "es-419", LATINO: "es-419", LATAM: "es-419", ES: "es-ES", ESP: "es-ES", CAST: "es-ES", EN: "en", ENG: "en", US: "en", UK: "en", USA: "en" };
+
+// "| NL | Netflix Kids" -> { lang: "other", title: "NL · Netflix Kids" }; "| LAT | Acción" -> es-419. Sin prefijo no entra aquí.
+function prefixedCategory(raw) {
+  const m = raw.match(/^\s*\|\s*([^|]{1,30}?)\s*\|\s*(.+)$/);
+  if (!m) return null;
+  const code = m[1].replace(/\s*\/.*$/, "").trim();
+  const rest = m[2].split("|").map((p) => p.trim()).filter(Boolean).join(" · ");
+  const lang = PREFIX_LANG[code.toUpperCase()] || "other";
+  return { lang, title: lang === "other" ? `${code.toUpperCase()} · ${rest}` : rest };
+}
 
 export function cleanCategoryName(name) {
   const raw = String(name || "").trim();
+  const pre = prefixedCategory(raw);
+  if (pre) return pre;
   const m = raw.match(/[\s\-–]*\(\s*(LAT|CAST|ENG)\s*\)\s*$/i);
   const title = (m ? raw.slice(0, m.index) : raw).replace(/[\s\-–]+$/, "").trim();
   return { title: title || raw, lang: m ? SUFFIX_LANG[m[1].toUpperCase()] : "es-419" };
@@ -107,7 +134,9 @@ export function vodRank(title) {
 export const isCamCategory = (title) => /\bCAM\b/.test(norm(title));
 
 export const LANG_LABELS = {
+  es: ["Español", "Spanish"],
   "es-419": ["Latino", "Latin"],
   "es-ES": ["España", "Spain"],
   en: ["English", "English"],
+  other: ["Otros idiomas", "Other languages"],
 };

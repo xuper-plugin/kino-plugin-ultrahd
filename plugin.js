@@ -156,12 +156,158 @@ function rememberCard(srv, id, card) {
   writeAll(readAll().map((e) => e.srv === srv && e.id === id ? { ...e, card } : e));
 }
 
+// src/names.js
+var LANG_ORDER = ["es", "es-419", "es-ES", "en", "other"];
+function displayTitle(raw) {
+  const s = String(raw || "");
+  const out = s.replace(/^\s*\|[^|]{1,24}\|\s*/, "").replace(/\s*\[[^\]]*\]/g, "").replace(/\s*\(\s*(?:(?:19|20)\d\d|LAT|CAST|ENG|SUB|DUAL|4K|UHD|FHD|HD)\s*\)/gi, "").replace(/\s+/g, " ").trim();
+  return out || s.trim();
+}
+var SUFFIX_LANG = { LAT: "es-419", CAST: "es-ES", ENG: "en" };
+var PREFIX_LANG = { LAT: "es-419", LATINO: "es-419", LATAM: "es-419", ES: "es-ES", ESP: "es-ES", CAST: "es-ES", EN: "en", ENG: "en", US: "en", UK: "en", USA: "en" };
+function prefixedCategory(raw) {
+  const m = raw.match(/^\s*\|\s*([^|]{1,30}?)\s*\|\s*(.+)$/);
+  if (!m) return null;
+  const code = m[1].replace(/\s*\/.*$/, "").trim();
+  const rest = m[2].split("|").map((p) => p.trim()).filter(Boolean).join(" \xB7 ");
+  const lang = PREFIX_LANG[code.toUpperCase()] || "other";
+  return { lang, title: lang === "other" ? `${code.toUpperCase()} \xB7 ${rest}` : rest };
+}
+function cleanCategoryName(name) {
+  const raw = String(name || "").trim();
+  const pre = prefixedCategory(raw);
+  if (pre) return pre;
+  const m = raw.match(/[\s\-–]*\(\s*(LAT|CAST|ENG)\s*\)\s*$/i);
+  const title2 = (m ? raw.slice(0, m.index) : raw).replace(/[\s\-–]+$/, "").trim();
+  return { title: title2 || raw, lang: m ? SUFFIX_LANG[m[1].toUpperCase()] : "es-419" };
+}
+var ADULT = /(\bxxx\b|\badult[oa]?s?\b|\bporn\w*|\ber[oó]tic\w*|\bsex(o|y)?\b|\bhentai\b|\beros\b|\+\s?18|18\s?\+|\b18\s?plus\b)/i;
+var isAdultName = (name) => ADULT.test(String(name || ""));
+var KEEP_UPPER = /* @__PURE__ */ new Set(["NBA", "NFL", "NHL", "MLB", "UFC", "WNBA", "NCAAB", "PPV", "DAZN", "RFEF", "ESPN", "HBO", "CNN", "LMP", "VIX", "USA", "UK", "TV", "FHD", "HD", "LAT", "DC", "ABC", "NBC", "CBS", "TNT", "AMC", "SVT", "ITV", "BBC", "RAI", "ZDF", "CBC", "RTVE", "NHK"]);
+var LOWER_WORDS = /* @__PURE__ */ new Set(["Y", "E", "O", "A", "DE", "DEL", "LA", "LAS", "LOS", "EL", "EN", "THE", "OF", "AND"]);
+function titleCase(text2) {
+  const s = String(text2 || "");
+  if (/\p{Ll}/u.test(s)) return s;
+  let first = true;
+  return s.split(/([\s\-/]+)/).map((w) => {
+    if (w === "" || /^[\s\-/]+$/.test(w)) return w;
+    const letters = w.replace(/[^\p{L}]/gu, "");
+    const atStart = first;
+    first = false;
+    if (/\d/.test(w) || KEEP_UPPER.has(letters)) return w;
+    if (!atStart && LOWER_WORDS.has(letters)) return w.toLowerCase();
+    if (letters.length <= 2 && letters === w) return w;
+    return w.charAt(0) + w.slice(1).toLocaleLowerCase();
+  }).join("");
+}
+function prettyLiveTitle(raw) {
+  const original = String(raw || "").trim();
+  let s = original.replace(/[︎️‍]/g, "");
+  s = s.replace(/[^\p{L}\p{N}\s&+./'|,:()-]/gu, " ").replace(/\|/g, "   |   ");
+  const chunks = s.split(/\s{3,}/).map((c) => c.trim()).filter(Boolean).map((c) => {
+    if (c === "|") return "\xB7";
+    return /^(?:[\p{L}\p{N}] ){2,}[\p{L}\p{N}]$/u.test(c) ? c.replace(/ /g, "") : c.replace(/\s+/g, " ");
+  });
+  const out = chunks.join(" ").replace(/^[\s\-·|:]+|[\s\-·|:]+$/g, "").trim();
+  return out ? titleCase(out) : original;
+}
+var norm = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
+var COUNTRY_PHRASES = [
+  ["ARGENTINA", "AR"],
+  ["BRASIL", "BR"],
+  ["BRAZIL", "BR"],
+  ["BOLIVIA", "BO"],
+  ["CHILE", "CL"],
+  ["COLOMBIA", "CO"],
+  ["COSTA RICA", "CR"],
+  ["CUBA", "CU"],
+  ["CURACAO", "CW"],
+  ["ECUADOR", "EC"],
+  ["EL SALVADOR", "SV"],
+  ["GUATEMALA", "GT"],
+  ["HAITI", "HT"],
+  ["HONDURAS", "HN"],
+  ["JAMAIKA", "JM"],
+  ["JAMAICA", "JM"],
+  ["MEXICO", "MX"],
+  ["NICARAGUA", "NI"],
+  ["PANAMA", "PA"],
+  ["PARAGUAY", "PY"],
+  ["PERU", "PE"],
+  ["PUERTO RICO", "PR"],
+  ["R DOMINICANA", "DO"],
+  ["REPUBLICA DOMINICANA", "DO"],
+  ["DOMINICANA", "DO"],
+  ["URUGUAY", "UY"],
+  ["VENEZUELA", "VE"],
+  ["ESPANA", "ES"],
+  ["CANADA", "CA"],
+  ["USA", "US"],
+  ["ESTADOS UNIDOS", "US"],
+  ["FRANCE", "FR"],
+  ["GERMANY", "DE"],
+  ["ITALY", "IT"],
+  ["PORTUGAL", "PT"],
+  ["UK", "GB"],
+  ["NETHERLANDS", "NL"],
+  ["MARRUECOS", "MA"]
+].sort((a, b) => b[0].length - a[0].length);
+function countryMatch(title2) {
+  const t = norm(title2);
+  const padded = ` ${t} `;
+  for (const [phrase, cc] of COUNTRY_PHRASES) {
+    if (padded.includes(` ${phrase} `)) return { cc, exact: t === phrase || t.replace(/ \d+$/, "") === phrase, starts: t.startsWith(phrase + " ") };
+  }
+  return null;
+}
+var countryOf = (title2) => {
+  const m = countryMatch(title2);
+  return m ? m.cc : null;
+};
+function liveGenreOf(title2) {
+  const t = norm(title2);
+  if (/\b(RADIO|MUSICA|MUSIC)\b/.test(t)) return "musica";
+  if (/\b(KIDS|INFANTIL|INFANTILES|CARTOON|CARTOONS|ANIMACION|DIBUJOS)\b/.test(t)) return "infantil";
+  if (/\bANIME\b/.test(t)) return "anime";
+  if (/\b(DOCUMENTARY|DOCUMENTALES|DOCUMENTAL|SCIENCE|CULTURA)\b/.test(t)) return "documentales";
+  if (/\b(NEWS|NOTICIAS)\b/.test(t)) return "noticias";
+  if (/\b(SPORTS|SPORT|DEPORTES|FUTBOL|LEAGUE|LIGA|NBA|NFL|NHL|MLB|WNBA|UFC|NCAAB|F1|FORMULA|MOTOR|TENIS|BEISBOL|BASEBALL|CHAMPIONS|LIBERTADORES|SUDAMERICANA|PPV|EVENTOS|EVENTS|EVENT)\b/.test(t)) return "deportes";
+  if (/\b(MOVIES|CINE|PELICULAS|FILM)\b/.test(t)) return "peliculas";
+  if (/\b(SERIES|REALITY|NOVELAS)\b/.test(t)) return "series";
+  if (/\b(ENTRETENIMIENTO|ENTERTAINMENT)\b/.test(t)) return "entretenimiento";
+  return null;
+}
+var LANG_LABELS = {
+  es: ["Espa\xF1ol", "Spanish"],
+  "es-419": ["Latino", "Latin"],
+  "es-ES": ["Espa\xF1a", "Spain"],
+  en: ["English", "English"],
+  other: ["Otros idiomas", "Other languages"]
+};
+
 // src/titleIndex.js
 var BASE = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd-data/data/";
 var FORMAT = 1;
 var STATE_KEY = "idx:state";
 var DAY_MS = 24 * 3600 * 1e3;
-var BATCH = 500;
+var BATCH_MIN = 25;
+var BATCH_MAX = 500;
+var TARGET_MS = 300;
+var batchSize = 100;
+var lastBatchMs = 0;
+var timed = async (st, rows, fn) => {
+  const t0 = Date.now();
+  await fn();
+  const ms = Date.now() - t0;
+  lastBatchMs = ms;
+  if (ms < TARGET_MS / 2) batchSize = Math.min(BATCH_MAX, batchSize * 2);
+  else if (ms > TARGET_MS * 1.5) batchSize = Math.max(BATCH_MIN, Math.floor(batchSize / 2));
+  const p = st.perf || (st.perf = { b: 0, ms: 0, rows: 0 });
+  p.b++;
+  p.ms += ms;
+  p.rows += rows;
+};
+var partCache = null;
 var MIN_COVERAGE = 0.9;
 var MAX_TITLE = 300;
 var REV = /^\d{8}T\d{6}Z$/;
@@ -317,7 +463,7 @@ async function indexLabel() {
   if (!hasCatalog()) return "No cargada: este Kino no trae cat\xE1logo, la b\xFAsqueda va en vivo";
   const st = readState();
   const n = await safeCount();
-  const fmt = (x) => String(x).replace(/B(?=(d{3})+(?!d))/g, ".");
+  const fmt = (x) => String(x).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
   const ago = (ts) => {
     const m = Math.max(0, Math.round((Date.now() - ts) / 6e4));
     return m < 60 ? `${m} min` : m < 2880 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`;
@@ -329,11 +475,19 @@ async function indexLabel() {
     if (gen) parts.push("lista del " + gen);
     if (st.checked) parts.push("comprobada hace " + ago(st.checked));
     parts.push("en el aparato: " + fmt(n));
+    if (st.perf && st.perf.b) parts.push(`lote medio ${Math.round(st.perf.ms / st.perf.b)} ms (${Math.round(st.perf.rows / st.perf.b)} filas)`);
     return parts.join(" \xB7 ");
   }
   if (st && st.done && n === 0) return "Vac\xEDa: se volver\xE1 a descargar al abrir Inicio";
   if (st && st.retryAt && Date.now() < st.retryAt) return "No se pudo descargar; se reintenta sola (sin red o GitHub no responde)";
   return "No cargada todav\xEDa: se descarga al abrir Inicio";
+}
+function indexNeeded() {
+  if (!hasCatalog()) return false;
+  const st = readState();
+  if (!st || !st.done) return !(st && st.retryAt && Date.now() < st.retryAt && !st.stage);
+  if (st.stage) return true;
+  return Date.now() - (st.checked || 0) >= DAY_MS;
 }
 function indexStep(opts = {}) {
   if (!hasCatalog()) return Promise.resolve("unsupported");
@@ -444,21 +598,30 @@ async function runDelta(st, deadline) {
       return "error";
     }
     try {
-      for (let off = sg.offA; off < d.added.length; off += BATCH) {
-        if (Date.now() > deadline + 4e3) {
+      for (let off = sg.offA; off < d.added.length; ) {
+        if (Date.now() + lastBatchMs > deadline) {
           sg.offA = off;
           writeState(st);
           return "paused";
         }
-        const rows = d.added.slice(off, off + BATCH).map((e) => rowOf(e.k, e.n, e.y, e.t, e.c, st.snap));
-        await upsertKeeping(rows, true);
+        const n = batchSize;
+        const rows = d.added.slice(off, off + n).map((e) => rowOf(e.k, e.n, e.y, e.t, e.c, st.snap));
+        await timed(st, rows.length, () => upsertKeeping(rows, true));
         stats.upserted += rows.length;
+        off += n;
       }
       sg.offA = d.added.length;
-      for (let off = sg.offR; off < d.removed.length; off += BATCH) {
-        const ids = d.removed.slice(off, off + BATCH);
-        await kino.catalog.remove(ids);
+      for (let off = sg.offR; off < d.removed.length; ) {
+        if (Date.now() + lastBatchMs > deadline) {
+          sg.offR = off;
+          writeState(st);
+          return "paused";
+        }
+        const n = batchSize;
+        const ids = d.removed.slice(off, off + n);
+        await timed(st, ids.length, () => kino.catalog.remove(ids));
         stats.removed += ids.length;
+        off += n;
       }
     } catch (e) {
       if (e && e.code === "limit") {
@@ -494,7 +657,7 @@ async function runDelta(st, deadline) {
 async function runSnapshot(st, deadline) {
   const sg = st.stage;
   while (sg.next < sg.files.length) {
-    if (Date.now() + 2500 > deadline) {
+    if (!(partCache && sg.offset > 0) && Date.now() + 1200 > deadline) {
       writeState(st);
       return "paused";
     }
@@ -502,7 +665,11 @@ async function runSnapshot(st, deadline) {
     const kind = file.startsWith("movies") ? "m" : "s";
     let part;
     try {
-      part = validPart(await download(file, hash, 1));
+      if (partCache && partCache.file === file && partCache.hash === hash) part = partCache.part;
+      else {
+        part = validPart(await download(file, hash, 1));
+        partCache = { file, hash, part };
+      }
     } catch (_) {
       sg.fails++;
       if (sg.fails >= 3) {
@@ -514,20 +681,22 @@ async function runSnapshot(st, deadline) {
       writeState(st);
       return "error";
     }
-    for (let off = sg.offset; off < part.names.length; off += BATCH) {
-      if (Date.now() > deadline + 4e3) {
+    for (let off = sg.offset; off < part.names.length; ) {
+      if (Date.now() + lastBatchMs > deadline) {
         sg.offset = off;
         writeState(st);
         return "paused";
       }
+      const n = batchSize;
       const rows = [];
-      for (let i = off; i < Math.min(off + BATCH, part.names.length); i++) {
+      for (let i = off; i < Math.min(off + n, part.names.length); i++) {
         const title2 = part.names[i];
         if (title2 && title2.length <= MAX_TITLE) rows.push(rowOf(kind, title2, Number(part.year[i]) || 0, Number(part.tmdb[i]) || 0, part.cats[i], st.snap));
       }
       try {
-        await upsertKeeping(rows, !sg.fresh);
+        await timed(st, rows.length, () => upsertKeeping(rows, !sg.fresh));
         stats.upserted += rows.length;
+        off += n;
       } catch (e) {
         if (e && e.code === "limit") {
           st.capped = true;
@@ -540,6 +709,7 @@ async function runSnapshot(st, deadline) {
       }
     }
     if (st.capped) break;
+    partCache = null;
     sg.next++;
     sg.offset = 0;
     sg.fails = 0;
@@ -605,7 +775,7 @@ function itemOfRow(row) {
   return {
     id: row.id,
     ref: `idx:${movie ? "m" : "s"}:${findKey(row.title)}|${year}|${cats.join(",")}`,
-    title: row.title,
+    title: displayTitle(row.title),
     kind: movie ? "movie" : "series",
     year: year ? String(year) : void 0,
     ...t > 0 ? { ids: { tmdb: t } } : {}
@@ -742,10 +912,11 @@ async function enrichTmdb(items, { max = 24, budgetMs = 2500 } = {}) {
       const find = findKey(name);
       if (!find) continue;
       const tv = it.kind === "series";
-      const id = idOf(tv ? "series" : "movies", find, year);
+      const id = /^[ms]-/.test(String(it.id)) ? String(it.id) : idOf(tv ? "series" : "movies", find, year);
+      const shown = displayTitle(name);
       if (seen.has(id)) continue;
       seen.add(id);
-      cands.push({ item: it, id, name, find, year, tv, kind: tv ? "series" : "movies" });
+      cands.push({ item: it, id, name: shown, find: findKey(shown), year, tv, kind: tv ? "series" : "movies" });
     }
     if (!cands.length) return 0;
     const rows = /* @__PURE__ */ new Map();
@@ -834,117 +1005,6 @@ async function enrichTmdb(items, { max = 24, budgetMs = 2500 } = {}) {
     return 0;
   }
 }
-
-// src/names.js
-var LANG_ORDER = ["es-419", "es-ES", "en"];
-var SUFFIX_LANG = { LAT: "es-419", CAST: "es-ES", ENG: "en" };
-function cleanCategoryName(name) {
-  const raw = String(name || "").trim();
-  const m = raw.match(/[\s\-–]*\(\s*(LAT|CAST|ENG)\s*\)\s*$/i);
-  const title2 = (m ? raw.slice(0, m.index) : raw).replace(/[\s\-–]+$/, "").trim();
-  return { title: title2 || raw, lang: m ? SUFFIX_LANG[m[1].toUpperCase()] : "es-419" };
-}
-var ADULT = /(\bxxx\b|\badult[oa]?s?\b|\bporn\w*|\ber[oó]tic\w*|\bsex(o|y)?\b|\bhentai\b|\beros\b|\+\s?18|18\s?\+|\b18\s?plus\b)/i;
-var isAdultName = (name) => ADULT.test(String(name || ""));
-var KEEP_UPPER = /* @__PURE__ */ new Set(["NBA", "NFL", "NHL", "MLB", "UFC", "WNBA", "NCAAB", "PPV", "DAZN", "RFEF", "ESPN", "HBO", "CNN", "LMP", "VIX", "USA", "UK", "TV", "FHD", "HD", "LAT", "DC", "ABC", "NBC", "CBS", "TNT", "AMC", "SVT", "ITV", "BBC", "RAI", "ZDF", "CBC", "RTVE", "NHK"]);
-var LOWER_WORDS = /* @__PURE__ */ new Set(["Y", "E", "O", "A", "DE", "DEL", "LA", "LAS", "LOS", "EL", "EN", "THE", "OF", "AND"]);
-function titleCase(text2) {
-  const s = String(text2 || "");
-  if (/\p{Ll}/u.test(s)) return s;
-  let first = true;
-  return s.split(/([\s\-/]+)/).map((w) => {
-    if (w === "" || /^[\s\-/]+$/.test(w)) return w;
-    const letters = w.replace(/[^\p{L}]/gu, "");
-    const atStart = first;
-    first = false;
-    if (/\d/.test(w) || KEEP_UPPER.has(letters)) return w;
-    if (!atStart && LOWER_WORDS.has(letters)) return w.toLowerCase();
-    if (letters.length <= 2 && letters === w) return w;
-    return w.charAt(0) + w.slice(1).toLocaleLowerCase();
-  }).join("");
-}
-function prettyLiveTitle(raw) {
-  const original = String(raw || "").trim();
-  let s = original.replace(/[︎️‍]/g, "");
-  s = s.replace(/[^\p{L}\p{N}\s&+./'|,:()-]/gu, " ").replace(/\|/g, "   |   ");
-  const chunks = s.split(/\s{3,}/).map((c) => c.trim()).filter(Boolean).map((c) => {
-    if (c === "|") return "\xB7";
-    return /^(?:[\p{L}\p{N}] ){2,}[\p{L}\p{N}]$/u.test(c) ? c.replace(/ /g, "") : c.replace(/\s+/g, " ");
-  });
-  const out = chunks.join(" ").replace(/^[\s\-·|:]+|[\s\-·|:]+$/g, "").trim();
-  return out ? titleCase(out) : original;
-}
-var norm = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase().replace(/[^A-Z0-9]+/g, " ").trim();
-var COUNTRY_PHRASES = [
-  ["ARGENTINA", "AR"],
-  ["BRASIL", "BR"],
-  ["BRAZIL", "BR"],
-  ["BOLIVIA", "BO"],
-  ["CHILE", "CL"],
-  ["COLOMBIA", "CO"],
-  ["COSTA RICA", "CR"],
-  ["CUBA", "CU"],
-  ["CURACAO", "CW"],
-  ["ECUADOR", "EC"],
-  ["EL SALVADOR", "SV"],
-  ["GUATEMALA", "GT"],
-  ["HAITI", "HT"],
-  ["HONDURAS", "HN"],
-  ["JAMAIKA", "JM"],
-  ["JAMAICA", "JM"],
-  ["MEXICO", "MX"],
-  ["NICARAGUA", "NI"],
-  ["PANAMA", "PA"],
-  ["PARAGUAY", "PY"],
-  ["PERU", "PE"],
-  ["PUERTO RICO", "PR"],
-  ["R DOMINICANA", "DO"],
-  ["REPUBLICA DOMINICANA", "DO"],
-  ["DOMINICANA", "DO"],
-  ["URUGUAY", "UY"],
-  ["VENEZUELA", "VE"],
-  ["ESPANA", "ES"],
-  ["CANADA", "CA"],
-  ["USA", "US"],
-  ["ESTADOS UNIDOS", "US"],
-  ["FRANCE", "FR"],
-  ["GERMANY", "DE"],
-  ["ITALY", "IT"],
-  ["PORTUGAL", "PT"],
-  ["UK", "GB"],
-  ["NETHERLANDS", "NL"],
-  ["MARRUECOS", "MA"]
-].sort((a, b) => b[0].length - a[0].length);
-function countryMatch(title2) {
-  const t = norm(title2);
-  const padded = ` ${t} `;
-  for (const [phrase, cc] of COUNTRY_PHRASES) {
-    if (padded.includes(` ${phrase} `)) return { cc, exact: t === phrase || t.replace(/ \d+$/, "") === phrase, starts: t.startsWith(phrase + " ") };
-  }
-  return null;
-}
-var countryOf = (title2) => {
-  const m = countryMatch(title2);
-  return m ? m.cc : null;
-};
-function liveGenreOf(title2) {
-  const t = norm(title2);
-  if (/\b(RADIO|MUSICA|MUSIC)\b/.test(t)) return "musica";
-  if (/\b(KIDS|INFANTIL|INFANTILES|CARTOON|CARTOONS|ANIMACION|DIBUJOS)\b/.test(t)) return "infantil";
-  if (/\bANIME\b/.test(t)) return "anime";
-  if (/\b(DOCUMENTARY|DOCUMENTALES|DOCUMENTAL|SCIENCE|CULTURA)\b/.test(t)) return "documentales";
-  if (/\b(NEWS|NOTICIAS)\b/.test(t)) return "noticias";
-  if (/\b(SPORTS|SPORT|DEPORTES|FUTBOL|LEAGUE|LIGA|NBA|NFL|NHL|MLB|WNBA|UFC|NCAAB|F1|FORMULA|MOTOR|TENIS|BEISBOL|BASEBALL|CHAMPIONS|LIBERTADORES|SUDAMERICANA|PPV|EVENTOS|EVENTS|EVENT)\b/.test(t)) return "deportes";
-  if (/\b(MOVIES|CINE|PELICULAS|FILM)\b/.test(t)) return "peliculas";
-  if (/\b(SERIES|REALITY|NOVELAS)\b/.test(t)) return "series";
-  if (/\b(ENTRETENIMIENTO|ENTERTAINMENT)\b/.test(t)) return "entretenimiento";
-  return null;
-}
-var LANG_LABELS = {
-  "es-419": ["Latino", "Latin"],
-  "es-ES": ["Espa\xF1a", "Spain"],
-  en: ["English", "English"]
-};
 
 // src/categoryTable.js
 var VOD = {
@@ -1553,6 +1613,11 @@ async function activeServer() {
 }
 var lastErr = "";
 var errText = (e) => String(e && (e.message || e.code) || e).slice(0, 90);
+var img = (u) => {
+  const s = typeof u === "string" ? u.trim() : "";
+  if (!s) return void 0;
+  return /^http:\/\//i.test(s) ? "https://" + s.slice(7).replace(/^([^/:]+):80(?=\/|$)/, "$1") : s;
+};
 var hostOf = (srv) => {
   try {
     return new URL(srv.url).host;
@@ -1678,7 +1743,7 @@ var ratingOf = (m) => {
 function vodItem(m, adult) {
   const id = String(m.stream_id || "");
   if (!id) return null;
-  const title2 = String(m.name || m.title || "").trim();
+  const title2 = displayTitle(m.name || m.title);
   if (!title2) return null;
   const ext = String(m.container_extension || "mp4");
   return {
@@ -1686,7 +1751,7 @@ function vodItem(m, adult) {
     ref: "vod:" + id + ":" + ext,
     title: title2,
     kind: "movie",
-    poster: m.stream_icon || m.cover || void 0,
+    poster: img(m.stream_icon || m.cover),
     year: m.year ? String(m.year) : m.release_date ? String(m.release_date).slice(0, 4) : void 0,
     rating: ratingOf(m),
     overview: m.plot ? String(m.plot).slice(0, 500) : void 0,
@@ -1697,14 +1762,14 @@ function vodItem(m, adult) {
 function seriesItem(s, adult) {
   const id = String(s.series_id || "");
   if (!id) return null;
-  const title2 = String(s.name || s.title || "").trim();
+  const title2 = displayTitle(s.name || s.title);
   if (!title2) return null;
   return {
     id: "series-" + id,
     ref: "series:" + id,
     title: title2,
     kind: "series",
-    poster: s.cover || s.poster || void 0,
+    poster: img(s.cover || s.poster),
     year: s.year ? String(s.year) : s.release_date ? String(s.release_date).slice(0, 4) : void 0,
     rating: ratingOf(s),
     overview: s.plot ? String(s.plot).slice(0, 500) : void 0,
@@ -1811,13 +1876,20 @@ var itemOf = (kind, x, adult) => kind === "vod" ? vodItem(x, adult) : seriesItem
 async function loadRailsInfo(kind, maxRails, perRail, opts = {}) {
   const vod = kind === "vod";
   let cats = await mergedVod(kind);
-  const langs = LANG_ORDER.filter((l) => cats.some((c) => c.lang === l));
+  const hasEs = cats.some((c) => c.lang === "es-419" || c.lang === "es-ES");
+  const langs = LANG_ORDER.filter((l) => l === "es" ? hasEs : cats.some((c) => c.lang === l));
   const lang = opts.lang && langs.includes(opts.lang) ? opts.lang : langs[0] || null;
-  const inLang = lang ? cats.filter((c) => c.lang === lang) : cats;
+  let inLang = cats;
+  if (lang === "es") {
+    const seenTitle = /* @__PURE__ */ new Set();
+    inLang = cats.filter((c) => (c.lang === "es-419" || c.lang === "es-ES") && !seenTitle.has(c.title.toLowerCase()) && seenTitle.add(c.title.toLowerCase()));
+  } else if (lang) inLang = cats.filter((c) => c.lang === lang);
   const ordered = opts.home ? homeOrder(inLang) : inLang.filter((c) => !c.adult);
   const offset = Math.max(0, opts.offset || 0);
-  const plain = ordered.slice(offset, offset + maxRails);
-  const hasMore = ordered.length > offset + maxRails;
+  const only = opts.only ? String(opts.only) : "";
+  const plain = only ? inLang.filter((c) => c.id === only && !c.adult).slice(0, 1) : ordered.slice(offset, offset + maxRails);
+  const hasMore = !only && ordered.length > offset + maxRails;
+  const catsList = inLang.filter((c) => !c.adult).map((c) => ({ id: c.id, title: c.title }));
   const chosen = opts.home || offset > 0 ? plain : [...plain, ...inLang.filter((c) => c.adult).slice(0, 1)];
   const fetched = await pool(chosen, 3, async (cat) => {
     try {
@@ -1854,10 +1926,10 @@ async function loadRailsInfo(kind, maxRails, perRail, opts = {}) {
   }
   if (!rails.length && failed) throw kino.error("unavailable", "ninguna categor\xEDa carg\xF3", { userMessage: "No se pudo cargar el cat\xE1logo." });
   await enrichTmdb(rails.slice(0, vod ? 2 : 1).flatMap((r) => r.items.slice(0, 8)), { max: vod ? 16 : 8, budgetMs: 2500 });
-  return { rails, langs, lang, failed, hasMore, next: offset + maxRails };
+  return { rails, langs, lang, failed, hasMore, next: offset + maxRails, cats: catsList };
 }
 async function home() {
-  const indexing = indexStep({ budgetMs: 7e3 });
+  const indexing = indexStep({ budgetMs: 1500 });
   const vod = await loadRailsInfo("vod", 7, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
   const series = await loadRailsInfo("series", 4, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
   const live = await countryRow().catch(() => null);
@@ -1924,7 +1996,7 @@ async function searchKind(kind, cats, q, limit, seen, { maxCats, deadline }) {
 }
 async function viaIndex(q, type) {
   const ready = indexReady();
-  const [found2] = await Promise.all([ready ? indexSearch(q, type) : null, !ready || indexStale() ? indexStep({ budgetMs: ready ? 3e3 : 4e3 }) : null]);
+  const [found2] = await Promise.all([ready ? indexSearch(q, type) : null, !ready || indexStale() ? indexStep({ budgetMs: 1500 }) : null]);
   const res = found2 || (!ready && indexReady() ? await indexSearch(q, type) : null);
   if (!res || !res.items.length) return null;
   await enrichTmdb(res.items.slice(0, 20), { max: 20, budgetMs: 2500 });
@@ -1972,7 +2044,7 @@ async function episodes(ref) {
   const info = data.info || {};
   const seriesInfo = {
     title: info.name ? String(info.name) : void 0,
-    poster: info.cover || info.movie_image || void 0,
+    poster: img(info.cover || info.movie_image),
     overview: info.plot ? String(info.plot).slice(0, 500) : void 0,
     year: info.year ? String(info.year) : void 0,
     rating: info.rating ? parseFloat(info.rating) || void 0 : void 0,
@@ -2027,7 +2099,7 @@ function liveItem(s, categoryId, adult) {
     id: "live-" + id,
     title: title2,
     ref: "live:" + id,
-    logo: s.stream_icon || void 0,
+    logo: img(s.stream_icon),
     number: parseInt(s.num, 10) || void 0,
     categoryId: String(categoryId || s.category_id || ""),
     ...adult ? { adult: true } : {}
@@ -2206,6 +2278,8 @@ var TEXTS = Object.freeze({
   noResults: ["No encontramos nada con esas palabras.", "Nothing found for those words."],
   searchedBefore: ["Buscado antes", "Searched before"],
   retry: ["Reintentar", "Retry"],
+  category: ["Categor\xEDa", "Category"],
+  allCats: ["Todas las categor\xEDas", "All categories"],
   more: ["Cargar m\xE1s categor\xEDas", "Load more categories"],
   back: ["Atr\xE1s", "Back"],
   close: ["Cerrar", "Close"],
@@ -2417,6 +2491,16 @@ function browseView({ tab, data, recent, country, loading, failed, device = "pho
   const body = [];
   const chips = data && data.langs && data.langs.length > 1 && active !== "live" ? langChips(data.langs, data.lang) : null;
   if (chips) body.push(chips);
+  if (data && data.cats && data.cats.length > 1 && active !== "live" && active !== "home") {
+    body.push({
+      type: "DropdownButton",
+      key: "vcat",
+      ...twin("category", "labelText"),
+      value: data.catSel || "",
+      onChanged: "vcat",
+      options: [{ value: "", ...twin("allCats", "label") }, ...data.cats.slice(0, 200).map((c) => ({ value: c.id, label: c.title, labelEn: c.title }))]
+    });
+  }
   if (data) {
     if (data.slides.length > 0) body.push(hero(data.slides));
     if (active === "home" && recent.length > 0) body.push(rail({ items: recent }, "recent", twin("recent", "title")));
@@ -2462,10 +2546,10 @@ var searchForm = (tv, query, key, field, event, hintKey, goKey) => ({
   onSubmitted: event,
   gap: 8,
   children: tv ? [{ type: "Row", key: key + "Row", gap: 16, crossAxisAlignment: "center", children: [
-    { type: "TextField", key: field, kind: "text", value: query, ...twin(hintKey, "labelText"), maxLength: 100, autofocus: field === "q", weight: 1 },
+    { type: "TextField", key: field, kind: "text", value: query, ...twin(hintKey, "labelText"), maxLength: 100, autofocus: field === "q", onSubmitted: event, weight: 1 },
     { type: "ElevatedButton", key: goKey, ...twin("search", "labelText"), icon: "search", submit: true }
   ] }] : [
-    { type: "TextField", key: field, kind: "text", value: query, ...twin(hintKey, "labelText"), maxLength: 100, autofocus: field === "q" },
+    { type: "TextField", key: field, kind: "text", value: query, ...twin(hintKey, "labelText"), maxLength: 100, autofocus: field === "q", onSubmitted: event },
     { type: "ElevatedButton", key: goKey, ...twin("search", "labelText"), icon: "search", submit: true }
   ]
 });
@@ -2477,7 +2561,7 @@ var backBar = (tv, extra) => ({
   leading: barButton("back", "arrow_back", "back", "back"),
   ...extra
 });
-function searchView({ query, status, items, partial = false, history = [], device = "phone" }) {
+function searchView({ query, status, items, enriching = false, partial = false, history = [], device = "phone" }) {
   const tv = device === "tv";
   const form = () => searchForm(tv, query, "searchForm", "q", "search", "searchHint", "searchGo");
   const body = tv ? [] : [form()];
@@ -2497,7 +2581,7 @@ function searchView({ query, status, items, partial = false, history = [], devic
     type: "Scaffold",
     appBar: backBar(tv, tv ? { title: form() } : twin("searchTitle", "title")),
     body: { type: "SingleChildScrollView", key: "search-page", children: [{ type: "Column", padding: { compact: 12, expanded: 24 }, gap: 16, children: body }] },
-    ...status === "loading" ? { every: { ms: 1e3, event: "stick" } } : {}
+    ...status === "loading" ? { every: { ms: 1e3, event: "stick" } } : enriching ? { every: { ms: 1500, event: "senrich" } } : {}
   };
 }
 function liveView({ cats, cat, items, query = "", searching = false, partial = false, failed = false, device = "phone" }) {
@@ -2660,9 +2744,7 @@ var channelCard = (i) => ({ id: i.id, ref: i.ref, title: i.title, kind: "live", 
 async function loadVodTab(tab, lang, { home: home2 = false, offset = 0 } = {}) {
   const kind = tab === "movies" ? "vod" : "series";
   const maxRails = home2 ? tab === "movies" ? 7 : 4 : RAILS_PER_TAB;
-  const indexing = home2 ? indexStep({ budgetMs: 6e3 }) : null;
   const info = await loadRailsInfo(kind, maxRails, RAIL_ITEMS, { lang, home: home2, offset });
-  if (indexing) await indexing;
   const wantFeatured = home2 && tab === "series" ? 0 : FEATURED;
   const featured = info.rails.flatMap((r) => r.items).filter((i) => i.overview).slice(0, wantFeatured);
   if (featured.length) await enrichFeatured(kind, featured, wantFeatured);
@@ -2671,7 +2753,7 @@ async function loadVodTab(tab, lang, { home: home2 = false, offset = 0 } = {}) {
   const prev = offset > 0 ? memo.get(key) : null;
   const have = new Set(prev ? prev.rails.map((r) => r.id) : []);
   const fresh = railCards(rails).filter((r) => !have.has(r.id));
-  memo.set(key, { slides: prev ? prev.slides : slidesOf(rails), rails: prev ? [...prev.rails, ...fresh] : fresh, langs: info.langs, lang: info.lang, partial: info.failed > 0, hasMore: !home2 && !!info.hasMore, next: info.next });
+  memo.set(key, { slides: prev ? prev.slides : slidesOf(rails), rails: prev ? [...prev.rails, ...fresh] : fresh, langs: info.langs, lang: info.lang, partial: info.failed > 0, hasMore: !home2 && !!info.hasMore, next: info.next, cats: prev ? prev.cats : info.cats });
 }
 async function loadLiveTab() {
   const cats = (await liveCategories()).slice(0, RAILS_PER_TAB);
@@ -2718,7 +2800,7 @@ async function loadRecent() {
 }
 var countryOn = () => homeCountry() !== "none";
 function unitsFor(tab, lang) {
-  if (tab === "home") return [`home:movies:${lang}`, `home:series:${lang}`, ...countryOn() ? ["country"] : [], "recent"];
+  if (tab === "home") return [`home:movies:${lang}`, `home:series:${lang}`, ...countryOn() ? ["country"] : [], "recent", "index"];
   return [tab === "live" ? "tab:live" : `tab:${tab}:${lang}`];
 }
 function memoKey(unit) {
@@ -2729,6 +2811,7 @@ function memoKey(unit) {
 function isDone(unit) {
   if (unit === "country") return countryCards !== null;
   if (unit === "recent") return recentCards !== null;
+  if (unit === "index") return !indexNeeded();
   return memo.has(memoKey(unit));
 }
 function pendingUnit(state, tab, device) {
@@ -2741,15 +2824,22 @@ async function runUnit(unit) {
     const row = await countryRow(20);
     countryCards = row ? row.items.map(cardOf) : [];
   } else if (unit === "recent") await loadRecent();
-  else {
+  else if (unit === "index") {
+    const out = await indexStep({ budgetMs: 2500 });
+    if (out === "error" || out === "wait") throw new Error("\xEDndice: " + out);
+  } else {
     const [prefix, tab, lang] = unit.split(":");
     if (tab === "live") await loadLiveTab();
     else await loadVodTab(tab, lang, { home: prefix === "home" });
   }
 }
-function tabData(tab, lang) {
+function tabData(tab, lang, state = {}) {
   if (tab === "live") return memo.get("live") || null;
-  if (tab !== "home") return memo.get(`${tab}:${lang}`) || null;
+  if (tab !== "home") {
+    const base = memo.get(`${tab}:${lang}`) || null;
+    const one = base && state.cat ? onlyCat.get(`${tab}:${lang}:${state.cat}`) : null;
+    return one ? { ...base, rails: one.rails, hasMore: false, catSel: state.cat } : base ? { ...base, catSel: "" } : null;
+  }
   const m = memo.get(`home-movies:${lang}`);
   const s = memo.get(`home-series:${lang}`);
   if (!m && !s) return null;
@@ -2765,7 +2855,7 @@ function mainView(ctx) {
   const state = ctx.state || {};
   const tab = tabOf(state, ctx.route);
   const lang = wantedLang(state);
-  const data = tabData(tab, lang);
+  const data = tabData(tab, lang, state);
   const failed = unitsFor(tab, lang).some((u) => state.failed && state.failed[u]);
   return browseView({
     tab,
@@ -2787,7 +2877,8 @@ async function screen(ctx) {
       const query = typeof state.sq === "string" ? state.sq : "";
       const items = found && found.q === query ? found.items : null;
       const status = query === "" ? "idle" : state.sstate === "fail" ? "fail" : items ? "done" : "loading";
-      return searchView({ query, status, items, partial: !!(found && found.q === query && found.partial), history: query === "" ? readHistory() : [], device: c.device });
+      const enriching = !!(found && found.q === query && items && tmdbAvailable() && found.enr < found.raw.length);
+      return searchView({ query, status, items, enriching, partial: !!(found && found.q === query && found.partial), history: query === "" ? readHistory() : [], device: c.device });
     }
     if (name === "live") {
       const cur = typeof state.lcat === "string" ? state.lcat : liveCats2 && liveCats2[0] ? liveCats2[0].id : null;
@@ -2815,6 +2906,7 @@ async function screen(ctx) {
 }
 var cardsOf = (items) => (Array.isArray(items) ? items : []).filter((i) => i && typeof i.id === "string" && typeof i.ref === "string").slice(0, CHANNELS_CAP).map(cardOf);
 var bump = (state) => ({ n: (state.n || 0) + 1 });
+var onlyCat = /* @__PURE__ */ new Map();
 var events = {
   open({ route, state }) {
     if (route && route.name && route.name !== "main") return null;
@@ -2831,7 +2923,7 @@ var events = {
   lang({ value, state }) {
     if (!LANG_ORDER.includes(value)) return null;
     setStored(LANG_KEY, value);
-    return { state: { lang: value, ...bump(state), failed: null } };
+    return { state: { lang: value, cat: null, ...bump(state), failed: null } };
   },
   retry({ state }) {
     const tab = tabOf(state);
@@ -2841,6 +2933,20 @@ var events = {
       if (memo.has(key) && memo.get(key).partial) memo.delete(key);
     }
     return { state: { failed: null, ...bump(state) } };
+  },
+  async vcat({ value, state }) {
+    const tab = tabOf(state);
+    if (tab === "live" || tab === "home") return null;
+    const id = typeof value === "string" ? value : "";
+    if (id === "") return { state: { cat: null, ...bump(state) } };
+    const lang = wantedLang(state);
+    const key = `${tab}:${lang}:${id}`;
+    if (!onlyCat.has(key)) {
+      const info = await loadRailsInfo(tab === "movies" ? "vod" : "series", 1, 60, { lang, only: id });
+      onlyCat.set(key, { rails: railCards(info.rails.map((r) => ({ ...r, items: r.items.map(withFicha) }))) });
+    }
+    cacheKey = serverKey();
+    return { state: { cat: id, ...bump(state) } };
   },
   async more({ state }) {
     const tab = tabOf(state);
@@ -2869,10 +2975,20 @@ var events = {
     return { route: { push: "search" }, state: { sq: "", sstate: null } };
   },
   search({ value, route }) {
-    const q = value && typeof value.q === "string" ? value.q.trim().slice(0, 100) : "";
+    const raw = typeof value === "string" ? value : value && typeof value.q === "string" ? value.q : "";
+    const q = raw.trim().slice(0, 100);
     if (q === "") return null;
     const state = { sq: q, sstate: "loading" };
     return route && route.name === "search" ? { state } : { route: { push: "search" }, state };
+  },
+  // Pósters del resto de los resultados: 20 por tick (límite de TMDB de Kino), mientras el usuario mira los primeros.
+  async senrich({ state }) {
+    if (!found || !found.raw) return null;
+    const slice = found.raw.slice(found.enr, found.enr + 20);
+    found.enr += 20;
+    if (slice.length) await enrichTmdb(slice, { max: 20, budgetMs: 2500 });
+    found.items = found.raw.map(cardOf);
+    return { state: { senr: (state.senr || 0) + 1 } };
   },
   async stick({ state }) {
     const q = typeof state.sq === "string" ? state.sq : "";
@@ -2880,7 +2996,8 @@ var events = {
     if (found && found.q === q) return { state: { sstate: "done" } };
     try {
       const out = await searchDetailed({ q }, { budgetMs: 14e3 });
-      found = { q, items: out.items.slice(0, 60).map(cardOf), partial: out.partial };
+      const raw = out.items.slice(0, 60);
+      found = { q, raw, enr: 20, items: raw.map(cardOf), partial: out.partial };
       rememberFound(found.items);
       cacheKey = serverKey();
       return { state: { sstate: "done" } };
@@ -2933,7 +3050,8 @@ var events = {
     return { state: { lcat: cur } };
   },
   lsearch({ value }) {
-    const q = value && typeof value.lq === "string" ? value.lq.trim().slice(0, 100) : "";
+    const raw = typeof value === "string" ? value : value && typeof value.lq === "string" ? value.lq : "";
+    const q = raw.trim().slice(0, 100);
     return { state: { lq: q === "" ? null : q } };
   },
   lcat({ value }) {

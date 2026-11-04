@@ -3,6 +3,7 @@
 // lleva ninguna). Cada título se consulta una vez; los que no coinciden se reintentan pasados 14 días. Si no hay tiempo, se
 // devuelve lo que hay y el resto queda para la próxima (Kino ya guarda en su caché lo que llegó a pedirse).
 import { findKey, cleanTitle, idOf, dataOf } from "./titleIndex.js";
+import { displayTitle } from "./names.js";
 import { get as sget, put } from "./store.js";
 
 const DAY_MS = 86400000;
@@ -85,10 +86,11 @@ export async function enrichTmdb(items, { max = 24, budgetMs = 2500 } = {}) {
       const find = findKey(name);
       if (!find) continue;
       const tv = it.kind === "series";
-      const id = idOf(tv ? "series" : "movies", find, year);
+      const id = /^[ms]-/.test(String(it.id)) ? String(it.id) : idOf(tv ? "series" : "movies", find, year); // un resultado del índice ya trae su id de fila
+      const shown = displayTitle(name); // sin [TRIAL AUDIO] y similares: así busca y compara TMDB
       if (seen.has(id)) continue;
       seen.add(id);
-      cands.push({ item: it, id, name, find, year, tv, kind: tv ? "series" : "movies" });
+      cands.push({ item: it, id, name: shown, find: findKey(shown), year, tv, kind: tv ? "series" : "movies" });
     }
     if (!cands.length) return 0;
 

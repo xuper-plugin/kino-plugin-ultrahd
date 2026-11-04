@@ -6,7 +6,7 @@ import { noteRecent } from "./recent.js";
 import { put } from "./store.js";
 import { indexSearch, indexStep, indexReady, indexStale, resolveIdxRef, indexLabel } from "./titleIndex.js";
 import { enrichTmdb } from "./tmdbLazy.js";
-import { LANG_ORDER, titleCase, countryMatch, COUNTRY_PHRASES } from "./names.js";
+import { LANG_ORDER, displayTitle, titleCase, countryMatch, COUNTRY_PHRASES } from "./names.js";
 import { mergeVod, mergeLive, searchOrder, homeOrder } from "./categories.js";
 
 const BOOTSTRAP_URL = "http://vegetatvv2.duckdns.org/bootstrap.php";
@@ -216,6 +216,12 @@ async function activeServer() {
 
 let lastErr = "";
 const errText = (e) => String((e && (e.message || e.code)) || e).slice(0, 90);
+// Kino solo carga imágenes por HTTPS: un logo http se pide por https (si ese host no lo sirve, sale sin imagen como antes).
+const img = (u) => {
+  const s = typeof u === "string" ? u.trim() : "";
+  if (!s) return undefined;
+  return /^http:\/\//i.test(s) ? "https://" + s.slice(7).replace(/^([^/:]+):80(?=\/|$)/, "$1") : s;
+};
 const hostOf = (srv) => {
   try { return new URL(srv.url).host; } catch (_) { return ""; }
 };
@@ -345,7 +351,7 @@ const ratingOf = (m) => {
 function vodItem(m, adult) {
   const id = String(m.stream_id || "");
   if (!id) return null;
-  const title = String(m.name || m.title || "").trim();
+  const title = displayTitle(m.name || m.title);
   if (!title) return null;
   const ext = String(m.container_extension || "mp4");
   return {
@@ -353,7 +359,7 @@ function vodItem(m, adult) {
     ref: "vod:" + id + ":" + ext,
     title,
     kind: "movie",
-    poster: m.stream_icon || m.cover || undefined,
+    poster: img(m.stream_icon || m.cover),
     year: m.year ? String(m.year) : m.release_date ? String(m.release_date).slice(0, 4) : undefined,
     rating: ratingOf(m),
     overview: m.plot ? String(m.plot).slice(0, 500) : undefined,
@@ -365,14 +371,14 @@ function vodItem(m, adult) {
 function seriesItem(s, adult) {
   const id = String(s.series_id || "");
   if (!id) return null;
-  const title = String(s.name || s.title || "").trim();
+  const title = displayTitle(s.name || s.title);
   if (!title) return null;
   return {
     id: "series-" + id,
     ref: "series:" + id,
     title,
     kind: "series",
-    poster: s.cover || s.poster || undefined,
+    poster: img(s.cover || s.poster),
     year: s.year ? String(s.year) : s.release_date ? String(s.release_date).slice(0, 4) : undefined,
     rating: ratingOf(s),
     overview: s.plot ? String(s.plot).slice(0, 500) : undefined,
@@ -499,14 +505,22 @@ const itemOf = (kind, x, adult) => (kind === "vod" ? vodItem(x, adult) : seriesI
 export async function loadRailsInfo(kind, maxRails, perRail, opts = {}) {
   const vod = kind === "vod";
   let cats = await mergedVod(kind);
-  const langs = LANG_ORDER.filter((l) => cats.some((c) => c.lang === l));
+  const hasEs = cats.some((c) => c.lang === "es-419" || c.lang === "es-ES");
+  const langs = LANG_ORDER.filter((l) => (l === "es" ? hasEs : cats.some((c) => c.lang === l)));
   const lang = opts.lang && langs.includes(opts.lang) ? opts.lang : langs[0] || null;
-  const inLang = lang ? cats.filter((c) => c.lang === lang) : cats;
+  let inLang = cats;
+  if (lang === "es") {
+    // Latino y España mezclados: una fila por título de categoría (si están en los dos, la de Latino).
+    const seenTitle = new Set();
+    inLang = cats.filter((c) => (c.lang === "es-419" || c.lang === "es-ES") && !seenTitle.has(c.title.toLowerCase()) && seenTitle.add(c.title.toLowerCase()));
+  } else if (lang) inLang = cats.filter((c) => c.lang === lang);
   // Con el 18+ encendido, una fila adulta (marcada) se suma al final aunque pase del tope.
   const ordered = opts.home ? homeOrder(inLang) : inLang.filter((c) => !c.adult);
   const offset = Math.max(0, opts.offset || 0);
-  const plain = ordered.slice(offset, offset + maxRails);
-  const hasMore = ordered.length > offset + maxRails;
+  const only = opts.only ? String(opts.only) : "";
+  const plain = only ? inLang.filter((c) => c.id === only && !c.adult).slice(0, 1) : ordered.slice(offset, offset + maxRails);
+  const hasMore = !only && ordered.length > offset + maxRails;
+  const catsList = inLang.filter((c) => !c.adult).map((c) => ({ id: c.id, title: c.title }));
   const chosen = opts.home || offset > 0 ? plain : [...plain, ...inLang.filter((c) => c.adult).slice(0, 1)];
 
   const fetched = await pool(chosen, 3, async (cat) => {
@@ -539,7 +553,7 @@ export async function loadRailsInfo(kind, maxRails, perRail, opts = {}) {
   if (!rails.length && failed) throw kino.error("unavailable", "ninguna categoría cargó", { userMessage: "No se pudo cargar el catálogo." });
   // TMDB perezoso: solo el id de lo que se ve al abrir (primeras filas), con tope por llamada; Kino completa el resto con él.
   await enrichTmdb(rails.slice(0, vod ? 2 : 1).flatMap((r) => r.items.slice(0, 8)), { max: vod ? 16 : 8, budgetMs: 2500 });
-  return { rails, langs, lang, failed, hasMore, next: offset + maxRails };
+  return { rails, langs, lang, failed, hasMore, next: offset + maxRails, cats: catsList };
 }
 
 export async function loadRails(kind, maxRails, perRail, opts) {
@@ -550,7 +564,7 @@ export async function loadRails(kind, maxRails, perRail, opts) {
 
 export async function home() {
   // El índice de títulos se puebla/actualiza mientras carga el Home (un paso acotado en tiempo; nunca lanza).
-  const indexing = indexStep({ budgetMs: 7000 });
+  const indexing = indexStep({ budgetMs: 1500 }); // paso corto: el poblado sigue en los siguientes Homes (nunca frena la carga)
   const vod = await loadRailsInfo("vod", 7, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
   const series = await loadRailsInfo("series", 4, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
   const live = await countryRow().catch(() => null);
@@ -624,7 +638,7 @@ async function searchKind(kind, cats, q, limit, seen, { maxCats, deadline }) {
 // Primero el índice de títulos (kino.catalog). Sin catálogo, sin índice listo o sin resultados devuelve null y se busca en vivo.
 async function viaIndex(q, type) {
   const ready = indexReady();
-  const [found] = await Promise.all([ready ? indexSearch(q, type) : null, !ready || indexStale() ? indexStep({ budgetMs: ready ? 3000 : 4000 }) : null]);
+  const [found] = await Promise.all([ready ? indexSearch(q, type) : null, !ready || indexStale() ? indexStep({ budgetMs: 1500 }) : null]);
   const res = found || (!ready && indexReady() ? await indexSearch(q, type) : null);
   if (!res || !res.items.length) return null;
   await enrichTmdb(res.items.slice(0, 20), { max: 20, budgetMs: 2500 }); // solo los primeros resultados
@@ -680,7 +694,7 @@ export async function episodes(ref) {
   const info = data.info || {};
   const seriesInfo = {
     title: info.name ? String(info.name) : undefined,
-    poster: info.cover || info.movie_image || undefined,
+    poster: img(info.cover || info.movie_image),
     overview: info.plot ? String(info.plot).slice(0, 500) : undefined,
     year: info.year ? String(info.year) : undefined,
     rating: info.rating ? parseFloat(info.rating) || undefined : undefined,
@@ -745,7 +759,7 @@ function liveItem(s, categoryId, adult) {
     id: "live-" + id,
     title,
     ref: "live:" + id,
-    logo: s.stream_icon || undefined,
+    logo: img(s.stream_icon),
     number: parseInt(s.num, 10) || undefined,
     categoryId: String(categoryId || s.category_id || ""),
     ...(adult ? { adult: true } : {}),

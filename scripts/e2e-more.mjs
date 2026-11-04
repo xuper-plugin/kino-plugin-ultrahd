@@ -17,3 +17,15 @@ const rowsNow = async () => { const t = await scr.screen({ state, route: { name:
 for (let i = 0; i < 6; i++) await ev("tick");
 console.log("filas tras la carga inicial:", (await rowsNow()).length);
 for (let k = 0; k < 3; k++) { await ev("more"); console.log("tras 'más' #" + (k + 1) + ":", (await rowsNow()).length); }
+// Filtro por categoría
+const tree = JSON.stringify(await scr.screen({ state, route: { name: "main" }, device: "phone" }));
+const m = tree.match(/"key":"vcat"[^]*?"options":\[(.*?)\]\}/);
+const cats = (tree.match(/"value":"\d+"/g) || []);
+console.log("opciones de categoría:", cats.length);
+if (cats.length) {
+  const id = cats[2].match(/\d+/)[0];
+  await ev("vcat", { value: id });
+  console.log("con categoría", id, "→ filas:", (await rowsNow()).length);
+  await ev("vcat", { value: "" });
+  console.log("sin filtro → filas:", (await rowsNow()).length);
+}

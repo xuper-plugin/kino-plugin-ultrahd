@@ -7,10 +7,28 @@
 import { get as sget, put } from "./store.js";
 
 export const BASE = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd-data/data/";
+import { displayTitle } from "./names.js";
 const FORMAT = 1;
 const STATE_KEY = "idx:state";
 const DAY_MS = 24 * 3600 * 1000;
-const BATCH = 500;
+// Lote adaptativo: arranca chico y se ajusta a lo que mida el aparato (un TV lento no se atasca, un celular rápido va más ligero).
+const BATCH_MIN = 25;
+const BATCH_MAX = 500;
+const TARGET_MS = 300;
+let batchSize = 100;
+let lastBatchMs = 0;
+const timed = async (st, rows, fn) => {
+  const t0 = Date.now();
+  await fn();
+  const ms = Date.now() - t0;
+  lastBatchMs = ms;
+  if (ms < TARGET_MS / 2) batchSize = Math.min(BATCH_MAX, batchSize * 2);
+  else if (ms > TARGET_MS * 1.5) batchSize = Math.max(BATCH_MIN, Math.floor(batchSize / 2));
+  const p = st.perf || (st.perf = { b: 0, ms: 0, rows: 0 });
+  p.b++; p.ms += ms; p.rows += rows;
+};
+// El último trozo descargado se guarda en memoria: reanudar a mitad de trozo no lo vuelve a bajar ni a parsear.
+let partCache = null;
 const MIN_COVERAGE = 0.9;
 const MAX_TITLE = 300;
 const REV = /^\d{8}T\d{6}Z$/;
@@ -170,7 +188,7 @@ export async function indexLabel() {
   if (!hasCatalog()) return "No cargada: este Kino no trae catálogo, la búsqueda va en vivo";
   const st = readState();
   const n = await safeCount();
-  const fmt = (x) => String(x).replace(/B(?=(d{3})+(?!d))/g, ".");
+  const fmt = (x) => String(x).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
   const ago = (ts) => {
     const m = Math.max(0, Math.round((Date.now() - ts) / 60000));
     return m < 60 ? `${m} min` : m < 2880 ? `${Math.round(m / 60)} h` : `${Math.round(m / 1440)} d`;
@@ -182,11 +200,21 @@ export async function indexLabel() {
     if (gen) parts.push("lista del " + gen);
     if (st.checked) parts.push("comprobada hace " + ago(st.checked));
     parts.push("en el aparato: " + fmt(n));
+    if (st.perf && st.perf.b) parts.push(`lote medio ${Math.round(st.perf.ms / st.perf.b)} ms (${Math.round(st.perf.rows / st.perf.b)} filas)`);
     return parts.join(" · ");
   }
   if (st && st.done && n === 0) return "Vacía: se volverá a descargar al abrir Inicio";
   if (st && st.retryAt && Date.now() < st.retryAt) return "No se pudo descargar; se reintenta sola (sin red o GitHub no responde)";
   return "No cargada todavía: se descarga al abrir Inicio";
+}
+
+// ¿Hay trabajo de índice pendiente ahora? (la pantalla lo usa para decidir si pide otro paso en su siguiente tick)
+export function indexNeeded() {
+  if (!hasCatalog()) return false;
+  const st = readState();
+  if (!st || !st.done) return !(st && st.retryAt && Date.now() < st.retryAt && !st.stage);
+  if (st.stage) return true;
+  return Date.now() - (st.checked || 0) >= DAY_MS;
 }
 
 // Un paso del poblado/actualización, acotado por [budgetMs]. Idempotente y reanudable; nunca lanza.
@@ -287,17 +315,22 @@ async function runDelta(st, deadline) {
       return "error";
     }
     try {
-      for (let off = sg.offA; off < d.added.length; off += BATCH) {
-        if (Date.now() > deadline + 4000) { sg.offA = off; writeState(st); return "paused"; }
-        const rows = d.added.slice(off, off + BATCH).map((e) => rowOf(e.k, e.n, e.y, e.t, e.c, st.snap));
-        await upsertKeeping(rows, true);
+      for (let off = sg.offA; off < d.added.length;) {
+        if (Date.now() + lastBatchMs > deadline) { sg.offA = off; writeState(st); return "paused"; }
+        const n = batchSize;
+        const rows = d.added.slice(off, off + n).map((e) => rowOf(e.k, e.n, e.y, e.t, e.c, st.snap));
+        await timed(st, rows.length, () => upsertKeeping(rows, true));
         stats.upserted += rows.length;
+        off += n;
       }
       sg.offA = d.added.length;
-      for (let off = sg.offR; off < d.removed.length; off += BATCH) {
-        const ids = d.removed.slice(off, off + BATCH);
-        await kino.catalog.remove(ids);
+      for (let off = sg.offR; off < d.removed.length;) {
+        if (Date.now() + lastBatchMs > deadline) { sg.offR = off; writeState(st); return "paused"; }
+        const n = batchSize;
+        const ids = d.removed.slice(off, off + n);
+        await timed(st, ids.length, () => kino.catalog.remove(ids));
         stats.removed += ids.length;
+        off += n;
       }
     } catch (e) {
       if (e && e.code === "limit") { st.capped = true; } else { writeState(st); return "error"; }
@@ -331,28 +364,31 @@ async function runDelta(st, deadline) {
 async function runSnapshot(st, deadline) {
   const sg = st.stage;
   while (sg.next < sg.files.length) {
-    if (Date.now() + 2500 > deadline) { writeState(st); return "paused"; }
+    if (!(partCache && sg.offset > 0) && Date.now() + 1200 > deadline) { writeState(st); return "paused"; }
     const [file, hash] = sg.files[sg.next];
     const kind = file.startsWith("movies") ? "m" : "s";
     let part;
     try {
-      part = validPart(await download(file, hash, 1));
+      if (partCache && partCache.file === file && partCache.hash === hash) part = partCache.part;
+      else { part = validPart(await download(file, hash, 1)); partCache = { file, hash, part }; }
     } catch (_) {
       sg.fails++;
       if (sg.fails >= 3) { st.stage = null; st.retryAt = Date.now() + RETRY_LATER_MS; writeState(st); return "error"; }
       writeState(st);
       return "error";
     }
-    for (let off = sg.offset; off < part.names.length; off += BATCH) {
-      if (Date.now() > deadline + 4000) { sg.offset = off; writeState(st); return "paused"; }
+    for (let off = sg.offset; off < part.names.length;) {
+      if (Date.now() + lastBatchMs > deadline) { sg.offset = off; writeState(st); return "paused"; }
+      const n = batchSize;
       const rows = [];
-      for (let i = off; i < Math.min(off + BATCH, part.names.length); i++) {
+      for (let i = off; i < Math.min(off + n, part.names.length); i++) {
         const title = part.names[i];
         if (title && title.length <= MAX_TITLE) rows.push(rowOf(kind, title, Number(part.year[i]) || 0, Number(part.tmdb[i]) || 0, part.cats[i], st.snap));
       }
       try {
-        await upsertKeeping(rows, !sg.fresh);
+        await timed(st, rows.length, () => upsertKeeping(rows, !sg.fresh));
         stats.upserted += rows.length;
+        off += n;
       } catch (e) {
         if (e && e.code === "limit") { st.capped = true; sg.next = sg.files.length; break; }
         sg.offset = off;
@@ -361,6 +397,7 @@ async function runSnapshot(st, deadline) {
       }
     }
     if (st.capped) break;
+    partCache = null;
     sg.next++;
     sg.offset = 0;
     sg.fails = 0;
@@ -423,7 +460,7 @@ export function itemOfRow(row) {
   return {
     id: row.id,
     ref: `idx:${movie ? "m" : "s"}:${findKey(row.title)}|${year}|${cats.join(",")}`,
-    title: row.title,
+    title: displayTitle(row.title),
     kind: movie ? "movie" : "series",
     year: year ? String(year) : undefined,
     ...(t > 0 ? { ids: { tmdb: t } } : {}),

@@ -23,13 +23,13 @@ Lo genera a diario un workflow en [kino-plugin-ultrahd-data](https://github.com/
 4. Solo desde cero, con el catálogo vacío (por ejemplo, tras restaurar una copia de seguridad), con un delta ausente, dañado o incoherente, o si está a más de 7 revisiones, vuelca el snapshot completo (`upsert` idempotente por trozos) y retira lo que ya no está; mientras tanto el catálogo anterior sigue sirviendo búsquedas.
 5. Un índice dañado, de otra versión o con cobertura baja nunca reemplaza al bueno.
 
-Se puebla por etapas, acotadas en tiempo, dentro de las llamadas normales (Home y búsqueda): los jobs de Kino no pueden usar `kino.catalog`. Los resultados llevan una referencia perezosa (`idx:m:…` / `idx:s:…`): al abrirlos, el id real se pide en vivo solo a las categorías del título.
+Se puebla por etapas cortas: los jobs de Kino no pueden usar `kino.catalog`, así que cada paso corre en un tick de la pantalla (2,5 s como máximo) y el Home y la búsqueda solo dan un empujón de 1,5 s, sin esperar al índice. Los lotes son adaptativos (empiezan en 100 filas y se ajustan a ~300 ms por lote según lo que mida el aparato), los trozos del snapshot son de ≈100 KB y el último trozo descargado se guarda en memoria para no repetirlo al reanudar. Los ajustes muestran el tiempo medio por lote. Los resultados llevan una referencia perezosa (`idx:m:…` / `idx:s:…`): al abrirlos, el id real se pide en vivo solo a las categorías del título.
 
 El catálogo admite 100.000 títulos; si se pasara, el plugin se queda con lo que cupo y lo marca.
 
 ## Estado
 
-0.3.1. Verificado con el ejecutor del kit contra el servicio real y la rama `data` publicada: inicio, búsqueda, episodios, categorías y canales en vivo, resolución de películas, episodios y canales, y el índice de extremo a extremo (descarga, volcado, búsqueda, apertura de un resultado). No probado en un aparato. La guía de programación está implementada pero sin verificar con datos reales, porque el servidor probado no tiene. El TMDB al vuelo se probó con un fixture del kit, no con la clave real de Kino.
+0.3.11. Verificado con el ejecutor del kit contra el servicio real y la rama `data` publicada: inicio, búsqueda, episodios, categorías y canales en vivo, resolución de películas, episodios y canales, y el índice de extremo a extremo (descarga, volcado, búsqueda, apertura de un resultado). No probado en un aparato. La guía de programación está implementada pero sin verificar con datos reales, porque el servidor probado no tiene. El TMDB al vuelo se probó con un fixture del kit, no con la clave real de Kino.
 
 ## Construir y probar
 

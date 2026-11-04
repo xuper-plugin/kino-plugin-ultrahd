@@ -5,7 +5,8 @@ import * as cat from "./catalog.js";
 import { recentEntries, rememberCard } from "./recent.js";
 import { say } from "./i18n.js";
 import { put } from "./store.js";
-import { indexStep } from "./titleIndex.js";
+import { indexStep, indexNeeded } from "./titleIndex.js";
+import { enrichTmdb, tmdbAvailable } from "./tmdbLazy.js";
 import { LANG_ORDER } from "./names.js";
 import { TAB_IDS, browseView, searchView, liveView, settingsView, cardOf, slidesOf } from "./screenView.js";
 
@@ -76,9 +77,7 @@ async function loadVodTab(tab, lang, { home = false, offset = 0 } = {}) {
   const kind = tab === "movies" ? "vod" : "series";
   const maxRails = home ? (tab === "movies" ? 7 : 4) : RAILS_PER_TAB;
   // El índice de títulos se puebla/actualiza mientras carga el Home de la pantalla (un paso acotado en tiempo; nunca lanza).
-  const indexing = home ? indexStep({ budgetMs: 6000 }) : null;
   const info = await cat.loadRailsInfo(kind, maxRails, RAIL_ITEMS, { lang, home, offset });
-  if (indexing) await indexing;
   const wantFeatured = home && tab === "series" ? 0 : FEATURED;
   const featured = info.rails.flatMap((r) => r.items).filter((i) => i.overview).slice(0, wantFeatured);
   if (featured.length) await cat.enrichFeatured(kind, featured, wantFeatured);
@@ -87,7 +86,7 @@ async function loadVodTab(tab, lang, { home = false, offset = 0 } = {}) {
   const prev = offset > 0 ? memo.get(key) : null;
   const have = new Set(prev ? prev.rails.map((r) => r.id) : []);
   const fresh = railCards(rails).filter((r) => !have.has(r.id));
-  memo.set(key, { slides: prev ? prev.slides : slidesOf(rails), rails: prev ? [...prev.rails, ...fresh] : fresh, langs: info.langs, lang: info.lang, partial: info.failed > 0, hasMore: !home && !!info.hasMore, next: info.next });
+  memo.set(key, { slides: prev ? prev.slides : slidesOf(rails), rails: prev ? [...prev.rails, ...fresh] : fresh, langs: info.langs, lang: info.lang, partial: info.failed > 0, hasMore: !home && !!info.hasMore, next: info.next, cats: prev ? prev.cats : info.cats });
 }
 
 async function loadLiveTab() {
@@ -131,7 +130,7 @@ async function loadRecent() {
 const countryOn = () => cat.homeCountry() !== "none";
 
 function unitsFor(tab, lang) {
-  if (tab === "home") return [`home:movies:${lang}`, `home:series:${lang}`, ...(countryOn() ? ["country"] : []), "recent"];
+  if (tab === "home") return [`home:movies:${lang}`, `home:series:${lang}`, ...(countryOn() ? ["country"] : []), "recent", "index"];
   return [tab === "live" ? "tab:live" : `tab:${tab}:${lang}`];
 }
 
@@ -144,6 +143,7 @@ function memoKey(unit) {
 function isDone(unit) {
   if (unit === "country") return countryCards !== null;
   if (unit === "recent") return recentCards !== null;
+  if (unit === "index") return !indexNeeded();
   return memo.has(memoKey(unit));
 }
 
@@ -158,6 +158,11 @@ async function runUnit(unit) {
     const row = await cat.countryRow(20);
     countryCards = row ? row.items.map(cardOf) : [];
   } else if (unit === "recent") await loadRecent();
+  else if (unit === "index") {
+    // Un paso corto por tick: el índice se llena a ratos sin frenar el Home. "paused" = sigue en el próximo tick.
+    const out = await indexStep({ budgetMs: 2500 });
+    if (out === "error" || out === "wait") throw new Error("índice: " + out);
+  }
   else {
     const [prefix, tab, lang] = unit.split(":");
     if (tab === "live") await loadLiveTab();
@@ -165,9 +170,13 @@ async function runUnit(unit) {
   }
 }
 
-function tabData(tab, lang) {
+function tabData(tab, lang, state = {}) {
   if (tab === "live") return memo.get("live") || null;
-  if (tab !== "home") return memo.get(`${tab}:${lang}`) || null;
+  if (tab !== "home") {
+    const base = memo.get(`${tab}:${lang}`) || null;
+    const one = base && state.cat ? onlyCat.get(`${tab}:${lang}:${state.cat}`) : null;
+    return one ? { ...base, rails: one.rails, hasMore: false, catSel: state.cat } : base ? { ...base, catSel: "" } : null;
+  }
   const m = memo.get(`home-movies:${lang}`);
   const s = memo.get(`home-series:${lang}`);
   if (!m && !s) return null;
@@ -185,7 +194,7 @@ function mainView(ctx) {
   const state = ctx.state || {};
   const tab = tabOf(state, ctx.route);
   const lang = wantedLang(state);
-  const data = tabData(tab, lang);
+  const data = tabData(tab, lang, state);
   const failed = unitsFor(tab, lang).some((u) => state.failed && state.failed[u]);
   return browseView({
     tab, data, recent: recentCards || [], country: countryCards || [],
@@ -203,7 +212,8 @@ export async function screen(ctx) {
       const query = typeof state.sq === "string" ? state.sq : "";
       const items = found && found.q === query ? found.items : null;
       const status = query === "" ? "idle" : state.sstate === "fail" ? "fail" : items ? "done" : "loading";
-      return searchView({ query, status, items, partial: !!(found && found.q === query && found.partial), history: query === "" ? readHistory() : [], device: c.device });
+      const enriching = !!(found && found.q === query && items && tmdbAvailable() && found.enr < found.raw.length);
+      return searchView({ query, status, items, enriching, partial: !!(found && found.q === query && found.partial), history: query === "" ? readHistory() : [], device: c.device });
     }
     if (name === "live") {
       const cur = typeof state.lcat === "string" ? state.lcat : liveCats && liveCats[0] ? liveCats[0].id : null;
@@ -229,6 +239,8 @@ export async function screen(ctx) {
 const cardsOf = (items) => (Array.isArray(items) ? items : []).filter((i) => i && typeof i.id === "string" && typeof i.ref === "string").slice(0, CHANNELS_CAP).map(cardOf);
 const bump = (state) => ({ n: (state.n || 0) + 1 });
 
+const onlyCat = new Map(); // `${tab}:${lang}:${categoría}` -> { rails } (una categoría entera, hasta 60 títulos)
+
 const events = {
   open({ route, state }) {
     if (route && route.name && route.name !== "main") return null;
@@ -245,7 +257,7 @@ const events = {
   lang({ value, state }) {
     if (!LANG_ORDER.includes(value)) return null;
     setStored(LANG_KEY, value);
-    return { state: { lang: value, ...bump(state), failed: null } };
+    return { state: { lang: value, cat: null, ...bump(state), failed: null } };
   },
   retry({ state }) {
     const tab = tabOf(state);
@@ -255,6 +267,20 @@ const events = {
       if (memo.has(key) && memo.get(key).partial) memo.delete(key);
     }
     return { state: { failed: null, ...bump(state) } };
+  },
+  async vcat({ value, state }) {
+    const tab = tabOf(state);
+    if (tab === "live" || tab === "home") return null;
+    const id = typeof value === "string" ? value : "";
+    if (id === "") return { state: { cat: null, ...bump(state) } };
+    const lang = wantedLang(state);
+    const key = `${tab}:${lang}:${id}`;
+    if (!onlyCat.has(key)) {
+      const info = await cat.loadRailsInfo(tab === "movies" ? "vod" : "series", 1, 60, { lang, only: id });
+      onlyCat.set(key, { rails: railCards(info.rails.map((r) => ({ ...r, items: r.items.map(cat.withFicha) }))) });
+    }
+    cacheKey = cat.serverKey();
+    return { state: { cat: id, ...bump(state) } };
   },
   async more({ state }) {
     const tab = tabOf(state);
@@ -277,10 +303,20 @@ const events = {
   },
   openSearch() { return { route: { push: "search" }, state: { sq: "", sstate: null } }; },
   search({ value, route }) {
-    const q = value && typeof value.q === "string" ? value.q.trim().slice(0, 100) : "";
+    const raw = typeof value === "string" ? value : value && typeof value.q === "string" ? value.q : "";
+    const q = raw.trim().slice(0, 100);
     if (q === "") return null;
     const state = { sq: q, sstate: "loading" };
     return route && route.name === "search" ? { state } : { route: { push: "search" }, state };
+  },
+  // Pósters del resto de los resultados: 20 por tick (límite de TMDB de Kino), mientras el usuario mira los primeros.
+  async senrich({ state }) {
+    if (!found || !found.raw) return null;
+    const slice = found.raw.slice(found.enr, found.enr + 20);
+    found.enr += 20;
+    if (slice.length) await enrichTmdb(slice, { max: 20, budgetMs: 2500 });
+    found.items = found.raw.map(cardOf);
+    return { state: { senr: (state.senr || 0) + 1 } };
   },
   async stick({ state }) {
     const q = typeof state.sq === "string" ? state.sq : "";
@@ -288,7 +324,8 @@ const events = {
     if (found && found.q === q) return { state: { sstate: "done" } };
     try {
       const out = await cat.searchDetailed({ q }, { budgetMs: 14000 });
-      found = { q, items: out.items.slice(0, 60).map(cardOf), partial: out.partial };
+      const raw = out.items.slice(0, 60);
+      found = { q, raw, enr: 20, items: raw.map(cardOf), partial: out.partial }; // los 20 primeros ya pasaron por TMDB; el resto va por tandas (senrich)
       rememberFound(found.items);
       cacheKey = cat.serverKey();
       return { state: { sstate: "done" } };
@@ -327,7 +364,8 @@ const events = {
     return { state: { lcat: cur } };
   },
   lsearch({ value }) {
-    const q = value && typeof value.lq === "string" ? value.lq.trim().slice(0, 100) : "";
+    const raw = typeof value === "string" ? value : value && typeof value.lq === "string" ? value.lq : "";
+    const q = raw.trim().slice(0, 100);
     return { state: { lq: q === "" ? null : q } };
   },
   lcat({ value }) { return typeof value === "string" && value !== "" ? { state: { lcat: value, lfail: null } } : null; },

@@ -126,6 +126,10 @@ export function browseView({ tab, data, recent, country, loading, failed, device
   const body = [];
   const chips = data && data.langs && data.langs.length > 1 && active !== "live" ? langChips(data.langs, data.lang) : null;
   if (chips) body.push(chips);
+  if (data && data.cats && data.cats.length > 1 && active !== "live" && active !== "home") {
+    body.push({ type: "DropdownButton", key: "vcat", ...twin("category", "labelText"), value: data.catSel || "", onChanged: "vcat",
+      options: [{ value: "", ...twin("allCats", "label") }, ...data.cats.slice(0, 200).map((c) => ({ value: c.id, label: c.title, labelEn: c.title }))] });
+  }
   if (data) {
     if (data.slides.length > 0) body.push(hero(data.slides));
     if (active === "home" && recent.length > 0) body.push(rail({ items: recent }, "recent", twin("recent", "title")));
@@ -166,11 +170,11 @@ export function browseView({ tab, data, recent, country, loading, failed, device
 const searchForm = (tv, query, key, field, event, hintKey, goKey) => ({
   type: "Form", key, onSubmitted: event, gap: 8, children: tv
     ? [{ type: "Row", key: key + "Row", gap: 16, crossAxisAlignment: "center", children: [
-      { type: "TextField", key: field, kind: "text", value: query, ...twin(hintKey, "labelText"), maxLength: 100, autofocus: field === "q", weight: 1 },
+      { type: "TextField", key: field, kind: "text", value: query, ...twin(hintKey, "labelText"), maxLength: 100, autofocus: field === "q", onSubmitted: event, weight: 1 },
       { type: "ElevatedButton", key: goKey, ...twin("search", "labelText"), icon: "search", submit: true },
     ] }]
     : [
-      { type: "TextField", key: field, kind: "text", value: query, ...twin(hintKey, "labelText"), maxLength: 100, autofocus: field === "q" },
+      { type: "TextField", key: field, kind: "text", value: query, ...twin(hintKey, "labelText"), maxLength: 100, autofocus: field === "q", onSubmitted: event },
       { type: "ElevatedButton", key: goKey, ...twin("search", "labelText"), icon: "search", submit: true },
     ],
 });
@@ -181,7 +185,7 @@ const backBar = (tv, extra) => ({
   ...extra,
 });
 
-export function searchView({ query, status, items, partial = false, history = [], device = "phone" }) {
+export function searchView({ query, status, items, enriching = false, partial = false, history = [], device = "phone" }) {
   const tv = device === "tv";
   const form = () => searchForm(tv, query, "searchForm", "q", "search", "searchHint", "searchGo");
   const body = tv ? [] : [form()];
@@ -201,7 +205,7 @@ export function searchView({ query, status, items, partial = false, history = []
     type: "Scaffold",
     appBar: backBar(tv, tv ? { title: form() } : twin("searchTitle", "title")),
     body: { type: "SingleChildScrollView", key: "search-page", children: [{ type: "Column", padding: { compact: 12, expanded: 24 }, gap: 16, children: body }] },
-    ...(status === "loading" ? { every: { ms: 1_000, event: "stick" } } : {}),
+    ...(status === "loading" ? { every: { ms: 1_000, event: "stick" } } : enriching ? { every: { ms: 1_500, event: "senrich" } } : {}),
   };
 }
 

@@ -13,6 +13,8 @@ export const TEXTS = Object.freeze({
   noResults: ["No encontramos nada con esas palabras.", "Nothing found for those words."],
   searchedBefore: ["Buscado antes", "Searched before"],
   retry: ["Reintentar", "Retry"],
+  category: ["Categoría", "Category"],
+  allCats: ["Todas las categorías", "All categories"],
   more: ["Cargar más categorías", "Load more categories"],
   back: ["Atrás", "Back"],
   close: ["Cerrar", "Close"],
