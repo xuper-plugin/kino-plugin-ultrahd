@@ -4,9 +4,9 @@
 
 import { noteRecent } from "./recent.js";
 import { put } from "./store.js";
-import { indexSearch, indexStep, indexReady, indexStale, resolveIdxRef, indexLabel } from "./titleIndex.js";
+import { indexFitsServer, indexSearch, indexStep, indexReady, indexStale, resolveIdxRef, indexLabel } from "./titleIndex.js";
 import { enrichTmdb } from "./tmdbLazy.js";
-import { LANG_ORDER, displayTitle, titleCase, countryMatch, COUNTRY_PHRASES } from "./names.js";
+import { LANG_ORDER, langLabel, displayTitle, titleCase, countryMatch, COUNTRY_PHRASES } from "./names.js";
 import { mergeVod, mergeLive, searchOrder, homeOrder } from "./categories.js";
 
 const BOOTSTRAP_URL = "http://vegetatvv2.duckdns.org/bootstrap.php";
@@ -272,7 +272,7 @@ export async function refreshServers() {
 
 export async function settingsStatus() {
   const s = await serverStatus();
-  const idx = await indexLabel();
+  const idx = await indexLabel((() => { try { const st = readSrvs(); return st.list[st.idx].url; } catch (_) { return ""; } })());
   if (!s.ok) return { status: (s.host ? `Sin respuesta de ${s.host}` : "Sin conexión con el servicio") + (lastErr ? ` · ${lastErr}` : ""), indexStatus: idx };
   return { status: `Conectado a ${s.host} (${s.index} de ${s.total}) · comprobado ${s.at ? "hace " + Math.max(0, Math.round((Date.now() - s.at) / 1000)) + " s" : "ahora"}`, indexStatus: idx };
 }
@@ -506,7 +506,8 @@ export async function loadRailsInfo(kind, maxRails, perRail, opts = {}) {
   const vod = kind === "vod";
   let cats = await mergedVod(kind);
   const hasEs = cats.some((c) => c.lang === "es-419" || c.lang === "es-ES");
-  const langs = LANG_ORDER.filter((l) => (l === "es" ? hasEs : cats.some((c) => c.lang === l)));
+  const extra = [...new Set(cats.map((c) => c.lang).filter((l) => /^x-/.test(l)))].sort((a, b) => langLabel(a)[0].localeCompare(langLabel(b)[0]));
+  const langs = [...LANG_ORDER.filter((l) => (l === "es" ? hasEs : cats.some((c) => c.lang === l))), ...extra];
   const lang = opts.lang && langs.includes(opts.lang) ? opts.lang : langs[0] || null;
   let inLang = cats;
   if (lang === "es") {
@@ -637,6 +638,8 @@ async function searchKind(kind, cats, q, limit, seen, { maxCats, deadline }) {
 
 // Primero el índice de títulos (kino.catalog). Sin catálogo, sin índice listo o sin resultados devuelve null y se busca en vivo.
 async function viaIndex(q, type) {
+  const fits = (() => { try { const st = readSrvs(); return indexFitsServer(st.list[st.idx].url); } catch (_) { return true; } })();
+  if (!fits) return null; // el índice es de otro servidor: se busca en vivo en el activo
   const ready = indexReady();
   const [found] = await Promise.all([ready ? indexSearch(q, type) : null, !ready || indexStale() ? indexStep({ budgetMs: 1500 }) : null]);
   const res = found || (!ready && indexReady() ? await indexSearch(q, type) : null);
@@ -683,8 +686,20 @@ export async function search(query) {
 
 // ---- episodes -------------------------------------------------------------------
 
+// Categorías de este servidor (los ids del índice son de otro servidor): primero géneros y estrenos, que es donde más se repite.
+// [wanted]: [título, idioma] de las categorías del índice; las de este servidor que se llaman igual van primero.
+const serverCats = async (kind, wanted = []) => {
+  const all = searchOrder(await mergedVod(kind === "movies" ? "vod" : "series"));
+  const key = (title) => String(title).toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const hit = (c) => wanted.some(([t, l]) => key(t) === key(c.title) && (l === c.lang || !l));
+  const same = all.filter(hit);
+  const out = [...same, ...all.filter((c) => !hit(c))].map((c) => c.id);
+  out.matched = same.length;
+  return out;
+};
+
 export async function episodes(ref) {
-  if (String(ref || "").startsWith("idx:s:")) ref = await resolveIdxRef(ref, fetchCategory);
+  if (String(ref || "").startsWith("idx:s:")) ref = await resolveIdxRef(ref, fetchCategory, serverCats);
   const id = String(ref || "").replace(/^series:/, "");
   if (!/^\d+$/.test(id)) throw kino.error("not_found");
 
@@ -883,7 +898,7 @@ export async function guide({ channelIds, from, to }) {
 export async function resolve(ref) {
   const { url, username, password } = await activeServer();
   let s = String(ref || "");
-  if (s.startsWith("idx:m:")) s = await resolveIdxRef(s, fetchCategory);
+  if (s.startsWith("idx:m:")) s = await resolveIdxRef(s, fetchCategory, serverCats);
 
   if (s.startsWith("live:")) {
     const id = s.slice(5);

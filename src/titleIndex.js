@@ -183,8 +183,17 @@ async function upsertKeeping(rows, existing) {
 
 let running = null;
 
+// Los ids de categoría y la numeración del índice son del servidor que lo generó (src = hash corto de su dirección): con otro servidor
+// activo el índice no se usa para buscar ni abrir (los ids de ese servidor son otros) y se busca en vivo. Sin src (índice viejo), se usa.
+export const sourceTag = (base) => h32(String(base), 2166136261).toString(36);
+export function indexFitsServer(url) {
+  const st = readState();
+  if (!st || !st.src) return true;
+  return st.src === sourceTag(url);
+}
+
 // Texto para los ajustes: cuántos títulos hay y de qué revisión.
-export async function indexLabel() {
+export async function indexLabel(serverUrl) {
   if (!hasCatalog()) return "No cargada: este Kino no trae catálogo, la búsqueda va en vivo";
   const st = readState();
   const n = await safeCount();
@@ -200,6 +209,7 @@ export async function indexLabel() {
     if (gen) parts.push("lista del " + gen);
     if (st.checked) parts.push("comprobada hace " + ago(st.checked));
     parts.push("en el aparato: " + fmt(n));
+    if (serverUrl && !indexFitsServer(serverUrl)) parts.push("es de otro servidor que el activo: aquí la búsqueda va en vivo (con «Cambiar servidor» puedes volver al primero)");
     if (st.perf && st.perf.b) parts.push(`lote medio ${Math.round(st.perf.ms / st.perf.b)} ms (${Math.round(st.perf.rows / st.perf.b)} filas)`);
     return parts.join(" · ");
   }
@@ -214,7 +224,7 @@ export function indexNeeded() {
   const st = readState();
   if (!st || !st.done) return !(st && st.retryAt && Date.now() < st.retryAt && !st.stage);
   if (st.stage) return true;
-  return Date.now() - (st.checked || 0) >= DAY_MS;
+  return st.src === undefined || Date.now() - (st.checked || 0) >= DAY_MS;
 }
 
 // Un paso del poblado/actualización, acotado por [budgetMs]. Idempotente y reanudable; nunca lanza.
@@ -237,7 +247,7 @@ async function download(file, hash, tries) {
 
 function snapshotStage(m, fresh) {
   return {
-    mode: "snapshot", target: m.revision, hash: m.hash, gen: m.generated, mc: m.movies.count, sc: m.series.count, total: m.movies.count + m.series.count, fresh,
+    mode: "snapshot", src: m.src || "", target: m.revision, hash: m.hash, gen: m.generated, mc: m.movies.count, sc: m.series.count, total: m.movies.count + m.series.count, fresh,
     files: [...m.movies.parts.map((f, i) => [f, m.movies.hashes[i]]), ...m.series.parts.map((f, i) => [f, m.series.hashes[i]])],
     next: 0, offset: 0, fails: 0, purge: null,
   };
@@ -255,7 +265,8 @@ async function step({ budgetMs = 6000 } = {}) {
     if (c === 0) st = null;
   }
 
-  if (st && st.done && !st.stage && now - (st.checked || 0) < DAY_MS) return "fresh";
+  // st.src indefinido = estado de una versión anterior: se lee el manifiesto una vez para saber de qué servidor es el índice.
+  if (st && st.done && !st.stage && st.src !== undefined && now - (st.checked || 0) < DAY_MS) return "fresh";
   if (st && st.retryAt && now < st.retryAt && !st.stage) return "wait";
 
   if (!st || !st.stage) {
@@ -271,12 +282,12 @@ async function step({ budgetMs = 6000 } = {}) {
       return "error";
     }
     // Ya está en la revisión actual: cero descargas de datos.
-    if (st && st.done && st.rev === m.revision) { st.checked = now; st.retryAt = 0; writeState(st); return "fresh"; }
+    if (st && st.done && st.rev === m.revision) { st.checked = now; st.retryAt = 0; st.src = m.src || ""; writeState(st); return "fresh"; }
 
     const usable = !!st && st.done && (await safeCount()) > 0;
     const chain = usable ? chainFor(st.rev, m) : null;
     if (usable && chain) {
-      st.stage = { mode: "delta", target: m.revision, hash: m.hash, gen: m.generated, mc: m.movies.count, sc: m.series.count, chain, next: 0, offA: 0, offR: 0, fails: 0, snap: snapshotStage(m, false) };
+      st.stage = { mode: "delta", src: m.src || "", target: m.revision, hash: m.hash, gen: m.generated, mc: m.movies.count, sc: m.series.count, chain, next: 0, offA: 0, offR: 0, fails: 0, snap: snapshotStage(m, false) };
     } else if (usable) {
       st.stage = snapshotStage(m, false); // atrasado más de 7 revisiones: snapshot completo sobre el catálogo actual
     } else {
@@ -349,7 +360,7 @@ async function runDelta(st, deadline) {
     writeState(st);
   }
   st.hash = sg.hash;
-  st.gen = sg.gen; st.mc = sg.mc || 0; st.sc = sg.sc || 0;
+  st.gen = sg.gen; st.mc = sg.mc || 0; st.sc = sg.sc || 0; st.src = sg.src || "";
   st.done = true;
   st.checked = Date.now();
   st.retryAt = 0;
@@ -421,7 +432,7 @@ async function runSnapshot(st, deadline) {
 
   st.rev = sg.target;
   st.hash = sg.hash;
-  st.gen = sg.gen; st.mc = sg.mc || 0; st.sc = sg.sc || 0;
+  st.gen = sg.gen; st.mc = sg.mc || 0; st.sc = sg.sc || 0; st.src = sg.src || "";
   st.total = sg.total;
   st.done = true;
   st.checked = Date.now();
@@ -439,7 +450,7 @@ export function indexStatus() {
 // ¿Conviene refrescar? (índice completo pero con más de un día)
 export const indexStale = () => {
   const st = readState();
-  return !!st && st.done && !st.stage && Date.now() - (st.checked || 0) >= DAY_MS;
+  return !!st && st.done && !st.stage && (st.src === undefined || Date.now() - (st.checked || 0) >= DAY_MS);
 };
 
 export const indexReady = () => {
@@ -489,22 +500,59 @@ export function parseIdxRef(ref) {
   return { kind: m[1] === "m" ? "movies" : "series", find: m[2], year: Number(m[3]) || 0, cats: m[4] ? m[4].split(",").map(Number).filter((n) => n > 0).slice(0, 4) : [] };
 }
 
-// [fetchCategory(action, id)] devuelve la lista cruda de una categoría. Devuelve "vod:<id>:<ext>" o "series:<id>", o lanza not_found.
-export async function resolveIdxRef(ref, fetchCategory) {
+// Nombres de las categorías del servidor que generó el índice (id -> [título, idioma]); cada servidor numera las suyas, así que
+// el nombre es lo que se puede comparar. Se baja una vez por sesión (unos KB).
+let catNames = null;
+async function indexCategoryNames() {
+  if (catNames) return catNames;
+  try {
+    const j = await fetchJson("categories.json", "", 1);
+    catNames = { vod: (j && j.vod) || {}, series: (j && j.series) || {} };
+  } catch (_) { catNames = { vod: {}, series: {} }; }
+  return catNames;
+}
+
+// [fetchCategory(action, id)] devuelve la lista cruda de una categoría; [moreCats(kind)] (opcional) las categorías de ESTE servidor,
+// por si el título ya no está en las del índice (cada servidor numera las suyas). Devuelve "vod:<id>:<ext>" o "series:<id>", o lanza not_found.
+export async function resolveIdxRef(ref, fetchCategory, moreCats) {
   const p = parseIdxRef(ref);
   if (!p) throw kino.error("not_found", "ref desconocido");
   const action = p.kind === "movies" ? "get_vod_streams" : "get_series";
   let failed = 0;
-  for (const cat of p.cats) {
+  let tried = 0;
+  const seen = new Set();
+  const look = async (cat) => {
+    if (seen.has(String(cat))) return null;
+    seen.add(String(cat));
+    tried++;
     let data;
-    try { data = await fetchCategory(action, cat); } catch (_) { failed++; continue; }
+    try { data = await fetchCategory(action, cat); } catch (_) { failed++; return null; }
     for (const x of data) {
       const { name, year } = cleanTitle(x.name || x.title, x.year || (x.release_date ? String(x.release_date).slice(0, 4) : ""));
       if (year !== p.year || findKey(name) !== p.find) continue;
-      if (p.kind === "movies") return `vod:${x.stream_id}:${x.container_extension || "mp4"}`;
-      return `series:${x.series_id}`;
+      return p.kind === "movies" ? `vod:${x.stream_id}:${x.container_extension || "mp4"}` : `series:${x.series_id}`;
+    }
+    return null;
+  };
+  let list = [];
+  if (typeof moreCats === "function") {
+    const names = (await indexCategoryNames())[p.kind === "movies" ? "vod" : "series"];
+    const wanted = p.cats.map((id) => names[id]).filter(Boolean).map((e) => [String(e[0]), String(e[1])]);
+    try { list = await moreCats(p.kind, wanted); } catch (_) { list = []; }
+    // Primero las categorías de este servidor que se llaman igual que las del índice.
+    const same = Number(list.matched) || 0;
+    for (const cat of list.slice(0, same)) { const r = await look(cat); if (r) return r; }
+  }
+  for (const cat of p.cats) { const r = await look(cat); if (r) return r; }
+  if (typeof moreCats === "function") {
+    const deadline = Date.now() + 12000;
+    const rest = list.filter((c) => !seen.has(String(c))).slice(0, 16); // pocas: el servicio admite 60 peticiones por minuto
+    for (let i = 0; i < rest.length && Date.now() < deadline; i += 3) {
+      const found = await Promise.all(rest.slice(i, i + 3).map(look));
+      const r = found.find(Boolean);
+      if (r) return r;
     }
   }
-  if (failed === p.cats.length && failed > 0) throw kino.error("unavailable", "no se pudo consultar el catálogo", { userMessage: "No se pudo abrir el título. Inténtalo de nuevo." });
+  if (failed === tried && failed > 0) throw kino.error("unavailable", "no se pudo consultar el catálogo", { userMessage: "No se pudo abrir el título. Inténtalo de nuevo." });
   throw kino.error("not_found", "el título ya no está en el catálogo", { userMessage: "Este título ya no está disponible." });
 }

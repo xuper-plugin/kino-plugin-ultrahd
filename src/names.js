@@ -1,7 +1,16 @@
 // Nombres de categorías: limpieza, idioma, basura, adultos, país y género. Funciones puras (sin kino).
 
 // "es" no es un idioma de categoría: junta Latino y España (el de por defecto); el resto filtra por un solo idioma.
-export const LANG_ORDER = ["es", "es-419", "es-ES", "en", "other"];
+export const LANG_ORDER = ["es", "es-419", "es-ES", "en"];
+// Los demás idiomas salen del prefijo "| NL | …" de las categorías: un chip por código ("x-nl"), después de los de arriba.
+export const isLang = (l) => LANG_ORDER.includes(l) || /^x-[a-z0-9]+$/.test(String(l));
+const CODE_NAMES = { nl: "Nederlands", ar: "Árabe", de: "Deutsch", fr: "Français", it: "Italiano", pt: "Português", br: "Brasil", tr: "Türkçe", ru: "Русский", pl: "Polski", multi: "Multi-idioma", hi: "Hindi", in: "India", pk: "Pakistán", ro: "Română", al: "Shqip", gr: "Ελληνικά", se: "Svenska", no: "Norsk", dk: "Dansk", fi: "Suomi", cz: "Čeština", hu: "Magyar", bg: "Български", rs: "Srpski", hr: "Hrvatski", ex: "Ex-Yu", ir: "فارسی", af: "Afrikaans", kr: "한국어", jp: "日本語", cn: "中文", th: "ไทย", vn: "Tiếng Việt", ca: "Canadá", au: "Australia", ie: "Irlanda", mx: "México" };
+export function langLabel(l) {
+  if (LANG_LABELS[l]) return LANG_LABELS[l];
+  const code = String(l).replace(/^x-/, "");
+  const n = CODE_NAMES[code] || code.toUpperCase();
+  return [n, n];
+}
 
 // Título para mostrar: sin etiquetas entre corchetes ([TRIAL AUDIO], [LAT]…) ni el año/idioma entre paréntesis al final: el año va en su propio campo.
 export function displayTitle(raw) {
@@ -10,6 +19,9 @@ export function displayTitle(raw) {
     .replace(/^\s*\|[^|]{1,24}\|\s*/, "") // prefijo de idioma: "| MULTI | Título"
     .replace(/\s*\[[^\]]*\]/g, "")
     .replace(/\s*\(\s*(?:(?:19|20)\d\d|LAT|CAST|ENG|SUB|DUAL|4K|UHD|FHD|HD)\s*\)/gi, "")
+    .replace(/^\s*(?:MULTI|LAT|CAST|ENG|SUB|DUAL)\s*[:\-–]\s+/i, "") // "MULTI: Jet"
+    .replace(/(?:\s+[-–]?\s*(?:2160p|1080p|720p|480p|4K|UHD|FHD|HDR\d*|HD|WEB-?DL|BluRay|BDRip|HDRip|x26[45]|HEVC))+\s*$/i, "") // calidad al final
+    .replace(/^[\s\-–—|:·•★☆▪■●]+|[\s\-–—|:·•★☆]+$/gu, "") // adornos sueltos en los extremos
     .replace(/\s+/g, " ")
     .trim();
   return out || s.trim();
@@ -24,8 +36,8 @@ function prefixedCategory(raw) {
   if (!m) return null;
   const code = m[1].replace(/\s*\/.*$/, "").trim();
   const rest = m[2].split("|").map((p) => p.trim()).filter(Boolean).join(" · ");
-  const lang = PREFIX_LANG[code.toUpperCase()] || "other";
-  return { lang, title: lang === "other" ? `${code.toUpperCase()} · ${rest}` : rest };
+  const lang = PREFIX_LANG[code.toUpperCase()] || "x-" + (code.toLowerCase().replace(/[^a-z0-9]/g, "") || "otros");
+  return { lang, title: rest };
 }
 
 export function cleanCategoryName(name) {
@@ -138,5 +150,4 @@ export const LANG_LABELS = {
   "es-419": ["Latino", "Latin"],
   "es-ES": ["España", "Spain"],
   en: ["English", "English"],
-  other: ["Otros idiomas", "Other languages"],
 };

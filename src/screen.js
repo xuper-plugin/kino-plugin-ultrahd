@@ -7,7 +7,7 @@ import { say } from "./i18n.js";
 import { put } from "./store.js";
 import { indexStep, indexNeeded } from "./titleIndex.js";
 import { enrichTmdb, tmdbAvailable } from "./tmdbLazy.js";
-import { LANG_ORDER } from "./names.js";
+import { LANG_ORDER, isLang } from "./names.js";
 import { TAB_IDS, browseView, searchView, liveView, settingsView, cardOf, slidesOf } from "./screenView.js";
 
 const PLUGIN_VERSION = "0.3.0";
@@ -50,7 +50,7 @@ const langOf = (ev) => (ev && ev.lang === "en" ? "en" : "es");
 const getStored = (k) => { try { return kino.storage.get(k) || null; } catch (_) { return null; } };
 const setStored = (k, v) => { put(k, v); };
 const storedTab = () => { const t = getStored(TAB_KEY); return TAB_IDS.includes(t) ? t : null; };
-const wantedLang = (state) => (LANG_ORDER.includes(state.lang) ? state.lang : LANG_ORDER.includes(getStored(LANG_KEY)) ? getStored(LANG_KEY) : LANG_ORDER[0]);
+const wantedLang = (state) => (isLang(state.lang) ? state.lang : isLang(getStored(LANG_KEY)) ? getStored(LANG_KEY) : LANG_ORDER[0]);
 
 const histKey = () => HIST_KEY + ":" + cat.serverKey();
 
@@ -255,7 +255,7 @@ const events = {
     return { state: { tab, ...bump(state), failed } };
   },
   lang({ value, state }) {
-    if (!LANG_ORDER.includes(value)) return null;
+    if (!isLang(value)) return null;
     setStored(LANG_KEY, value);
     return { state: { lang: value, cat: null, ...bump(state), failed: null } };
   },

@@ -28,6 +28,8 @@ export function mergeVod(kind, list, { showAdult = false, table = null } = {}) {
       const [title, lang, group, order, flags] = e;
       if (flags.includes("h")) return;
       cat = { id, name, title, lang, group, order, home: flags.includes("H"), adult: flags.includes("a"), known: true };
+      // La tabla vieja guardó "| NL | …" como Latino: el prefijo manda sobre la tabla.
+      if (/^\s*\|/.test(name)) { const p = cleanCategoryName(name); cat.lang = p.lang; cat.title = p.title; cat.home = false; }
     } else cat = fallbackVod(kind, id, name, i);
     if (cat.adult && !showAdult) return;
     const key = cat.lang + "|" + normKey(cat.title);

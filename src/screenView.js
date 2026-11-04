@@ -1,7 +1,7 @@
 // Los árboles de la pantalla de Ultra Hd: funciones puras sobre lo que screen.js guarda en memoria. Sin red.
 import { twin } from "./i18n.js";
 import { LOGO_DATA } from "./logo.js";
-import { LANG_LABELS } from "./names.js";
+import { langLabel } from "./names.js";
 
 export const TAB_IDS = ["home", "movies", "series", "live"];
 const TAB_KEYS = { home: "tabHome", movies: "tabMovies", series: "tabSeries", live: "tabLive" };
@@ -91,7 +91,7 @@ const tabBar = (active) => ({
 
 const langChips = (langs, lang) => ({
   type: "Chips", key: "langChips", value: lang, onChanged: "lang",
-  options: langs.map((l) => ({ value: l, label: LANG_LABELS[l][0], labelEn: LANG_LABELS[l][1] })),
+  options: langs.map((l) => ({ value: l, label: langLabel(l)[0], labelEn: langLabel(l)[1] })),
 });
 
 const roundChannel = (c, n) => ({

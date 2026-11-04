@@ -157,10 +157,18 @@ function rememberCard(srv, id, card) {
 }
 
 // src/names.js
-var LANG_ORDER = ["es", "es-419", "es-ES", "en", "other"];
+var LANG_ORDER = ["es", "es-419", "es-ES", "en"];
+var isLang = (l) => LANG_ORDER.includes(l) || /^x-[a-z0-9]+$/.test(String(l));
+var CODE_NAMES = { nl: "Nederlands", ar: "\xC1rabe", de: "Deutsch", fr: "Fran\xE7ais", it: "Italiano", pt: "Portugu\xEAs", br: "Brasil", tr: "T\xFCrk\xE7e", ru: "\u0420\u0443\u0441\u0441\u043A\u0438\u0439", pl: "Polski", multi: "Multi-idioma", hi: "Hindi", in: "India", pk: "Pakist\xE1n", ro: "Rom\xE2n\u0103", al: "Shqip", gr: "\u0395\u03BB\u03BB\u03B7\u03BD\u03B9\u03BA\u03AC", se: "Svenska", no: "Norsk", dk: "Dansk", fi: "Suomi", cz: "\u010Ce\u0161tina", hu: "Magyar", bg: "\u0411\u044A\u043B\u0433\u0430\u0440\u0441\u043A\u0438", rs: "Srpski", hr: "Hrvatski", ex: "Ex-Yu", ir: "\u0641\u0627\u0631\u0633\u06CC", af: "Afrikaans", kr: "\uD55C\uAD6D\uC5B4", jp: "\u65E5\u672C\u8A9E", cn: "\u4E2D\u6587", th: "\u0E44\u0E17\u0E22", vn: "Ti\u1EBFng Vi\u1EC7t", ca: "Canad\xE1", au: "Australia", ie: "Irlanda", mx: "M\xE9xico" };
+function langLabel(l) {
+  if (LANG_LABELS[l]) return LANG_LABELS[l];
+  const code = String(l).replace(/^x-/, "");
+  const n = CODE_NAMES[code] || code.toUpperCase();
+  return [n, n];
+}
 function displayTitle(raw) {
   const s = String(raw || "");
-  const out = s.replace(/^\s*\|[^|]{1,24}\|\s*/, "").replace(/\s*\[[^\]]*\]/g, "").replace(/\s*\(\s*(?:(?:19|20)\d\d|LAT|CAST|ENG|SUB|DUAL|4K|UHD|FHD|HD)\s*\)/gi, "").replace(/\s+/g, " ").trim();
+  const out = s.replace(/^\s*\|[^|]{1,24}\|\s*/, "").replace(/\s*\[[^\]]*\]/g, "").replace(/\s*\(\s*(?:(?:19|20)\d\d|LAT|CAST|ENG|SUB|DUAL|4K|UHD|FHD|HD)\s*\)/gi, "").replace(/^\s*(?:MULTI|LAT|CAST|ENG|SUB|DUAL)\s*[:\-–]\s+/i, "").replace(/(?:\s+[-–]?\s*(?:2160p|1080p|720p|480p|4K|UHD|FHD|HDR\d*|HD|WEB-?DL|BluRay|BDRip|HDRip|x26[45]|HEVC))+\s*$/i, "").replace(/^[\s\-–—|:·•★☆▪■●]+|[\s\-–—|:·•★☆]+$/gu, "").replace(/\s+/g, " ").trim();
   return out || s.trim();
 }
 var SUFFIX_LANG = { LAT: "es-419", CAST: "es-ES", ENG: "en" };
@@ -170,8 +178,8 @@ function prefixedCategory(raw) {
   if (!m) return null;
   const code = m[1].replace(/\s*\/.*$/, "").trim();
   const rest = m[2].split("|").map((p) => p.trim()).filter(Boolean).join(" \xB7 ");
-  const lang = PREFIX_LANG[code.toUpperCase()] || "other";
-  return { lang, title: lang === "other" ? `${code.toUpperCase()} \xB7 ${rest}` : rest };
+  const lang = PREFIX_LANG[code.toUpperCase()] || "x-" + (code.toLowerCase().replace(/[^a-z0-9]/g, "") || "otros");
+  return { lang, title: rest };
 }
 function cleanCategoryName(name) {
   const raw = String(name || "").trim();
@@ -281,8 +289,7 @@ var LANG_LABELS = {
   es: ["Espa\xF1ol", "Spanish"],
   "es-419": ["Latino", "Latin"],
   "es-ES": ["Espa\xF1a", "Spain"],
-  en: ["English", "English"],
-  other: ["Otros idiomas", "Other languages"]
+  en: ["English", "English"]
 };
 
 // src/titleIndex.js
@@ -459,7 +466,13 @@ async function upsertKeeping(rows, existing) {
   return kino.catalog.upsert(rows);
 }
 var running = null;
-async function indexLabel() {
+var sourceTag = (base) => h32(String(base), 2166136261).toString(36);
+function indexFitsServer(url) {
+  const st = readState();
+  if (!st || !st.src) return true;
+  return st.src === sourceTag(url);
+}
+async function indexLabel(serverUrl) {
   if (!hasCatalog()) return "No cargada: este Kino no trae cat\xE1logo, la b\xFAsqueda va en vivo";
   const st = readState();
   const n = await safeCount();
@@ -475,6 +488,7 @@ async function indexLabel() {
     if (gen) parts.push("lista del " + gen);
     if (st.checked) parts.push("comprobada hace " + ago(st.checked));
     parts.push("en el aparato: " + fmt(n));
+    if (serverUrl && !indexFitsServer(serverUrl)) parts.push("es de otro servidor que el activo: aqu\xED la b\xFAsqueda va en vivo (con \xABCambiar servidor\xBB puedes volver al primero)");
     if (st.perf && st.perf.b) parts.push(`lote medio ${Math.round(st.perf.ms / st.perf.b)} ms (${Math.round(st.perf.rows / st.perf.b)} filas)`);
     return parts.join(" \xB7 ");
   }
@@ -487,7 +501,7 @@ function indexNeeded() {
   const st = readState();
   if (!st || !st.done) return !(st && st.retryAt && Date.now() < st.retryAt && !st.stage);
   if (st.stage) return true;
-  return Date.now() - (st.checked || 0) >= DAY_MS;
+  return st.src === void 0 || Date.now() - (st.checked || 0) >= DAY_MS;
 }
 function indexStep(opts = {}) {
   if (!hasCatalog()) return Promise.resolve("unsupported");
@@ -506,6 +520,7 @@ async function download(file, hash, tries) {
 function snapshotStage(m, fresh) {
   return {
     mode: "snapshot",
+    src: m.src || "",
     target: m.revision,
     hash: m.hash,
     gen: m.generated,
@@ -528,7 +543,7 @@ async function step({ budgetMs = 6e3 } = {}) {
     const c = await safeCount();
     if (c === 0) st = null;
   }
-  if (st && st.done && !st.stage && now - (st.checked || 0) < DAY_MS) return "fresh";
+  if (st && st.done && !st.stage && st.src !== void 0 && now - (st.checked || 0) < DAY_MS) return "fresh";
   if (st && st.retryAt && now < st.retryAt && !st.stage) return "wait";
   if (!st || !st.stage) {
     const first = !st || !st.done;
@@ -545,13 +560,14 @@ async function step({ budgetMs = 6e3 } = {}) {
     if (st && st.done && st.rev === m.revision) {
       st.checked = now;
       st.retryAt = 0;
+      st.src = m.src || "";
       writeState(st);
       return "fresh";
     }
     const usable = !!st && st.done && await safeCount() > 0;
     const chain = usable ? chainFor(st.rev, m) : null;
     if (usable && chain) {
-      st.stage = { mode: "delta", target: m.revision, hash: m.hash, gen: m.generated, mc: m.movies.count, sc: m.series.count, chain, next: 0, offA: 0, offR: 0, fails: 0, snap: snapshotStage(m, false) };
+      st.stage = { mode: "delta", src: m.src || "", target: m.revision, hash: m.hash, gen: m.generated, mc: m.movies.count, sc: m.series.count, chain, next: 0, offA: 0, offR: 0, fails: 0, snap: snapshotStage(m, false) };
     } else if (usable) {
       st.stage = snapshotStage(m, false);
     } else {
@@ -647,6 +663,7 @@ async function runDelta(st, deadline) {
   st.gen = sg.gen;
   st.mc = sg.mc || 0;
   st.sc = sg.sc || 0;
+  st.src = sg.src || "";
   st.done = true;
   st.checked = Date.now();
   st.retryAt = 0;
@@ -750,6 +767,7 @@ async function runSnapshot(st, deadline) {
   st.gen = sg.gen;
   st.mc = sg.mc || 0;
   st.sc = sg.sc || 0;
+  st.src = sg.src || "";
   st.total = sg.total;
   st.done = true;
   st.checked = Date.now();
@@ -760,7 +778,7 @@ async function runSnapshot(st, deadline) {
 }
 var indexStale = () => {
   const st = readState();
-  return !!st && st.done && !st.stage && Date.now() - (st.checked || 0) >= DAY_MS;
+  return !!st && st.done && !st.stage && (st.src === void 0 || Date.now() - (st.checked || 0) >= DAY_MS);
 };
 var indexReady = () => {
   const st = readState();
@@ -805,27 +823,71 @@ function parseIdxRef(ref) {
   if (!m) return null;
   return { kind: m[1] === "m" ? "movies" : "series", find: m[2], year: Number(m[3]) || 0, cats: m[4] ? m[4].split(",").map(Number).filter((n) => n > 0).slice(0, 4) : [] };
 }
-async function resolveIdxRef(ref, fetchCategory2) {
+var catNames = null;
+async function indexCategoryNames() {
+  if (catNames) return catNames;
+  try {
+    const j = await fetchJson("categories.json", "", 1);
+    catNames = { vod: j && j.vod || {}, series: j && j.series || {} };
+  } catch (_) {
+    catNames = { vod: {}, series: {} };
+  }
+  return catNames;
+}
+async function resolveIdxRef(ref, fetchCategory2, moreCats) {
   const p = parseIdxRef(ref);
   if (!p) throw kino.error("not_found", "ref desconocido");
   const action2 = p.kind === "movies" ? "get_vod_streams" : "get_series";
   let failed = 0;
-  for (const cat of p.cats) {
+  let tried = 0;
+  const seen = /* @__PURE__ */ new Set();
+  const look = async (cat) => {
+    if (seen.has(String(cat))) return null;
+    seen.add(String(cat));
+    tried++;
     let data;
     try {
       data = await fetchCategory2(action2, cat);
     } catch (_) {
       failed++;
-      continue;
+      return null;
     }
     for (const x of data) {
       const { name, year } = cleanTitle(x.name || x.title, x.year || (x.release_date ? String(x.release_date).slice(0, 4) : ""));
       if (year !== p.year || findKey(name) !== p.find) continue;
-      if (p.kind === "movies") return `vod:${x.stream_id}:${x.container_extension || "mp4"}`;
-      return `series:${x.series_id}`;
+      return p.kind === "movies" ? `vod:${x.stream_id}:${x.container_extension || "mp4"}` : `series:${x.series_id}`;
+    }
+    return null;
+  };
+  let list = [];
+  if (typeof moreCats === "function") {
+    const names = (await indexCategoryNames())[p.kind === "movies" ? "vod" : "series"];
+    const wanted = p.cats.map((id) => names[id]).filter(Boolean).map((e) => [String(e[0]), String(e[1])]);
+    try {
+      list = await moreCats(p.kind, wanted);
+    } catch (_) {
+      list = [];
+    }
+    const same = Number(list.matched) || 0;
+    for (const cat of list.slice(0, same)) {
+      const r = await look(cat);
+      if (r) return r;
     }
   }
-  if (failed === p.cats.length && failed > 0) throw kino.error("unavailable", "no se pudo consultar el cat\xE1logo", { userMessage: "No se pudo abrir el t\xEDtulo. Int\xE9ntalo de nuevo." });
+  for (const cat of p.cats) {
+    const r = await look(cat);
+    if (r) return r;
+  }
+  if (typeof moreCats === "function") {
+    const deadline = Date.now() + 12e3;
+    const rest = list.filter((c) => !seen.has(String(c))).slice(0, 16);
+    for (let i = 0; i < rest.length && Date.now() < deadline; i += 3) {
+      const found2 = await Promise.all(rest.slice(i, i + 3).map(look));
+      const r = found2.find(Boolean);
+      if (r) return r;
+    }
+  }
+  if (failed === tried && failed > 0) throw kino.error("unavailable", "no se pudo consultar el cat\xE1logo", { userMessage: "No se pudo abrir el t\xEDtulo. Int\xE9ntalo de nuevo." });
   throw kino.error("not_found", "el t\xEDtulo ya no est\xE1 en el cat\xE1logo", { userMessage: "Este t\xEDtulo ya no est\xE1 disponible." });
 }
 
@@ -1388,6 +1450,12 @@ function mergeVod(kind, list, { showAdult: showAdult2 = false, table = null } = 
       const [title2, lang, group, order, flags] = e;
       if (flags.includes("h")) return;
       cat = { id, name, title: title2, lang, group, order, home: flags.includes("H"), adult: flags.includes("a"), known: true };
+      if (/^\s*\|/.test(name)) {
+        const p = cleanCategoryName(name);
+        cat.lang = p.lang;
+        cat.title = p.title;
+        cat.home = false;
+      }
     } else cat = fallbackVod(kind, id, name, i);
     if (cat.adult && !showAdult2) return;
     const key = cat.lang + "|" + normKey(cat.title);
@@ -1673,7 +1741,14 @@ async function refreshServers() {
 }
 async function settingsStatus() {
   const s = await serverStatus();
-  const idx = await indexLabel();
+  const idx = await indexLabel((() => {
+    try {
+      const st = readSrvs();
+      return st.list[st.idx].url;
+    } catch (_) {
+      return "";
+    }
+  })());
   if (!s.ok) return { status: (s.host ? `Sin respuesta de ${s.host}` : "Sin conexi\xF3n con el servicio") + (lastErr ? ` \xB7 ${lastErr}` : ""), indexStatus: idx };
   return { status: `Conectado a ${s.host} (${s.index} de ${s.total}) \xB7 comprobado ${s.at ? "hace " + Math.max(0, Math.round((Date.now() - s.at) / 1e3)) + " s" : "ahora"}`, indexStatus: idx };
 }
@@ -1877,7 +1952,8 @@ async function loadRailsInfo(kind, maxRails, perRail, opts = {}) {
   const vod = kind === "vod";
   let cats = await mergedVod(kind);
   const hasEs = cats.some((c) => c.lang === "es-419" || c.lang === "es-ES");
-  const langs = LANG_ORDER.filter((l) => l === "es" ? hasEs : cats.some((c) => c.lang === l));
+  const extra = [...new Set(cats.map((c) => c.lang).filter((l) => /^x-/.test(l)))].sort((a, b) => langLabel(a)[0].localeCompare(langLabel(b)[0]));
+  const langs = [...LANG_ORDER.filter((l) => l === "es" ? hasEs : cats.some((c) => c.lang === l)), ...extra];
   const lang = opts.lang && langs.includes(opts.lang) ? opts.lang : langs[0] || null;
   let inLang = cats;
   if (lang === "es") {
@@ -1995,6 +2071,15 @@ async function searchKind(kind, cats, q, limit, seen, { maxCats, deadline }) {
   return { items, failed, capped };
 }
 async function viaIndex(q, type) {
+  const fits = (() => {
+    try {
+      const st = readSrvs();
+      return indexFitsServer(st.list[st.idx].url);
+    } catch (_) {
+      return true;
+    }
+  })();
+  if (!fits) return null;
   const ready = indexReady();
   const [found2] = await Promise.all([ready ? indexSearch(q, type) : null, !ready || indexStale() ? indexStep({ budgetMs: 1500 }) : null]);
   const res = found2 || (!ready && indexReady() ? await indexSearch(q, type) : null);
@@ -2035,8 +2120,17 @@ async function searchDetailed(query, { budgetMs = 11e3 } = {}) {
 async function search(query) {
   return (await searchDetailed(query)).items;
 }
+var serverCats = async (kind, wanted = []) => {
+  const all = searchOrder(await mergedVod(kind === "movies" ? "vod" : "series"));
+  const key = (title2) => String(title2).toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const hit = (c) => wanted.some(([t, l]) => key(t) === key(c.title) && (l === c.lang || !l));
+  const same = all.filter(hit);
+  const out = [...same, ...all.filter((c) => !hit(c))].map((c) => c.id);
+  out.matched = same.length;
+  return out;
+};
 async function episodes(ref) {
-  if (String(ref || "").startsWith("idx:s:")) ref = await resolveIdxRef(ref, fetchCategory);
+  if (String(ref || "").startsWith("idx:s:")) ref = await resolveIdxRef(ref, fetchCategory, serverCats);
   const id = String(ref || "").replace(/^series:/, "");
   if (!/^\d+$/.test(id)) throw kino.error("not_found");
   const data = await api("get_series_info", { series_id: id });
@@ -2212,7 +2306,7 @@ async function guide({ channelIds, from, to }) {
 async function resolve(ref) {
   const { url, username, password } = await activeServer();
   let s = String(ref || "");
-  if (s.startsWith("idx:m:")) s = await resolveIdxRef(s, fetchCategory);
+  if (s.startsWith("idx:m:")) s = await resolveIdxRef(s, fetchCategory, serverCats);
   if (s.startsWith("live:")) {
     const id = s.slice(5);
     if (!/^\d+$/.test(id)) throw kino.error("not_found");
@@ -2453,7 +2547,7 @@ var langChips = (langs, lang) => ({
   key: "langChips",
   value: lang,
   onChanged: "lang",
-  options: langs.map((l) => ({ value: l, label: LANG_LABELS[l][0], labelEn: LANG_LABELS[l][1] }))
+  options: langs.map((l) => ({ value: l, label: langLabel(l)[0], labelEn: langLabel(l)[1] }))
 });
 var roundChannel = (c, n) => ({
   type: "Column",
@@ -2721,7 +2815,7 @@ var storedTab = () => {
   const t = getStored(TAB_KEY);
   return TAB_IDS.includes(t) ? t : null;
 };
-var wantedLang = (state) => LANG_ORDER.includes(state.lang) ? state.lang : LANG_ORDER.includes(getStored(LANG_KEY)) ? getStored(LANG_KEY) : LANG_ORDER[0];
+var wantedLang = (state) => isLang(state.lang) ? state.lang : isLang(getStored(LANG_KEY)) ? getStored(LANG_KEY) : LANG_ORDER[0];
 var histKey = () => HIST_KEY + ":" + serverKey();
 function readHistory() {
   try {
@@ -2921,7 +3015,7 @@ var events = {
     return { state: { tab, ...bump(state), failed } };
   },
   lang({ value, state }) {
-    if (!LANG_ORDER.includes(value)) return null;
+    if (!isLang(value)) return null;
     setStored(LANG_KEY, value);
     return { state: { lang: value, cat: null, ...bump(state), failed: null } };
   },
