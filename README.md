@@ -10,7 +10,7 @@ Requiere Kino 0.9.74 o posterior (usa `kino.catalog`).
 - **En vivo:** categorías, canales con logo y número, búsqueda de canales y guía de programación (cuando el servidor la publica).
 - **TMDB al vuelo:** solo el id de lo que se muestra (primeras filas del Home y primeros resultados de búsqueda), con `kino.tmdb`: la clave y la caché son de Kino, el plugin no lleva ninguna.
 - **Contenido 18+:** las categorías adultas se marcan y Kino las muestra solo con el código 18+ desbloqueado; el inicio las omite.
-- **Servidores:** guarda una lista, prefiere HTTPS (lo único que Kino permite con servidores externos), recuerda el que funciona y pasa al siguiente cuando falla.
+- **Servidores:** guarda una lista, prefiere HTTPS, recuerda el que funciona y pasa al siguiente cuando falla. Kino solo deja HTTP con hosts declarados en el manifiesto, así que un workflow diario (`.github/workflows/hosts.yml`, `scripts/health-hosts.mjs`) prueba cada servidor con una petición ligera, declara en `hosts` los que responden y retira los que fallan 3 veces seguidas (sube la versión de parche cuando cambia el conjunto).
 - **Hosts:** el servicio de arranque va por HTTP (`insecureHttp`) y el video puede salir de otros hosts (`streamHosts: any`, aviso en rojo al instalar).
 
 ## Cómo funciona el índice

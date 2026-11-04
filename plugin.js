@@ -1405,12 +1405,12 @@ var vegetaHeaders = (code) => ({
 function readVersionCode() {
   try {
     const v = String(kino.storage.get("vcode") || "");
-    return /^d+$/.test(v) && Number(v) >= Number(VEGETA_VERSION_CODE) ? v : VEGETA_VERSION_CODE;
+    return /^\d+$/.test(v) && Number(v) >= Number(VEGETA_VERSION_CODE) ? v : VEGETA_VERSION_CODE;
   } catch (_) {
     return VEGETA_VERSION_CODE;
   }
 }
-var MAX_SERVERS = 12;
+var MAX_SERVERS = 30;
 function parseServers(text2) {
   const out = [];
   const seen = /* @__PURE__ */ new Set();
@@ -1579,7 +1579,6 @@ async function switchServer() {
   const https = st.list.filter((s) => String(s.url).startsWith("https://")).length;
   for (let k = 1; k < n; k++) {
     const i = (st.idx + k) % n;
-    if (!String(st.list[i].url).startsWith("https://")) continue;
     try {
       await callServer(st.list[i], "get_vod_categories", {});
       st.idx = i;
@@ -1616,7 +1615,7 @@ async function settingsStatus() {
 async function action(key) {
   if (key === "switchServer") {
     const r = await switchServer();
-    return { message: r.changed ? `Servidor cambiado a ${r.host}` : r.https <= 1 ? `No hay otro servidor: solo ${r.https} de ${r.total} usa HTTPS, lo \xFAnico que Kino permite con servidores externos` : "No hay otro servidor disponible ahora" + (lastErr ? ` (${lastErr})` : ""), refresh: true };
+    return { message: r.changed ? `Servidor cambiado a ${r.host}` : "No hay otro servidor que responda ahora" + (lastErr ? ` (${lastErr})` : ""), refresh: true };
   }
   if (key === "refreshServers") {
     const r = await refreshServers();

@@ -1,7 +1,7 @@
 {
   "id": "ultra-hd",
   "name": "Ultra Hd",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "apiVersion": 13,
   "entry": "plugin.js",
   "description": "Películas, series y TV en vivo en Ultra HD.",
@@ -10,6 +10,149 @@
   "hosts": [
     {
       "host": "vegetatvv2.duckdns.org",
+      "insecureHttp": true
+    },
+    {
+      "host": "9paday.wtf",
+      "insecureHttp": true
+    },
+    {
+      "host": "alexatv.world",
+      "insecureHttp": true
+    },
+    {
+      "host": "avefenixtv.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "brumotto00.zapto.org",
+      "insecureHttp": true
+    },
+    {
+      "host": "domapp2.site",
+      "insecureHttp": true
+    },
+    {
+      "host": "doubleclicktv.live",
+      "insecureHttp": true
+    },
+    {
+      "host": "dsaiiiilllliillsad.cdnip.online",
+      "insecureHttp": true
+    },
+    {
+      "host": "eu.kartal38.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "frido1.live",
+      "insecureHttp": true
+    },
+    {
+      "host": "fv99.nesewvp.top",
+      "insecureHttp": true
+    },
+    {
+      "host": "goodbom.net",
+      "insecureHttp": true
+    },
+    {
+      "host": "interstellar.salex74.xyz",
+      "insecureHttp": true
+    },
+    {
+      "host": "jefe212.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "jkingnew.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "latinotvplus.online",
+      "insecureHttp": true
+    },
+    {
+      "host": "line.krishkaz.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "line.tmpes.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "line.zee-ott.xyz",
+      "insecureHttp": true
+    },
+    {
+      "host": "ltv.ddns.net",
+      "insecureHttp": true
+    },
+    {
+      "host": "lunicaoriginaleapp.giize.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "mascottemaxplay.giize.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "myultratv.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "nexotvplus.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "pixtv.org",
+      "insecureHttp": true
+    },
+    {
+      "host": "pp.tresinl.xyz",
+      "insecureHttp": true
+    },
+    {
+      "host": "reborned.cc",
+      "insecureHttp": true
+    },
+    {
+      "host": "sa.xurvani.cfd",
+      "insecureHttp": true
+    },
+    {
+      "host": "smart.mediaking.fi",
+      "insecureHttp": true
+    },
+    {
+      "host": "thenewxtreme2025.xyz",
+      "insecureHttp": true
+    },
+    {
+      "host": "toni-tv.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "vewora.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "vip2.sharkhost.xyz",
+      "insecureHttp": true
+    },
+    {
+      "host": "vision-ott.net",
+      "insecureHttp": true
+    },
+    {
+      "host": "wickediptv.live",
+      "insecureHttp": true
+    },
+    {
+      "host": "xiques96sa.site"
+    },
+    {
+      "host": "xvisnet.xyz",
       "insecureHttp": true
     }
   ],
