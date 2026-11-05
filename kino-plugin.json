@@ -1,7 +1,7 @@
 {
   "id": "ultra-hd",
   "name": "Ultra Hd",
-  "version": "0.3.16",
+  "version": "0.3.17",
   "apiVersion": 13,
   "entry": "plugin.js",
   "description": "Películas, series y TV en vivo en Ultra HD.",
@@ -41,7 +41,7 @@
       "insecureHttp": true
     },
     {
-      "host": "domapp2.site",
+      "host": "digi55.xyz",
       "insecureHttp": true
     },
     {
@@ -50,6 +50,10 @@
     },
     {
       "host": "dsaiiiilllliillsad.cdnip.online",
+      "insecureHttp": true
+    },
+    {
+      "host": "elitestreamtv.net",
       "insecureHttp": true
     },
     {
@@ -74,10 +78,6 @@
     },
     {
       "host": "jefe212.com",
-      "insecureHttp": true
-    },
-    {
-      "host": "jkingnew.com",
       "insecureHttp": true
     },
     {
@@ -133,10 +133,6 @@
       "insecureHttp": true
     },
     {
-      "host": "pixtv.org",
-      "insecureHttp": true
-    },
-    {
       "host": "pp.tresinl.xyz",
       "insecureHttp": true
     },
@@ -150,6 +146,14 @@
     },
     {
       "host": "smart.mediaking.fi",
+      "insecureHttp": true
+    },
+    {
+      "host": "star44.xyz",
+      "insecureHttp": true
+    },
+    {
+      "host": "superlatino.online",
       "insecureHttp": true
     },
     {
@@ -170,10 +174,6 @@
     },
     {
       "host": "vip2.sharkhost.xyz",
-      "insecureHttp": true
-    },
-    {
-      "host": "vision-ott.net",
       "insecureHttp": true
     },
     {
