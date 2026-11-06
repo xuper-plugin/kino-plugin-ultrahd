@@ -1,7 +1,7 @@
 {
   "id": "ultra-hd",
   "name": "Ultra Hd",
-  "version": "0.3.17",
+  "version": "0.3.18",
   "apiVersion": 13,
   "entry": "plugin.js",
   "description": "Películas, series y TV en vivo en Ultra HD.",
@@ -14,6 +14,14 @@
     },
     {
       "host": "12072.lucadns.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "1705gdn-ott.ovh",
+      "insecureHttp": true
+    },
+    {
+      "host": "8ott.shop",
       "insecureHttp": true
     },
     {
@@ -41,19 +49,11 @@
       "insecureHttp": true
     },
     {
-      "host": "digi55.xyz",
-      "insecureHttp": true
-    },
-    {
       "host": "doubleclicktv.live",
       "insecureHttp": true
     },
     {
       "host": "dsaiiiilllliillsad.cdnip.online",
-      "insecureHttp": true
-    },
-    {
-      "host": "elitestreamtv.net",
       "insecureHttp": true
     },
     {
@@ -69,7 +69,15 @@
       "insecureHttp": true
     },
     {
+      "host": "gipsycasual.uk",
+      "insecureHttp": true
+    },
+    {
       "host": "goodbom.net",
+      "insecureHttp": true
+    },
+    {
+      "host": "hydragold.xyz",
       "insecureHttp": true
     },
     {
@@ -121,6 +129,14 @@
       "insecureHttp": true
     },
     {
+      "host": "medin.club",
+      "insecureHttp": true
+    },
+    {
+      "host": "mynewowndomain.net",
+      "insecureHttp": true
+    },
+    {
       "host": "myultratv.com",
       "insecureHttp": true
     },
@@ -146,10 +162,6 @@
     },
     {
       "host": "smart.mediaking.fi",
-      "insecureHttp": true
-    },
-    {
-      "host": "star44.xyz",
       "insecureHttp": true
     },
     {
