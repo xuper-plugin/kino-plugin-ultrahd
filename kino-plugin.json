@@ -1,7 +1,7 @@
 {
   "id": "ultra-hd",
   "name": "Ultra Hd",
-  "version": "0.3.18",
+  "version": "0.3.19",
   "apiVersion": 13,
   "entry": "plugin.js",
   "description": "Películas, series y TV en vivo en Ultra HD.",
@@ -14,14 +14,6 @@
     },
     {
       "host": "12072.lucadns.com",
-      "insecureHttp": true
-    },
-    {
-      "host": "1705gdn-ott.ovh",
-      "insecureHttp": true
-    },
-    {
-      "host": "8ott.shop",
       "insecureHttp": true
     },
     {
@@ -49,11 +41,22 @@
       "insecureHttp": true
     },
     {
+      "host": "capitanhero.com"
+    },
+    {
+      "host": "cf.tvservice-8k.com",
+      "insecureHttp": true
+    },
+    {
       "host": "doubleclicktv.live",
       "insecureHttp": true
     },
     {
       "host": "dsaiiiilllliillsad.cdnip.online",
+      "insecureHttp": true
+    },
+    {
+      "host": "elitetv-service.com",
       "insecureHttp": true
     },
     {
@@ -77,15 +80,7 @@
       "insecureHttp": true
     },
     {
-      "host": "hydragold.xyz",
-      "insecureHttp": true
-    },
-    {
       "host": "interstellar.salex74.xyz",
-      "insecureHttp": true
-    },
-    {
-      "host": "jefe212.com",
       "insecureHttp": true
     },
     {
@@ -94,10 +89,6 @@
     },
     {
       "host": "line.krishkaz.com",
-      "insecureHttp": true
-    },
-    {
-      "host": "line.smart-njot.com",
       "insecureHttp": true
     },
     {
@@ -125,19 +116,7 @@
       "insecureHttp": true
     },
     {
-      "host": "mascottemaxplay.giize.com",
-      "insecureHttp": true
-    },
-    {
       "host": "medin.club",
-      "insecureHttp": true
-    },
-    {
-      "host": "mynewowndomain.net",
-      "insecureHttp": true
-    },
-    {
-      "host": "myultratv.com",
       "insecureHttp": true
     },
     {
@@ -153,7 +132,15 @@
       "insecureHttp": true
     },
     {
+      "host": "premiumtvpro2.com",
+      "insecureHttp": true
+    },
+    {
       "host": "reborned.cc",
+      "insecureHttp": true
+    },
+    {
+      "host": "redworld.pro",
       "insecureHttp": true
     },
     {
@@ -161,7 +148,11 @@
       "insecureHttp": true
     },
     {
-      "host": "smart.mediaking.fi",
+      "host": "sdl-iptv.com",
+      "insecureHttp": true
+    },
+    {
+      "host": "stiitou.xyz",
       "insecureHttp": true
     },
     {
