@@ -1,7 +1,7 @@
 {
   "id": "ultra-hd",
   "name": "Ultra Hd",
-  "version": "0.3.19",
+  "version": "0.3.20",
   "apiVersion": 13,
   "entry": "plugin.js",
   "description": "Películas, series y TV en vivo en Ultra HD.",
@@ -17,11 +17,23 @@
       "insecureHttp": true
     },
     {
+      "host": "966gaddn.com",
+      "insecureHttp": true
+    },
+    {
       "host": "9paday.wtf",
       "insecureHttp": true
     },
     {
+      "host": "alakazoo.xyz",
+      "insecureHttp": true
+    },
+    {
       "host": "alexatv.world",
+      "insecureHttp": true
+    },
+    {
+      "host": "apex-ayoumas.com",
       "insecureHttp": true
     },
     {
@@ -44,10 +56,6 @@
       "host": "capitanhero.com"
     },
     {
-      "host": "cf.tvservice-8k.com",
-      "insecureHttp": true
-    },
-    {
       "host": "doubleclicktv.live",
       "insecureHttp": true
     },
@@ -56,11 +64,11 @@
       "insecureHttp": true
     },
     {
-      "host": "elitetv-service.com",
+      "host": "eu.kartal38.com",
       "insecureHttp": true
     },
     {
-      "host": "eu.kartal38.com",
+      "host": "fast-smart33.xyz",
       "insecureHttp": true
     },
     {
@@ -72,11 +80,11 @@
       "insecureHttp": true
     },
     {
-      "host": "gipsycasual.uk",
+      "host": "goodbom.net",
       "insecureHttp": true
     },
     {
-      "host": "goodbom.net",
+      "host": "hydragold.xyz",
       "insecureHttp": true
     },
     {
@@ -84,7 +92,11 @@
       "insecureHttp": true
     },
     {
-      "host": "latinotvplus.online",
+      "host": "klixtv.vip",
+      "insecureHttp": true
+    },
+    {
+      "host": "krplay.eu",
       "insecureHttp": true
     },
     {
@@ -120,6 +132,10 @@
       "insecureHttp": true
     },
     {
+      "host": "myultratv.com",
+      "insecureHttp": true
+    },
+    {
       "host": "neezfaopro.top",
       "insecureHttp": true
     },
@@ -132,27 +148,11 @@
       "insecureHttp": true
     },
     {
-      "host": "premiumtvpro2.com",
-      "insecureHttp": true
-    },
-    {
       "host": "reborned.cc",
       "insecureHttp": true
     },
     {
-      "host": "redworld.pro",
-      "insecureHttp": true
-    },
-    {
       "host": "sa.xurvani.cfd",
-      "insecureHttp": true
-    },
-    {
-      "host": "sdl-iptv.com",
-      "insecureHttp": true
-    },
-    {
-      "host": "stiitou.xyz",
       "insecureHttp": true
     },
     {
@@ -169,6 +169,10 @@
     },
     {
       "host": "topcliente.xyz",
+      "insecureHttp": true
+    },
+    {
+      "host": "vca.easy747.com",
       "insecureHttp": true
     },
     {
