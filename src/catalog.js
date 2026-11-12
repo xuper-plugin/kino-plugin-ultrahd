@@ -864,6 +864,7 @@ export async function episodes(ref) {
     genres: info.genre ? String(info.genre).split(/[,/]/).map((g) => g.trim()).filter(Boolean) : undefined,
   };
 
+  const tok = findKey(cleanTitle(info.name || "", "").name); // nombre de la serie: para armar y confirmar las fuentes por servidor
   const eps = [];
   for (const [season, epList] of Object.entries(data.episodes || {})) {
     const seasonNum = parseInt(season, 10) || 1;
@@ -874,7 +875,7 @@ export async function episodes(ref) {
       eps.push({
         season: seasonNum,
         number: parseInt(ep.episode_num, 10) || 1,
-        ref: "ep:" + epId + ":" + ext,
+        ref: "ep:" + epId + ":" + ext + (tok ? "~" + id + "~" + tok : ""),
         title: ep.title ? String(ep.title) : undefined,
         overview: ep.info && ep.info.plot ? String(ep.info.plot).slice(0, 300) : undefined,
         still: ep.info && ep.info.movie_image ? String(ep.info.movie_image) : undefined,
@@ -1077,10 +1078,11 @@ function availFor(id, k) {
   return e;
 }
 
-// Fuentes alternativas de una película: un servidor online por fila (menos el activo), etiquetado por país. Perezosas: solo
-// se resuelven al elegirlas. Se omiten los que ya sabemos que no la tienen; los conocidos van primero.
-function buildAlternatives(id, ext, tok, activeKey) {
-  if (!id) return [];
+// Fuentes alternativas de un título: un servidor online por fila (menos el activo), etiquetado por país. Perezosas: solo
+// se resuelven al elegirlas. Se omiten los que ya sabemos que no la tienen; los conocidos van primero. [availId] es la clave
+// de la caché "aprende" ("m:<id>" película, "e:<epId>" episodio); [makeRef] arma el `at:` ref de cada servidor.
+function buildAlternatives(availId, activeKey, makeRef) {
+  if (!availId) return [];
   const st = readSrvs();
   if (!st || !Array.isArray(st.list)) return [];
   const h = healthFresh();
@@ -1091,40 +1093,74 @@ function buildAlternatives(id, ext, tok, activeKey) {
     const k = keyOf(srv);
     if (!k || k === activeKey) continue;
     if (online && !online.has(srv.url)) continue; // solo online, si hay chequeo fresco
-    const av = availFor(id, k);
-    if (av && !av.has) continue; // ya sabemos que no la tiene: se omite
+    const av = availFor(availId, k);
+    if (av && !av.has) continue; // ya sabemos que no lo tiene: se omite
     const base = niceLabel(srv);
     countBy[base] = (countBy[base] || 0) + 1;
-    const entry = { base, host: hostOf(srv), ref: `at:${k}~${id}~${ext}~${tok}` };
-    (av && av.has ? known : unknown).push(entry);
+    (av && av.has ? known : unknown).push({ base, host: hostOf(srv), ref: makeRef(k) });
   }
   const label = (e) => (countBy[e.base] > 1 && e.host ? `${e.base} · ${e.host}` : e.base);
   return [...known, ...unknown].slice(0, 12).map((e) => ({ label: label(e), ref: e.ref }));
 }
 
-// Resuelve una fuente alternativa `at:<K>~<id>~<ext>~<tok>` (la misma película en el servidor [K]), sin tocar el servidor activo.
+// Busca la extensión del episodio [epId] en la respuesta de get_series_info; "" si no está en este servidor.
+function episodeExtIn(data, epId, hintExt) {
+  for (const list of Object.values((data && data.episodes) || {})) {
+    for (const e of Array.isArray(list) ? list : []) {
+      if (String(e.id) === epId) return String((e.info && e.info.container_extension) || e.container_extension || hintExt || "mp4");
+    }
+  }
+  return "";
+}
+
+// Resuelve una fuente alternativa contra el servidor [K], sin tocar el servidor activo:
+//   película: `at:<K>~m~<id>~<ext>~<tok>`        episodio: `at:<K>~e~<epId>~<ext>~<seriesId>~<tok>`
+// Se confirma con get_vod_info / get_series_info —un servidor sin ese id, o con otro contenido en él, lo rechaza— y se aprende.
 async function resolveAlt(s) {
   const segs = s.slice(3).split("~");
   const k = segs[0];
-  const id = segs[1] || "";
-  const hintExt = segs[2] || "mp4";
-  const tok = segs.slice(3).join("~"); // findKey del título (para descartar una colisión de id)
+  const kind = segs[1];
   const srv = serverByKey(k);
-  if (!srv || !/^\d+$/.test(id)) throw kino.error("not_found", "fuente desconocida");
+  if (!srv) throw kino.error("not_found", "servidor desconocido");
 
-  // Servidor confirmado hace poco: se abre al instante con la extensión guardada.
-  const cached = availFor(id, k);
-  if (cached && cached.has && cached.ext) return { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${cached.ext}` };
+  if (kind === "m") {
+    const id = segs[2] || "";
+    const hintExt = segs[3] || "mp4";
+    const tok = segs.slice(4).join("~"); // findKey del título (descarta una colisión de id)
+    if (!/^\d+$/.test(id)) throw kino.error("not_found", "fuente desconocida");
+    const availId = "m:" + id;
+    const cached = availFor(availId, k);
+    if (cached && cached.has && cached.ext) return { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${cached.ext}` };
+    let data;
+    try { data = await callServer(srv, "get_vod_info", { vod_id: id }); } catch (_) { recordAvail(availId, k, null); throw kino.error("not_found", "fuente no disponible"); }
+    const md = (data && data.movie_data) || {};
+    const name = md.name || (data && data.info && data.info.name) || "";
+    if (!name || (tok && findKey(cleanTitle(name, "").name) !== tok)) { recordAvail(availId, k, null); throw kino.error("not_found", "el servidor no tiene esta película"); }
+    const ext = String(md.container_extension || hintExt || "mp4");
+    recordAvail(availId, k, ext);
+    return { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${ext}` };
+  }
 
-  // Si no, se confirma con get_vod_info: un servidor sin ese id (o con otra película en él) lo rechaza.
-  let data;
-  try { data = await callServer(srv, "get_vod_info", { vod_id: id }); } catch (_) { recordAvail(id, k, null); throw kino.error("not_found", "fuente no disponible"); }
-  const md = (data && data.movie_data) || {};
-  const name = md.name || (data && data.info && data.info.name) || "";
-  if (!name || (tok && findKey(cleanTitle(name, "").name) !== tok)) { recordAvail(id, k, null); throw kino.error("not_found", "el servidor no tiene esta película"); }
-  const ext = String(md.container_extension || hintExt || "mp4");
-  recordAvail(id, k, ext);
-  return { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${ext}` };
+  if (kind === "e") {
+    const epId = segs[2] || "";
+    const hintExt = segs[3] || "mp4";
+    const seriesId = segs[4] || "";
+    const tok = segs.slice(5).join("~"); // findKey del nombre de la serie (descarta una colisión)
+    if (!/^\d+$/.test(epId) || !/^\d+$/.test(seriesId)) throw kino.error("not_found", "fuente desconocida");
+    const availId = "e:" + epId;
+    const cached = availFor(availId, k);
+    if (cached && cached.has && cached.ext) return { url: `${srv.url}/series/${srv.username}/${srv.password}/${epId}.${cached.ext}` };
+    let data;
+    try { data = await callServer(srv, "get_series_info", { series_id: seriesId }); } catch (_) { recordAvail(availId, k, null); throw kino.error("not_found", "fuente no disponible"); }
+    const name = (data && data.info && (data.info.name || data.info.title)) || "";
+    if (tok && name && findKey(cleanTitle(name, "").name) !== tok) { recordAvail(availId, k, null); throw kino.error("not_found", "el servidor no tiene esta serie"); }
+    const ext = episodeExtIn(data, epId, hintExt);
+    if (!ext) { recordAvail(availId, k, null); throw kino.error("not_found", "el episodio no está en este servidor"); }
+    recordAvail(availId, k, ext);
+    return { url: `${srv.url}/series/${srv.username}/${srv.password}/${epId}.${ext}` };
+  }
+
+  throw kino.error("not_found", "fuente desconocida");
 }
 
 export async function resolve(ref) {
@@ -1152,19 +1188,27 @@ export async function resolve(ref) {
     if (!/^\d+$/.test(streamId)) throw kino.error("not_found");
     const aKey = serverKey();
     noteRecent(streamId, ext, aKey);
-    recordAvail(streamId, aKey, ext); // el servidor activo la tiene
+    recordAvail("m:" + streamId, aKey, ext); // el servidor activo la tiene
     const out = { url: `${url}/movie/${username}/${password}/${streamId}.${ext}` };
-    const alts = buildAlternatives(streamId, ext, tok, aKey);
+    const alts = buildAlternatives("m:" + streamId, aKey, (k) => `at:${k}~m~${streamId}~${ext}~${tok}`);
     if (alts.length) { out.alternatives = alts; out.label = niceLabel(active); } // etiqueta del servidor activo en el menú "Servidor"
     return out;
   }
 
   if (s.startsWith("ep:")) {
-    const parts = s.slice(3).split(":");
+    const [core, ...rest] = s.slice(3).split("~");
+    const seriesId = rest[0] || ""; // la serie (para confirmar el episodio en otro servidor); los ref viejos no lo llevan
+    const tok = rest.slice(1).join("~");
+    const parts = core.split(":");
     const epId = parts[0];
     const ext = parts[1] || "mp4";
     if (!/^\d+$/.test(epId)) throw kino.error("not_found");
-    return { url: `${url}/series/${username}/${password}/${epId}.${ext}` };
+    const aKey = serverKey();
+    recordAvail("e:" + epId, aKey, ext); // el servidor activo lo tiene
+    const out = { url: `${url}/series/${username}/${password}/${epId}.${ext}` };
+    const alts = /^\d+$/.test(seriesId) ? buildAlternatives("e:" + epId, aKey, (k) => `at:${k}~e~${epId}~${ext}~${seriesId}~${tok}`) : [];
+    if (alts.length) { out.alternatives = alts; out.label = niceLabel(active); } // etiqueta del servidor activo en el menú "Servidor"
+    return out;
   }
 
   throw kino.error("not_found", "ref desconocido: " + s.slice(0, 30));

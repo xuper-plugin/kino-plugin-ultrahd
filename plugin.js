@@ -2302,6 +2302,7 @@ async function episodes(ref) {
     rating: info.rating ? parseFloat(info.rating) || void 0 : void 0,
     genres: info.genre ? String(info.genre).split(/[,/]/).map((g) => g.trim()).filter(Boolean) : void 0
   };
+  const tok = findKey(cleanTitle(info.name || "", "").name);
   const eps = [];
   for (const [season, epList] of Object.entries(data.episodes || {})) {
     const seasonNum = parseInt(season, 10) || 1;
@@ -2312,7 +2313,7 @@ async function episodes(ref) {
       eps.push({
         season: seasonNum,
         number: parseInt(ep.episode_num, 10) || 1,
-        ref: "ep:" + epId + ":" + ext,
+        ref: "ep:" + epId + ":" + ext + (tok ? "~" + id + "~" + tok : ""),
         title: ep.title ? String(ep.title) : void 0,
         overview: ep.info && ep.info.plot ? String(ep.info.plot).slice(0, 300) : void 0,
         still: ep.info && ep.info.movie_image ? String(ep.info.movie_image) : void 0,
@@ -2495,8 +2496,8 @@ function availFor(id, k) {
   if (!e || Date.now() - (e.ts || 0) > AVAIL_TTL_MS) return null;
   return e;
 }
-function buildAlternatives(id, ext, tok, activeKey) {
-  if (!id) return [];
+function buildAlternatives(availId, activeKey, makeRef) {
+  if (!availId) return [];
   const st = readSrvs();
   if (!st || !Array.isArray(st.list)) return [];
   const h = healthFresh();
@@ -2507,42 +2508,84 @@ function buildAlternatives(id, ext, tok, activeKey) {
     const k = keyOf(srv);
     if (!k || k === activeKey) continue;
     if (online && !online.has(srv.url)) continue;
-    const av = availFor(id, k);
+    const av = availFor(availId, k);
     if (av && !av.has) continue;
     const base = niceLabel(srv);
     countBy[base] = (countBy[base] || 0) + 1;
-    const entry = { base, host: hostOf(srv), ref: `at:${k}~${id}~${ext}~${tok}` };
-    (av && av.has ? known : unknown).push(entry);
+    (av && av.has ? known : unknown).push({ base, host: hostOf(srv), ref: makeRef(k) });
   }
   const label = (e) => countBy[e.base] > 1 && e.host ? `${e.base} \xB7 ${e.host}` : e.base;
   return [...known, ...unknown].slice(0, 12).map((e) => ({ label: label(e), ref: e.ref }));
 }
+function episodeExtIn(data, epId, hintExt) {
+  for (const list of Object.values(data && data.episodes || {})) {
+    for (const e of Array.isArray(list) ? list : []) {
+      if (String(e.id) === epId) return String(e.info && e.info.container_extension || e.container_extension || hintExt || "mp4");
+    }
+  }
+  return "";
+}
 async function resolveAlt(s) {
   const segs = s.slice(3).split("~");
   const k = segs[0];
-  const id = segs[1] || "";
-  const hintExt = segs[2] || "mp4";
-  const tok = segs.slice(3).join("~");
+  const kind = segs[1];
   const srv = serverByKey(k);
-  if (!srv || !/^\d+$/.test(id)) throw kino.error("not_found", "fuente desconocida");
-  const cached = availFor(id, k);
-  if (cached && cached.has && cached.ext) return { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${cached.ext}` };
-  let data;
-  try {
-    data = await callServer(srv, "get_vod_info", { vod_id: id });
-  } catch (_) {
-    recordAvail(id, k, null);
-    throw kino.error("not_found", "fuente no disponible");
+  if (!srv) throw kino.error("not_found", "servidor desconocido");
+  if (kind === "m") {
+    const id = segs[2] || "";
+    const hintExt = segs[3] || "mp4";
+    const tok = segs.slice(4).join("~");
+    if (!/^\d+$/.test(id)) throw kino.error("not_found", "fuente desconocida");
+    const availId = "m:" + id;
+    const cached = availFor(availId, k);
+    if (cached && cached.has && cached.ext) return { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${cached.ext}` };
+    let data;
+    try {
+      data = await callServer(srv, "get_vod_info", { vod_id: id });
+    } catch (_) {
+      recordAvail(availId, k, null);
+      throw kino.error("not_found", "fuente no disponible");
+    }
+    const md = data && data.movie_data || {};
+    const name = md.name || data && data.info && data.info.name || "";
+    if (!name || tok && findKey(cleanTitle(name, "").name) !== tok) {
+      recordAvail(availId, k, null);
+      throw kino.error("not_found", "el servidor no tiene esta pel\xEDcula");
+    }
+    const ext = String(md.container_extension || hintExt || "mp4");
+    recordAvail(availId, k, ext);
+    return { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${ext}` };
   }
-  const md = data && data.movie_data || {};
-  const name = md.name || data && data.info && data.info.name || "";
-  if (!name || tok && findKey(cleanTitle(name, "").name) !== tok) {
-    recordAvail(id, k, null);
-    throw kino.error("not_found", "el servidor no tiene esta pel\xEDcula");
+  if (kind === "e") {
+    const epId = segs[2] || "";
+    const hintExt = segs[3] || "mp4";
+    const seriesId = segs[4] || "";
+    const tok = segs.slice(5).join("~");
+    if (!/^\d+$/.test(epId) || !/^\d+$/.test(seriesId)) throw kino.error("not_found", "fuente desconocida");
+    const availId = "e:" + epId;
+    const cached = availFor(availId, k);
+    if (cached && cached.has && cached.ext) return { url: `${srv.url}/series/${srv.username}/${srv.password}/${epId}.${cached.ext}` };
+    let data;
+    try {
+      data = await callServer(srv, "get_series_info", { series_id: seriesId });
+    } catch (_) {
+      recordAvail(availId, k, null);
+      throw kino.error("not_found", "fuente no disponible");
+    }
+    const name = data && data.info && (data.info.name || data.info.title) || "";
+    if (tok && name && findKey(cleanTitle(name, "").name) !== tok) {
+      recordAvail(availId, k, null);
+      throw kino.error("not_found", "el servidor no tiene esta serie");
+    }
+    const ext = episodeExtIn(data, epId, hintExt);
+    if (!ext) {
+      recordAvail(availId, k, null);
+      throw kino.error("not_found", "el episodio no est\xE1 en este servidor");
+    }
+    recordAvail(availId, k, ext);
+    return { url: `${srv.url}/series/${srv.username}/${srv.password}/${epId}.${ext}` };
   }
-  const ext = String(md.container_extension || hintExt || "mp4");
-  recordAvail(id, k, ext);
-  return { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${ext}` };
+  throw kino.error("not_found", "fuente desconocida");
 }
 async function resolve(ref) {
   let s = String(ref || "");
@@ -2564,9 +2607,9 @@ async function resolve(ref) {
     if (!/^\d+$/.test(streamId)) throw kino.error("not_found");
     const aKey = serverKey();
     noteRecent(streamId, ext, aKey);
-    recordAvail(streamId, aKey, ext);
+    recordAvail("m:" + streamId, aKey, ext);
     const out = { url: `${url}/movie/${username}/${password}/${streamId}.${ext}` };
-    const alts = buildAlternatives(streamId, ext, tok, aKey);
+    const alts = buildAlternatives("m:" + streamId, aKey, (k) => `at:${k}~m~${streamId}~${ext}~${tok}`);
     if (alts.length) {
       out.alternatives = alts;
       out.label = niceLabel(active);
@@ -2574,11 +2617,22 @@ async function resolve(ref) {
     return out;
   }
   if (s.startsWith("ep:")) {
-    const parts = s.slice(3).split(":");
+    const [core, ...rest] = s.slice(3).split("~");
+    const seriesId = rest[0] || "";
+    const tok = rest.slice(1).join("~");
+    const parts = core.split(":");
     const epId = parts[0];
     const ext = parts[1] || "mp4";
     if (!/^\d+$/.test(epId)) throw kino.error("not_found");
-    return { url: `${url}/series/${username}/${password}/${epId}.${ext}` };
+    const aKey = serverKey();
+    recordAvail("e:" + epId, aKey, ext);
+    const out = { url: `${url}/series/${username}/${password}/${epId}.${ext}` };
+    const alts = /^\d+$/.test(seriesId) ? buildAlternatives("e:" + epId, aKey, (k) => `at:${k}~e~${epId}~${ext}~${seriesId}~${tok}`) : [];
+    if (alts.length) {
+      out.alternatives = alts;
+      out.label = niceLabel(active);
+    }
+    return out;
   }
   throw kino.error("not_found", "ref desconocido: " + s.slice(0, 30));
 }
@@ -3043,7 +3097,7 @@ function verifyingView({ device } = {}) {
 }
 
 // src/screen.js
-var PLUGIN_VERSION = "0.3.32";
+var PLUGIN_VERSION = "0.3.33";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
