@@ -415,7 +415,7 @@ const events = {
     if (r.ok) { resetCaches(); cacheKey = cat.serverKey(); }
     let servers;
     try { servers = await cat.serverList(); } catch (_) { servers = { current: -1, items: [] }; }
-    return { state: { ...bump(state), failed: null, servers }, sheet: serverSheet(servers), toast: { text: say(r.ok ? "srvSelected" : "srvSelectFail", lang, { host: r.label || r.host || "" }), role: r.ok ? "success" : "error" } };
+    return { state: { ...bump(state), failed: null, servers }, sheet: serverSheet(servers), toast: { text: say(r.ok ? "srvSelected" : "srvSelectFail", lang, { host: r.host || r.label || "" }), role: r.ok ? "success" : "error" } };
   },
   saved({ state }) { return { state: bump(state) }; },
 };

@@ -1722,6 +1722,23 @@ var hostOf = (srv) => {
   }
 };
 var labelOf = (srv) => srv && srv.name ? srv.name : hostOf(srv);
+var FLAG_NAMES = { AR: "Argentina", BO: "Bolivia", BR: "Brasil", CA: "Canad\xE1", CL: "Chile", CO: "Colombia", CR: "Costa Rica", CU: "Cuba", DE: "Alemania", DO: "Rep. Dominicana", EC: "Ecuador", ES: "Espa\xF1a", FR: "Francia", GB: "Reino Unido", GT: "Guatemala", HN: "Honduras", IT: "Italia", MX: "M\xE9xico", NI: "Nicaragua", PA: "Panam\xE1", PE: "Per\xFA", PR: "Puerto Rico", PT: "Portugal", PY: "Paraguay", SV: "El Salvador", US: "EE. UU.", UY: "Uruguay", VE: "Venezuela" };
+function flagCountry(s) {
+  const cp = [...String(s || "")];
+  if (cp.length >= 2) {
+    const a = cp[0].codePointAt(0), b = cp[1].codePointAt(0);
+    if (a >= 127462 && a <= 127487 && b >= 127462 && b <= 127487) {
+      const code = String.fromCharCode(a - 127462 + 65) + String.fromCharCode(b - 127462 + 65);
+      return FLAG_NAMES[code] || code;
+    }
+  }
+  return String(s || "").includes("\u{1F310}") ? "Global" : null;
+}
+var niceLabel = (srv) => {
+  const base = labelOf(srv);
+  const c = flagCountry(base);
+  return c ? `${base} ${c}` : base;
+};
 async function serverStatus() {
   const cached = readSrvs();
   if (cached && cached.ok && cached.list && cached.list[cached.idx] && Date.now() - (cached.okAt || 0) < 2e4) return { ok: true, host: hostOf(cached.list[cached.idx]), index: cached.idx + 1, total: cached.list.length, at: cached.okAt };
@@ -1759,26 +1776,31 @@ async function serverList() {
   const st = await loadServers(false);
   return {
     current: st.idx,
-    items: (st.list || []).map((s, i) => ({ i, label: labelOf(s), host: hostOf(s), https: String(s.url).startsWith("https://") }))
+    items: (st.list || []).map((s, i) => ({ i, label: niceLabel(s), host: hostOf(s), https: String(s.url).startsWith("https://") }))
   };
 }
 async function selectServer(i) {
   const st = await loadServers(false);
   const n = st.list.length;
-  const idx = parseInt(i, 10);
-  if (!(idx >= 0 && idx < n)) return { ok: false };
-  try {
-    await callServer(st.list[idx], "get_vod_categories", {});
-    st.idx = idx;
-    st.ok = true;
-    st.okAt = Date.now();
-    st.pin = idx !== homeIdx(st);
-    writeSrvs(st);
-    return { ok: true, host: hostOf(st.list[idx]), label: labelOf(st.list[idx]), index: idx + 1, total: n };
-  } catch (e) {
-    lastErr = errText(e);
-    return { ok: false, host: hostOf(st.list[idx]), label: labelOf(st.list[idx]), index: idx + 1, total: n };
+  const start = parseInt(i, 10);
+  if (!(start >= 0 && start < n)) return { ok: false };
+  const wantLabel = labelOf(st.list[start]);
+  const all = Array.from({ length: n }, (_, k) => k);
+  const order = [start, ...all.filter((k) => k !== start && labelOf(st.list[k]) === wantLabel)].slice(0, 5);
+  for (const idx of order) {
+    try {
+      await callServer(st.list[idx], "get_vod_categories", {});
+      st.idx = idx;
+      st.ok = true;
+      st.okAt = Date.now();
+      st.pin = idx !== homeIdx(st);
+      writeSrvs(st);
+      return { ok: true, host: hostOf(st.list[idx]), label: labelOf(st.list[idx]), index: idx + 1, total: n, exact: idx === start };
+    } catch (e) {
+      lastErr = errText(e);
+    }
   }
+  return { ok: false, host: hostOf(st.list[start]), label: labelOf(st.list[start]), index: start + 1, total: n };
 }
 async function refreshServers() {
   const before = readSrvs();
@@ -2456,7 +2478,7 @@ var TEXTS = Object.freeze({
   setServerNone: ["Sin servidores", "No servers"],
   setServerPos: ["{i} de {n} en la lista", "{i} of {n} in the list"],
   setPick: ["Elegir servidor", "Choose server"],
-  setPickHint: ["Cada servidor trae la bandera de su pa\xEDs (\u{1F1F2}\u{1F1FD}, \u{1F1EA}\u{1F1F8}, \u{1F310}). Elige el tuyo; si uno no trae buenos canales o logos, prueba otro.", "Each server shows its country flag (\u{1F1F2}\u{1F1FD}, \u{1F1EA}\u{1F1F8}, \u{1F310}). Pick yours; if one has poor channels or logos, try another."],
+  setPickHint: ["Cada servidor muestra su pa\xEDs. Elige el tuyo; si uno no responde o no trae buenos canales o logos, prueba otro.", "Each server shows its country. Pick yours; if one does not answer or has poor channels or logos, try another."],
   srvSelected: ["Servidor fijado: {host}", "Server set: {host}"],
   srvSelectFail: ["No respondi\xF3 {host}. Prueba otro.", "{host} did not answer. Try another."],
   setSwitch: ["Cambiar servidor", "Switch server"],
@@ -3279,7 +3301,7 @@ var events = {
     } catch (_) {
       servers = { current: -1, items: [] };
     }
-    return { state: { ...bump(state), failed: null, servers }, sheet: serverSheet(servers), toast: { text: say(r.ok ? "srvSelected" : "srvSelectFail", lang, { host: r.label || r.host || "" }), role: r.ok ? "success" : "error" } };
+    return { state: { ...bump(state), failed: null, servers }, sheet: serverSheet(servers), toast: { text: say(r.ok ? "srvSelected" : "srvSelectFail", lang, { host: r.host || r.label || "" }), role: r.ok ? "success" : "error" } };
   },
   saved({ state }) {
     return { state: bump(state) };

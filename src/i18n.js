@@ -40,7 +40,7 @@ export const TEXTS = Object.freeze({
   setServerNone: ["Sin servidores", "No servers"],
   setServerPos: ["{i} de {n} en la lista", "{i} of {n} in the list"],
   setPick: ["Elegir servidor", "Choose server"],
-  setPickHint: ["Cada servidor trae la bandera de su país (🇲🇽, 🇪🇸, 🌐). Elige el tuyo; si uno no trae buenos canales o logos, prueba otro.", "Each server shows its country flag (🇲🇽, 🇪🇸, 🌐). Pick yours; if one has poor channels or logos, try another."],
+  setPickHint: ["Cada servidor muestra su país. Elige el tuyo; si uno no responde o no trae buenos canales o logos, prueba otro.", "Each server shows its country. Pick yours; if one does not answer or has poor channels or logos, try another."],
   srvSelected: ["Servidor fijado: {host}", "Server set: {host}"],
   srvSelectFail: ["No respondió {host}. Prueba otro.", "{host} did not answer. Try another."],
   setSwitch: ["Cambiar servidor", "Switch server"],

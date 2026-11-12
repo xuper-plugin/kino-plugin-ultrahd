@@ -253,6 +253,22 @@ const hostOf = (srv) => {
 };
 const labelOf = (srv) => (srv && srv.name ? srv.name : hostOf(srv));
 
+// En Android TV no se dibujan los emojis de bandera: decodifica la bandera a nombre de país (texto) para que se lea igual.
+const FLAG_NAMES = { AR: "Argentina", BO: "Bolivia", BR: "Brasil", CA: "Canadá", CL: "Chile", CO: "Colombia", CR: "Costa Rica", CU: "Cuba", DE: "Alemania", DO: "Rep. Dominicana", EC: "Ecuador", ES: "España", FR: "Francia", GB: "Reino Unido", GT: "Guatemala", HN: "Honduras", IT: "Italia", MX: "México", NI: "Nicaragua", PA: "Panamá", PE: "Perú", PR: "Puerto Rico", PT: "Portugal", PY: "Paraguay", SV: "El Salvador", US: "EE. UU.", UY: "Uruguay", VE: "Venezuela" };
+function flagCountry(s) {
+  const cp = [...String(s || "")];
+  if (cp.length >= 2) {
+    const a = cp[0].codePointAt(0), b = cp[1].codePointAt(0);
+    if (a >= 0x1f1e6 && a <= 0x1f1ff && b >= 0x1f1e6 && b <= 0x1f1ff) {
+      const code = String.fromCharCode(a - 0x1f1e6 + 65) + String.fromCharCode(b - 0x1f1e6 + 65);
+      return FLAG_NAMES[code] || code;
+    }
+  }
+  return String(s || "").includes("🌐") ? "Global" : null;
+}
+// Etiqueta legible en todas partes: la bandera (si la hay) + el nombre del país; en un TV solo se ve el nombre.
+const niceLabel = (srv) => { const base = labelOf(srv); const c = flagCountry(base); return c ? `${base} ${c}` : base; };
+
 // Nunca expone usuario ni contraseña: solo el host y la posición en la lista.
 export async function serverStatus() {
   const cached = readSrvs();
@@ -293,25 +309,29 @@ export async function serverList() {
   const st = await loadServers(false);
   return {
     current: st.idx,
-    items: (st.list || []).map((s, i) => ({ i, label: labelOf(s), host: hostOf(s), https: String(s.url).startsWith("https://") })),
+    items: (st.list || []).map((s, i) => ({ i, label: niceLabel(s), host: hostOf(s), https: String(s.url).startsWith("https://") })),
   };
 }
 
 // Fija un servidor elegido a mano (no se vuelve solo al de casa). Lo prueba antes con una petición ligera.
+// Prueba el elegido; si no responde, otros del mismo país (misma bandera) hasta dar con uno vivo (muchos están caídos). Tope de intentos.
 export async function selectServer(i) {
   const st = await loadServers(false);
   const n = st.list.length;
-  const idx = parseInt(i, 10);
-  if (!(idx >= 0 && idx < n)) return { ok: false };
-  try {
-    await callServer(st.list[idx], "get_vod_categories", {});
-    st.idx = idx; st.ok = true; st.okAt = Date.now(); st.pin = idx !== homeIdx(st);
-    writeSrvs(st);
-    return { ok: true, host: hostOf(st.list[idx]), label: labelOf(st.list[idx]), index: idx + 1, total: n };
-  } catch (e) {
-    lastErr = errText(e);
-    return { ok: false, host: hostOf(st.list[idx]), label: labelOf(st.list[idx]), index: idx + 1, total: n };
+  const start = parseInt(i, 10);
+  if (!(start >= 0 && start < n)) return { ok: false };
+  const wantLabel = labelOf(st.list[start]);
+  const all = Array.from({ length: n }, (_, k) => k);
+  const order = [start, ...all.filter((k) => k !== start && labelOf(st.list[k]) === wantLabel)].slice(0, 5);
+  for (const idx of order) {
+    try {
+      await callServer(st.list[idx], "get_vod_categories", {});
+      st.idx = idx; st.ok = true; st.okAt = Date.now(); st.pin = idx !== homeIdx(st);
+      writeSrvs(st);
+      return { ok: true, host: hostOf(st.list[idx]), label: labelOf(st.list[idx]), index: idx + 1, total: n, exact: idx === start };
+    } catch (e) { lastErr = errText(e); }
   }
+  return { ok: false, host: hostOf(st.list[start]), label: labelOf(st.list[start]), index: start + 1, total: n };
 }
 
 export async function refreshServers() {
