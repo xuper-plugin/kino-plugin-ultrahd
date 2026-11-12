@@ -36,6 +36,9 @@ export function noteRecent(streamId, ext, srv) {
 
 export const recentEntries = (srv) => readAll().filter((e) => e.srv === srv).slice(0, MAX_RECENT);
 
+// Todos los recientes, de cualquier servidor (más nuevo primero): "Continuar viendo" sobrevive al cambio de servidor.
+export const recentEntriesAll = () => readAll();
+
 export function rememberCard(srv, id, card) {
   writeAll(readAll().map((e) => (e.srv === srv && e.id === id ? { ...e, card } : e)));
 }

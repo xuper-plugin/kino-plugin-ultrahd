@@ -2,10 +2,10 @@
 // y, si el runtime se reinicia, el temporizador `tick` lo vuelve a traer; el estado solo guarda tab, lang, n y fallos.
 // Todo lo que viene del catálogo se descarta si cambia el servidor activo (categorías e ids no coinciden entre servidores).
 import * as cat from "./catalog.js";
-import { recentEntries, rememberCard } from "./recent.js";
+import { recentEntriesAll, rememberCard } from "./recent.js";
 import { say, twin } from "./i18n.js";
 import { put } from "./store.js";
-import { indexStep, indexNeeded } from "./titleIndex.js";
+import { indexStep, indexNeeded, idxRefFor, findKey } from "./titleIndex.js";
 import { enrichTmdb, tmdbAvailable } from "./tmdbLazy.js";
 import { LANG_ORDER, isLang } from "./names.js";
 import { TAB_IDS, browseView, searchView, liveView, settingsView, cardOf, slidesOf } from "./screenView.js";
@@ -111,10 +111,13 @@ async function loadLiveTab() {
 async function loadRecent() {
   const key = cat.serverKey();
   const out = [];
+  const seen = new Set();
   let lookups = 0;
-  for (const e of recentEntries(key)) {
+  // Se leen los recientes de TODOS los servidores. Los del servidor activo usan su ref directo (rápido); los de otro servidor
+  // se resuelven por título con el índice (idxRefFor), para que "Continuar viendo" no se pierda al cambiar de servidor.
+  for (const e of recentEntriesAll()) {
     let card = e.card;
-    if (!card && lookups < 6) {
+    if (!card && e.srv === key && lookups < 6) {
       lookups++;
       try {
         const item = await cat.vodInfoItem(e.id);
@@ -122,7 +125,18 @@ async function loadRecent() {
         if (card) rememberCard(key, e.id, card);
       } catch (_) { card = null; }
     }
-    if (card && !(card.adult && !cat.showAdult())) out.push(card);
+    if (!card || (card.adult && !cat.showAdult())) continue;
+    const dk = findKey(card.title);
+    if (!dk || seen.has(dk)) continue;
+    let ref = card.ref;
+    if (e.srv !== key) {
+      const ix = idxRefFor(card.kind, card.title, card.year);
+      if (!ix) continue; // sin año no se puede resolver en otro servidor
+      ref = ix;
+    }
+    seen.add(dk);
+    out.push(ref === card.ref ? card : { ...card, ref });
+    if (out.length >= 12) break;
   }
   recentCards = out;
 }

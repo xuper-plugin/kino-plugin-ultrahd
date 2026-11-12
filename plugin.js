@@ -151,7 +151,7 @@ function noteRecent(streamId, ext, srv) {
   const others = all.filter((e) => e.srv !== srv);
   writeAll([entry, ...mine.filter((e) => e.id !== id).slice(0, MAX_RECENT - 1), ...others]);
 }
-var recentEntries = (srv) => readAll().filter((e) => e.srv === srv).slice(0, MAX_RECENT);
+var recentEntriesAll = () => readAll();
 function rememberCard(srv, id, card) {
   writeAll(readAll().map((e) => e.srv === srv && e.id === id ? { ...e, card } : e));
 }
@@ -799,6 +799,7 @@ function itemOfRow(row) {
     ...t > 0 ? { ids: { tmdb: t } } : {}
   };
 }
+var idxRefFor = (kind, title2, year) => title2 && Number(year) ? `idx:${kind === "series" ? "s" : "m"}:${findKey(title2)}|${Number(year)}|` : null;
 async function indexSearch(q, type = "any", limit = 60) {
   if (!hasCatalog()) return null;
   const st = readState();
@@ -2592,6 +2593,7 @@ function cardOf(item) {
   if (typeof item.rating === "number") out.rating = item.rating;
   if (item.ids) out.ids = item.ids;
   if (item.overview) out.overview = item.overview;
+  if (item.year) out.year = item.year;
   return out;
 }
 function slidesOf(rails) {
@@ -3018,10 +3020,11 @@ async function loadLiveTab() {
 async function loadRecent() {
   const key = serverKey();
   const out = [];
+  const seen = /* @__PURE__ */ new Set();
   let lookups = 0;
-  for (const e of recentEntries(key)) {
+  for (const e of recentEntriesAll()) {
     let card = e.card;
-    if (!card && lookups < 6) {
+    if (!card && e.srv === key && lookups < 6) {
       lookups++;
       try {
         const item = await vodInfoItem(e.id);
@@ -3031,7 +3034,18 @@ async function loadRecent() {
         card = null;
       }
     }
-    if (card && !(card.adult && !showAdult())) out.push(card);
+    if (!card || card.adult && !showAdult()) continue;
+    const dk = findKey(card.title);
+    if (!dk || seen.has(dk)) continue;
+    let ref = card.ref;
+    if (e.srv !== key) {
+      const ix = idxRefFor(card.kind, card.title, card.year);
+      if (!ix) continue;
+      ref = ix;
+    }
+    seen.add(dk);
+    out.push(ref === card.ref ? card : { ...card, ref });
+    if (out.length >= 12) break;
   }
   recentCards = out;
 }

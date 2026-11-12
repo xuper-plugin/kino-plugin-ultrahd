@@ -478,6 +478,10 @@ export function itemOfRow(row) {
   };
 }
 
+// Ref del índice (server-agnóstico) a partir de título y año: "Continuar viendo" sobrevive al cambio de servidor porque
+// se resuelve por título en el servidor activo. Sin año no se puede (resolveIdxRef exige que el año coincida).
+export const idxRefFor = (kind, title, year) => (title && Number(year) ? `idx:${kind === "series" ? "s" : "m"}:${findKey(title)}|${Number(year)}|` : null);
+
 // { items, total } del catálogo, o null si no hay índice utilizable (el que llama cae a la búsqueda en vivo).
 export async function indexSearch(q, type = "any", limit = 60) {
   if (!hasCatalog()) return null;

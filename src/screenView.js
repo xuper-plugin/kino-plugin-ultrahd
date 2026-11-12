@@ -21,6 +21,7 @@ export function cardOf(item) {
   if (typeof item.rating === "number") out.rating = item.rating;
   if (item.ids) out.ids = item.ids;
   if (item.overview) out.overview = item.overview;
+  if (item.year) out.year = item.year;
   return out;
 }
 
