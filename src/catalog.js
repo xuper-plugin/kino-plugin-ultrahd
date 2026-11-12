@@ -4,7 +4,7 @@
 
 import { noteRecent } from "./recent.js";
 import { put } from "./store.js";
-import { indexFitsServer, indexSearch, indexStep, indexReady, indexStale, resolveIdxRef, indexLabel } from "./titleIndex.js";
+import { indexFitsServer, indexSearch, indexStep, indexReady, indexStale, resolveIdxRef, indexLabel, cleanTitle, findKey } from "./titleIndex.js";
 import { enrichTmdb } from "./tmdbLazy.js";
 import { LANG_ORDER, langLabel, displayTitle, titleCase, countryMatch, COUNTRY_PHRASES } from "./names.js";
 import { mergeVod, mergeLive, searchOrder, homeOrder } from "./categories.js";
@@ -120,14 +120,27 @@ async function fetchServerList() {
 }
 
 // Clave corta del servidor activo (sin usuario ni contraseña a la vista): separa las cachés de catálogo entre servidores.
-export function serverKey() {
-  const st = readSrvs();
-  const srv = st && Array.isArray(st.list) ? st.list[st.idx] : null;
-  if (!srv) return "";
+// Clave estable de un servidor (misma cuenta en el mismo host): identifica un servidor concreto en los `ref` de las fuentes
+// alternativas y en la caché de disponibilidad, sin exponer usuario ni contraseña.
+export function keyOf(srv) {
+  if (!srv || !srv.url) return "";
   let h = 5381;
   const text = srv.url + "|" + srv.username;
   for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
   return (h >>> 0).toString(36);
+}
+
+export function serverKey() {
+  const st = readSrvs();
+  const srv = st && Array.isArray(st.list) ? st.list[st.idx] : null;
+  return keyOf(srv);
+}
+
+// El servidor de la lista cuya clave es [k] (para resolver una fuente alternativa contra ese servidor).
+function serverByKey(k) {
+  const st = readSrvs();
+  if (!st || !Array.isArray(st.list)) return null;
+  return st.list.find((s) => keyOf(s) === k) || null;
 }
 
 function readSrvs() {
@@ -474,15 +487,23 @@ const ratingOf = (m) => {
   return r > 0 ? Math.min(10, r) : undefined;
 };
 
+// Token del título (findKey) para reconocer la MISMA película al abrirla en otro servidor y descartar una colisión de id
+// contra otra película. Sin año (las listas no lo traen) ni prefijos quitados: los servidores espejo devuelven el mismo nombre.
+function movieNameTok(m) {
+  const { name } = cleanTitle(m.name || m.title, "");
+  return findKey(name) || "";
+}
+
 function vodItem(m, adult) {
   const id = String(m.stream_id || "");
   if (!id) return null;
   const title = displayTitle(m.name || m.title);
   if (!title) return null;
   const ext = String(m.container_extension || "mp4");
+  const tok = movieNameTok(m); // se añade al ref para armar las fuentes por servidor (retrocompatible: los ref viejos no lo llevan)
   return {
     id: "vod-" + id,
-    ref: "vod:" + id + ":" + ext,
+    ref: "vod:" + id + ":" + ext + (tok ? "~" + tok : ""),
     title,
     kind: "movie",
     poster: img(m.stream_icon || m.cover),
@@ -1022,9 +1043,98 @@ export async function guide({ channelIds, from, to }) {
 
 // ---- resolve --------------------------------------------------------------------
 
+// ---- fuentes por servidor (el menú "Servidor" del reproductor) -----------------------------------------
+// Muchos servidores comparten el MISMO id de stream para una película (son espejos del catálogo). Así que una fuente
+// alternativa es "la misma película (mismo id) en otro servidor": instantáneo, sin emparejar por título (que aquí es frágil,
+// porque las listas no traen año y los nombres llevan prefijos "XX ▎"). Al elegirla se confirma con get_vod_info —un servidor
+// que no tenga ese id, o lo tenga apuntando a otra película, lo rechaza— y se aprende para pintar la lista exacta la próxima vez.
+
+const AVAIL_KEY = "avail:v1";
+const AVAIL_TTL_MS = 36 * 60 * 60 * 1000; // el catálogo cambia lento; se vuelve a comprobar pasado esto
+const AVAIL_MAX_IDS = 400;
+
+function readAvail() { try { const o = JSON.parse(kino.storage.get(AVAIL_KEY) || "{}"); return o && typeof o === "object" ? o : {}; } catch (_) { return {}; } }
+// Apunta si el servidor [k] tiene (ext = su extensión) o no (ext = null) la película [id].
+function recordAvail(id, k, ext) {
+  if (!id || !k) return;
+  const all = readAvail();
+  const t = all[id] && typeof all[id] === "object" ? all[id] : {};
+  t[k] = ext ? { has: 1, ext, ts: Date.now() } : { has: 0, ts: Date.now() };
+  t._ts = Date.now();
+  all[id] = t;
+  const keys = Object.keys(all);
+  if (keys.length > AVAIL_MAX_IDS) { // se olvidan las películas vistas hace más tiempo
+    keys.sort((a, b) => (all[a]._ts || 0) - (all[b]._ts || 0));
+    for (const old of keys.slice(0, keys.length - AVAIL_MAX_IDS)) delete all[old];
+  }
+  try { put(AVAIL_KEY, JSON.stringify(all)); } catch (_) { /* storage lleno: se pierde el aprendizaje, no pasa nada */ }
+}
+// Lo que sabemos del servidor [k] para la película [id]: { has, ext? } fresco, o null si no se sabe / caducó.
+function availFor(id, k) {
+  const t = readAvail()[id];
+  const e = t && t[k];
+  if (!e || Date.now() - (e.ts || 0) > AVAIL_TTL_MS) return null;
+  return e;
+}
+
+// Fuentes alternativas de una película: un servidor online por fila (menos el activo), etiquetado por país. Perezosas: solo
+// se resuelven al elegirlas. Se omiten los que ya sabemos que no la tienen; los conocidos van primero.
+function buildAlternatives(id, ext, tok, activeKey) {
+  if (!id) return [];
+  const st = readSrvs();
+  if (!st || !Array.isArray(st.list)) return [];
+  const h = healthFresh();
+  const online = h ? new Set(h.online) : null;
+  const known = [], unknown = [];
+  const countBy = {}; // cuántos servidores por país: para desambiguar los repetidos con el host
+  for (const srv of st.list) {
+    const k = keyOf(srv);
+    if (!k || k === activeKey) continue;
+    if (online && !online.has(srv.url)) continue; // solo online, si hay chequeo fresco
+    const av = availFor(id, k);
+    if (av && !av.has) continue; // ya sabemos que no la tiene: se omite
+    const base = niceLabel(srv);
+    countBy[base] = (countBy[base] || 0) + 1;
+    const entry = { base, host: hostOf(srv), ref: `at:${k}~${id}~${ext}~${tok}` };
+    (av && av.has ? known : unknown).push(entry);
+  }
+  const label = (e) => (countBy[e.base] > 1 && e.host ? `${e.base} · ${e.host}` : e.base);
+  return [...known, ...unknown].slice(0, 12).map((e) => ({ label: label(e), ref: e.ref }));
+}
+
+// Resuelve una fuente alternativa `at:<K>~<id>~<ext>~<tok>` (la misma película en el servidor [K]), sin tocar el servidor activo.
+async function resolveAlt(s) {
+  const segs = s.slice(3).split("~");
+  const k = segs[0];
+  const id = segs[1] || "";
+  const hintExt = segs[2] || "mp4";
+  const tok = segs.slice(3).join("~"); // findKey del título (para descartar una colisión de id)
+  const srv = serverByKey(k);
+  if (!srv || !/^\d+$/.test(id)) throw kino.error("not_found", "fuente desconocida");
+
+  // Servidor confirmado hace poco: se abre al instante con la extensión guardada.
+  const cached = availFor(id, k);
+  if (cached && cached.has && cached.ext) return { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${cached.ext}` };
+
+  // Si no, se confirma con get_vod_info: un servidor sin ese id (o con otra película en él) lo rechaza.
+  let data;
+  try { data = await callServer(srv, "get_vod_info", { vod_id: id }); } catch (_) { recordAvail(id, k, null); throw kino.error("not_found", "fuente no disponible"); }
+  const md = (data && data.movie_data) || {};
+  const name = md.name || (data && data.info && data.info.name) || "";
+  if (!name || (tok && findKey(cleanTitle(name, "").name) !== tok)) { recordAvail(id, k, null); throw kino.error("not_found", "el servidor no tiene esta película"); }
+  const ext = String(md.container_extension || hintExt || "mp4");
+  recordAvail(id, k, ext);
+  return { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${ext}` };
+}
+
 export async function resolve(ref) {
-  const { url, username, password } = await activeServer();
   let s = String(ref || "");
+
+  // Fuente alternativa: la misma película en otro servidor (no el activo, y sin cambiarlo).
+  if (s.startsWith("at:")) return await resolveAlt(s);
+
+  const active = await activeServer();
+  const { url, username, password } = active;
   if (s.startsWith("idx:m:")) s = await resolveIdxRef(s, fetchCategory, serverCats);
 
   if (s.startsWith("live:")) {
@@ -1034,12 +1144,19 @@ export async function resolve(ref) {
   }
 
   if (s.startsWith("vod:")) {
-    const parts = s.slice(4).split(":");
+    const [core, ...rest] = s.slice(4).split("~");
+    const tok = rest.join("~"); // findKey del título, si el ítem lo trae (retrocompatible: los ref viejos no lo llevan)
+    const parts = core.split(":");
     const streamId = parts[0];
     const ext = parts[1] || "mp4";
     if (!/^\d+$/.test(streamId)) throw kino.error("not_found");
-    noteRecent(streamId, ext, serverKey());
-    return { url: `${url}/movie/${username}/${password}/${streamId}.${ext}` };
+    const aKey = serverKey();
+    noteRecent(streamId, ext, aKey);
+    recordAvail(streamId, aKey, ext); // el servidor activo la tiene
+    const out = { url: `${url}/movie/${username}/${password}/${streamId}.${ext}` };
+    const alts = buildAlternatives(streamId, ext, tok, aKey);
+    if (alts.length) { out.alternatives = alts; out.label = niceLabel(active); } // etiqueta del servidor activo en el menú "Servidor"
+    return out;
   }
 
   if (s.startsWith("ep:")) {

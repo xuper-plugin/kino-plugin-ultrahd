@@ -1594,14 +1594,22 @@ async function fetchServerList() {
   }
   throw kino.error("unavailable", "bootstrap: sin servidores", { userMessage: "El servicio no tiene servidores disponibles." });
 }
-function serverKey() {
-  const st = readSrvs();
-  const srv = st && Array.isArray(st.list) ? st.list[st.idx] : null;
-  if (!srv) return "";
+function keyOf(srv) {
+  if (!srv || !srv.url) return "";
   let h = 5381;
   const text2 = srv.url + "|" + srv.username;
   for (let i = 0; i < text2.length; i++) h = (h << 5) + h + text2.charCodeAt(i) | 0;
   return (h >>> 0).toString(36);
+}
+function serverKey() {
+  const st = readSrvs();
+  const srv = st && Array.isArray(st.list) ? st.list[st.idx] : null;
+  return keyOf(srv);
+}
+function serverByKey(k) {
+  const st = readSrvs();
+  if (!st || !Array.isArray(st.list)) return null;
+  return st.list.find((s) => keyOf(s) === k) || null;
 }
 function readSrvs() {
   try {
@@ -1958,15 +1966,20 @@ var ratingOf = (m) => {
   const r = num(m.rating) || num(m.rating_5based) * 2;
   return r > 0 ? Math.min(10, r) : void 0;
 };
+function movieNameTok(m) {
+  const { name } = cleanTitle(m.name || m.title, "");
+  return findKey(name) || "";
+}
 function vodItem(m, adult) {
   const id = String(m.stream_id || "");
   if (!id) return null;
   const title2 = displayTitle(m.name || m.title);
   if (!title2) return null;
   const ext = String(m.container_extension || "mp4");
+  const tok = movieNameTok(m);
   return {
     id: "vod-" + id,
-    ref: "vod:" + id + ":" + ext,
+    ref: "vod:" + id + ":" + ext + (tok ? "~" + tok : ""),
     title: title2,
     kind: "movie",
     poster: img(m.stream_icon || m.cover),
@@ -2448,9 +2461,94 @@ async function guide({ channelIds, from, to }) {
   }));
   return lists.flat();
 }
+var AVAIL_KEY = "avail:v1";
+var AVAIL_TTL_MS = 36 * 60 * 60 * 1e3;
+var AVAIL_MAX_IDS = 400;
+function readAvail() {
+  try {
+    const o = JSON.parse(kino.storage.get(AVAIL_KEY) || "{}");
+    return o && typeof o === "object" ? o : {};
+  } catch (_) {
+    return {};
+  }
+}
+function recordAvail(id, k, ext) {
+  if (!id || !k) return;
+  const all = readAvail();
+  const t = all[id] && typeof all[id] === "object" ? all[id] : {};
+  t[k] = ext ? { has: 1, ext, ts: Date.now() } : { has: 0, ts: Date.now() };
+  t._ts = Date.now();
+  all[id] = t;
+  const keys = Object.keys(all);
+  if (keys.length > AVAIL_MAX_IDS) {
+    keys.sort((a, b) => (all[a]._ts || 0) - (all[b]._ts || 0));
+    for (const old of keys.slice(0, keys.length - AVAIL_MAX_IDS)) delete all[old];
+  }
+  try {
+    put(AVAIL_KEY, JSON.stringify(all));
+  } catch (_) {
+  }
+}
+function availFor(id, k) {
+  const t = readAvail()[id];
+  const e = t && t[k];
+  if (!e || Date.now() - (e.ts || 0) > AVAIL_TTL_MS) return null;
+  return e;
+}
+function buildAlternatives(id, ext, tok, activeKey) {
+  if (!id) return [];
+  const st = readSrvs();
+  if (!st || !Array.isArray(st.list)) return [];
+  const h = healthFresh();
+  const online = h ? new Set(h.online) : null;
+  const known = [], unknown = [];
+  const countBy = {};
+  for (const srv of st.list) {
+    const k = keyOf(srv);
+    if (!k || k === activeKey) continue;
+    if (online && !online.has(srv.url)) continue;
+    const av = availFor(id, k);
+    if (av && !av.has) continue;
+    const base = niceLabel(srv);
+    countBy[base] = (countBy[base] || 0) + 1;
+    const entry = { base, host: hostOf(srv), ref: `at:${k}~${id}~${ext}~${tok}` };
+    (av && av.has ? known : unknown).push(entry);
+  }
+  const label = (e) => countBy[e.base] > 1 && e.host ? `${e.base} \xB7 ${e.host}` : e.base;
+  return [...known, ...unknown].slice(0, 12).map((e) => ({ label: label(e), ref: e.ref }));
+}
+async function resolveAlt(s) {
+  const segs = s.slice(3).split("~");
+  const k = segs[0];
+  const id = segs[1] || "";
+  const hintExt = segs[2] || "mp4";
+  const tok = segs.slice(3).join("~");
+  const srv = serverByKey(k);
+  if (!srv || !/^\d+$/.test(id)) throw kino.error("not_found", "fuente desconocida");
+  const cached = availFor(id, k);
+  if (cached && cached.has && cached.ext) return { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${cached.ext}` };
+  let data;
+  try {
+    data = await callServer(srv, "get_vod_info", { vod_id: id });
+  } catch (_) {
+    recordAvail(id, k, null);
+    throw kino.error("not_found", "fuente no disponible");
+  }
+  const md = data && data.movie_data || {};
+  const name = md.name || data && data.info && data.info.name || "";
+  if (!name || tok && findKey(cleanTitle(name, "").name) !== tok) {
+    recordAvail(id, k, null);
+    throw kino.error("not_found", "el servidor no tiene esta pel\xEDcula");
+  }
+  const ext = String(md.container_extension || hintExt || "mp4");
+  recordAvail(id, k, ext);
+  return { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${ext}` };
+}
 async function resolve(ref) {
-  const { url, username, password } = await activeServer();
   let s = String(ref || "");
+  if (s.startsWith("at:")) return await resolveAlt(s);
+  const active = await activeServer();
+  const { url, username, password } = active;
   if (s.startsWith("idx:m:")) s = await resolveIdxRef(s, fetchCategory, serverCats);
   if (s.startsWith("live:")) {
     const id = s.slice(5);
@@ -2458,12 +2556,22 @@ async function resolve(ref) {
     return { url: `${url}/live/${username}/${password}/${id}.${liveFormat()}` };
   }
   if (s.startsWith("vod:")) {
-    const parts = s.slice(4).split(":");
+    const [core, ...rest] = s.slice(4).split("~");
+    const tok = rest.join("~");
+    const parts = core.split(":");
     const streamId = parts[0];
     const ext = parts[1] || "mp4";
     if (!/^\d+$/.test(streamId)) throw kino.error("not_found");
-    noteRecent(streamId, ext, serverKey());
-    return { url: `${url}/movie/${username}/${password}/${streamId}.${ext}` };
+    const aKey = serverKey();
+    noteRecent(streamId, ext, aKey);
+    recordAvail(streamId, aKey, ext);
+    const out = { url: `${url}/movie/${username}/${password}/${streamId}.${ext}` };
+    const alts = buildAlternatives(streamId, ext, tok, aKey);
+    if (alts.length) {
+      out.alternatives = alts;
+      out.label = niceLabel(active);
+    }
+    return out;
   }
   if (s.startsWith("ep:")) {
     const parts = s.slice(3).split(":");
@@ -2935,7 +3043,7 @@ function verifyingView({ device } = {}) {
 }
 
 // src/screen.js
-var PLUGIN_VERSION = "0.3.31";
+var PLUGIN_VERSION = "0.3.32";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
