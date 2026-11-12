@@ -130,8 +130,8 @@ async function loadRecent() {
 const countryOn = () => cat.homeCountry() !== "none";
 
 function unitsFor(tab, lang) {
-  if (tab === "home") return [`home:movies:${lang}`, `home:series:${lang}`, ...(countryOn() ? ["country"] : []), "recent", "index"];
-  return [tab === "live" ? "tab:live" : `tab:${tab}:${lang}`];
+  if (tab === "home") return [`home:movies:${lang}`, `home:series:${lang}`, ...(countryOn() ? ["country"] : []), "recent", "index", "health"];
+  return [tab === "live" ? "tab:live" : `tab:${tab}:${lang}`, "health"];
 }
 
 function memoKey(unit) {
@@ -144,6 +144,7 @@ function isDone(unit) {
   if (unit === "country") return countryCards !== null;
   if (unit === "recent") return recentCards !== null;
   if (unit === "index") return !indexNeeded();
+  if (unit === "health") return !cat.healthNeeded();
   return memo.has(memoKey(unit));
 }
 
@@ -163,6 +164,7 @@ async function runUnit(unit) {
     const out = await indexStep({ budgetMs: 2500 });
     if (out === "error" || out === "wait") throw new Error("índice: " + out);
   }
+  else if (unit === "health") await cat.healthCheck();
   else {
     const [prefix, tab, lang] = unit.split(":");
     if (tab === "live") await loadLiveTab();
@@ -247,9 +249,12 @@ function serverSheet(servers) {
   const rows = (servers.items || []).slice(0, 60).map((s) => {
     const t = `${s.label === s.host ? s.host : s.label + "  " + s.host}${s.https ? "" : " · http"}`;
     const sel = s.i === cur;
+    const leading = s.flag
+      ? { type: "Image", key: "flag-" + s.i, url: `https://flagcdn.com/w40/${s.flag}.png`, aspect: "4:3", h: 22 }
+      : { type: "Icon", name: "language" };
     return {
-      type: "ListTile", key: "srvrow-" + s.i, title: t, titleEn: t, selected: sel,
-      ...(sel ? { leading: { type: "Icon", name: "check" } } : {}),
+      type: "ListTile", key: "srvrow-" + s.i, title: t, titleEn: t, selected: sel, leading,
+      ...(sel ? { trailing: { type: "Icon", name: "check" } } : {}),
       onTap: { event: "srv.pick", arg: String(s.i) },
     };
   });

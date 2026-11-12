@@ -1723,21 +1723,21 @@ var hostOf = (srv) => {
 };
 var labelOf = (srv) => srv && srv.name ? srv.name : hostOf(srv);
 var FLAG_NAMES = { AR: "Argentina", BO: "Bolivia", BR: "Brasil", CA: "Canad\xE1", CL: "Chile", CO: "Colombia", CR: "Costa Rica", CU: "Cuba", DE: "Alemania", DO: "Rep. Dominicana", EC: "Ecuador", ES: "Espa\xF1a", FR: "Francia", GB: "Reino Unido", GT: "Guatemala", HN: "Honduras", IT: "Italia", MX: "M\xE9xico", NI: "Nicaragua", PA: "Panam\xE1", PE: "Per\xFA", PR: "Puerto Rico", PT: "Portugal", PY: "Paraguay", SV: "El Salvador", US: "EE. UU.", UY: "Uruguay", VE: "Venezuela" };
-function flagCountry(s) {
+function flagInfo(s) {
   const cp = [...String(s || "")];
   if (cp.length >= 2) {
     const a = cp[0].codePointAt(0), b = cp[1].codePointAt(0);
     if (a >= 127462 && a <= 127487 && b >= 127462 && b <= 127487) {
       const code = String.fromCharCode(a - 127462 + 65) + String.fromCharCode(b - 127462 + 65);
-      return FLAG_NAMES[code] || code;
+      return { code: code.toLowerCase(), name: FLAG_NAMES[code] || code };
     }
   }
-  return String(s || "").includes("\u{1F310}") ? "Global" : null;
+  return String(s || "").includes("\u{1F310}") ? { code: "", name: "Global" } : null;
 }
 var niceLabel = (srv) => {
   const base = labelOf(srv);
-  const c = flagCountry(base);
-  return c ? `${base} ${c}` : base;
+  const fi = flagInfo(base);
+  return fi ? `${base} ${fi.name}` : base;
 };
 async function serverStatus() {
   const cached = readSrvs();
@@ -1776,8 +1776,18 @@ async function serverList() {
   const st = await loadServers(false);
   return {
     current: st.idx,
-    items: (st.list || []).map((s, i) => ({ i, label: niceLabel(s), host: hostOf(s), https: String(s.url).startsWith("https://") }))
+    items: itemsWithHealth(st)
   };
+}
+function itemsWithHealth(st) {
+  const h = healthFresh();
+  const online = h ? new Set(h.online) : null;
+  let items = (st.list || []).map((s, i) => {
+    const fi = flagInfo(labelOf(s));
+    return { i, label: niceLabel(s), host: hostOf(s), https: String(s.url).startsWith("https://"), flag: fi ? fi.code : "", online: online ? online.has(s.url) : true };
+  });
+  if (online && online.size > 0) items = items.filter((x) => x.online);
+  return items;
 }
 async function selectServer(i) {
   const st = await loadServers(false);
@@ -1801,6 +1811,55 @@ async function selectServer(i) {
     }
   }
   return { ok: false, host: hostOf(st.list[start]), label: labelOf(st.list[start]), index: start + 1, total: n };
+}
+var HEALTH_KEY = "health:v1";
+var HEALTH_TTL_MS = 30 * 60 * 1e3;
+var healthRunning = false;
+function readHealth() {
+  try {
+    const o = JSON.parse(kino.storage.get(HEALTH_KEY) || "null");
+    return o && Array.isArray(o.online) && typeof o.ts === "number" ? o : null;
+  } catch (_) {
+    return null;
+  }
+}
+var healthFresh = () => {
+  const h = readHealth();
+  return h && Date.now() - h.ts < HEALTH_TTL_MS ? h : null;
+};
+var healthNeeded = () => !healthFresh() && !healthRunning;
+var probeAlive = async (srv) => {
+  try {
+    await callServer(srv, "get_vod_categories", {});
+    return true;
+  } catch (_) {
+    return false;
+  }
+};
+async function healthCheck() {
+  if (healthRunning) return 0;
+  healthRunning = true;
+  try {
+    const st = await loadServers(false);
+    const list = st.list || [];
+    const results = await Promise.all(list.map(async (s) => await probeAlive(s) ? s.url : null));
+    const online = results.filter(Boolean);
+    put(HEALTH_KEY, JSON.stringify({ ts: Date.now(), online }));
+    const cur = list[st.idx];
+    if (cur && online.length && !online.includes(cur.url)) {
+      const i = list.findIndex((s) => s.url === online[0]);
+      if (i >= 0) {
+        st.idx = i;
+        st.ok = true;
+        st.okAt = Date.now();
+        st.pin = true;
+        writeSrvs(st);
+      }
+    }
+    return online.length;
+  } finally {
+    healthRunning = false;
+  }
 }
 async function refreshServers() {
   const before = readSrvs();
@@ -2978,8 +3037,8 @@ async function loadRecent() {
 }
 var countryOn = () => homeCountry() !== "none";
 function unitsFor(tab, lang) {
-  if (tab === "home") return [`home:movies:${lang}`, `home:series:${lang}`, ...countryOn() ? ["country"] : [], "recent", "index"];
-  return [tab === "live" ? "tab:live" : `tab:${tab}:${lang}`];
+  if (tab === "home") return [`home:movies:${lang}`, `home:series:${lang}`, ...countryOn() ? ["country"] : [], "recent", "index", "health"];
+  return [tab === "live" ? "tab:live" : `tab:${tab}:${lang}`, "health"];
 }
 function memoKey(unit) {
   const [prefix, tab, lang] = unit.split(":");
@@ -2990,6 +3049,7 @@ function isDone(unit) {
   if (unit === "country") return countryCards !== null;
   if (unit === "recent") return recentCards !== null;
   if (unit === "index") return !indexNeeded();
+  if (unit === "health") return !healthNeeded();
   return memo.has(memoKey(unit));
 }
 function pendingUnit(state, tab, device) {
@@ -3005,7 +3065,8 @@ async function runUnit(unit) {
   else if (unit === "index") {
     const out = await indexStep({ budgetMs: 2500 });
     if (out === "error" || out === "wait") throw new Error("\xEDndice: " + out);
-  } else {
+  } else if (unit === "health") await healthCheck();
+  else {
     const [prefix, tab, lang] = unit.split(":");
     if (tab === "live") await loadLiveTab();
     else await loadVodTab(tab, lang, { home: prefix === "home" });
@@ -3090,13 +3151,15 @@ function serverSheet(servers) {
   const rows = (servers.items || []).slice(0, 60).map((s) => {
     const t = `${s.label === s.host ? s.host : s.label + "  " + s.host}${s.https ? "" : " \xB7 http"}`;
     const sel = s.i === cur;
+    const leading = s.flag ? { type: "Image", key: "flag-" + s.i, url: `https://flagcdn.com/w40/${s.flag}.png`, aspect: "4:3", h: 22 } : { type: "Icon", name: "language" };
     return {
       type: "ListTile",
       key: "srvrow-" + s.i,
       title: t,
       titleEn: t,
       selected: sel,
-      ...sel ? { leading: { type: "Icon", name: "check" } } : {},
+      leading,
+      ...sel ? { trailing: { type: "Icon", name: "check" } } : {},
       onTap: { event: "srv.pick", arg: String(s.i) }
     };
   });
@@ -3362,6 +3425,9 @@ async function section2(arg) {
   const hero2 = heroOf(rows);
   return { tabs: SECTION_TABS.map((t) => ({ id: t.id, label: english ? t.en : t.label })), tab, ...hero2 ? { hero: hero2 } : {}, rows };
 }
+
+// src/plugin.js
+globalThis.__kinoDropPendingFetches = true;
 export {
   action,
   browse,

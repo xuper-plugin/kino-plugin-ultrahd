@@ -255,19 +255,20 @@ const labelOf = (srv) => (srv && srv.name ? srv.name : hostOf(srv));
 
 // En Android TV no se dibujan los emojis de bandera: decodifica la bandera a nombre de país (texto) para que se lea igual.
 const FLAG_NAMES = { AR: "Argentina", BO: "Bolivia", BR: "Brasil", CA: "Canadá", CL: "Chile", CO: "Colombia", CR: "Costa Rica", CU: "Cuba", DE: "Alemania", DO: "Rep. Dominicana", EC: "Ecuador", ES: "España", FR: "Francia", GB: "Reino Unido", GT: "Guatemala", HN: "Honduras", IT: "Italia", MX: "México", NI: "Nicaragua", PA: "Panamá", PE: "Perú", PR: "Puerto Rico", PT: "Portugal", PY: "Paraguay", SV: "El Salvador", US: "EE. UU.", UY: "Uruguay", VE: "Venezuela" };
-function flagCountry(s) {
+// { code (ISO2 minúsculas, para la imagen de bandera), name } o null. 🌐 => Global sin código.
+function flagInfo(s) {
   const cp = [...String(s || "")];
   if (cp.length >= 2) {
     const a = cp[0].codePointAt(0), b = cp[1].codePointAt(0);
     if (a >= 0x1f1e6 && a <= 0x1f1ff && b >= 0x1f1e6 && b <= 0x1f1ff) {
       const code = String.fromCharCode(a - 0x1f1e6 + 65) + String.fromCharCode(b - 0x1f1e6 + 65);
-      return FLAG_NAMES[code] || code;
+      return { code: code.toLowerCase(), name: FLAG_NAMES[code] || code };
     }
   }
-  return String(s || "").includes("🌐") ? "Global" : null;
+  return String(s || "").includes("🌐") ? { code: "", name: "Global" } : null;
 }
 // Etiqueta legible en todas partes: la bandera (si la hay) + el nombre del país; en un TV solo se ve el nombre.
-const niceLabel = (srv) => { const base = labelOf(srv); const c = flagCountry(base); return c ? `${base} ${c}` : base; };
+const niceLabel = (srv) => { const base = labelOf(srv); const fi = flagInfo(base); return fi ? `${base} ${fi.name}` : base; };
 
 // Nunca expone usuario ni contraseña: solo el host y la posición en la lista.
 export async function serverStatus() {
@@ -309,8 +310,20 @@ export async function serverList() {
   const st = await loadServers(false);
   return {
     current: st.idx,
-    items: (st.list || []).map((s, i) => ({ i, label: niceLabel(s), host: hostOf(s), https: String(s.url).startsWith("https://") })),
+    items: itemsWithHealth(st),
   };
+}
+
+// Items del selector con bandera y estado online; con un chequeo fresco, solo los que responden.
+function itemsWithHealth(st) {
+  const h = healthFresh();
+  const online = h ? new Set(h.online) : null;
+  let items = (st.list || []).map((s, i) => {
+    const fi = flagInfo(labelOf(s));
+    return { i, label: niceLabel(s), host: hostOf(s), https: String(s.url).startsWith("https://"), flag: fi ? fi.code : "", online: online ? online.has(s.url) : true };
+  });
+  if (online && online.size > 0) items = items.filter((x) => x.online);
+  return items;
 }
 
 // Fija un servidor elegido a mano (no se vuelve solo al de casa). Lo prueba antes con una petición ligera.
@@ -332,6 +345,39 @@ export async function selectServer(i) {
     } catch (e) { lastErr = errText(e); }
   }
   return { ok: false, host: hostOf(st.list[start]), label: labelOf(st.list[start]), index: start + 1, total: n };
+}
+
+// ---- chequeo de salud: para que el selector muestre solo los servidores que responden ----------------
+const HEALTH_KEY = "health:v1";
+const HEALTH_TTL_MS = 30 * 60 * 1000; // se revisa de nuevo cuando pasa esto
+let healthRunning = false;
+
+function readHealth() {
+  try { const o = JSON.parse(kino.storage.get(HEALTH_KEY) || "null"); return o && Array.isArray(o.online) && typeof o.ts === "number" ? o : null; } catch (_) { return null; }
+}
+const healthFresh = () => { const h = readHealth(); return h && Date.now() - h.ts < HEALTH_TTL_MS ? h : null; };
+export const healthNeeded = () => !healthFresh() && !healthRunning;
+
+const probeAlive = async (srv) => { try { await callServer(srv, "get_vod_categories", {}); return true; } catch (_) { return false; } };
+
+// Prueba todos los servidores en paralelo (en segundo plano, tras cargar el contenido) y guarda las URLs de los que
+// responden. Si el servidor activo quedó caído, salta al primero online. Una corrida a la vez.
+export async function healthCheck() {
+  if (healthRunning) return 0;
+  healthRunning = true;
+  try {
+    const st = await loadServers(false);
+    const list = st.list || [];
+    const results = await Promise.all(list.map(async (s) => ((await probeAlive(s)) ? s.url : null)));
+    const online = results.filter(Boolean);
+    put(HEALTH_KEY, JSON.stringify({ ts: Date.now(), online }));
+    const cur = list[st.idx];
+    if (cur && online.length && !online.includes(cur.url)) {
+      const i = list.findIndex((s) => s.url === online[0]);
+      if (i >= 0) { st.idx = i; st.ok = true; st.okAt = Date.now(); st.pin = true; writeSrvs(st); }
+    }
+    return online.length;
+  } finally { healthRunning = false; }
 }
 
 export async function refreshServers() {
