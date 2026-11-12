@@ -3,7 +3,7 @@
 // Todo lo que viene del catálogo se descarta si cambia el servidor activo (categorías e ids no coinciden entre servidores).
 import * as cat from "./catalog.js";
 import { recentEntries, rememberCard } from "./recent.js";
-import { say } from "./i18n.js";
+import { say, twin } from "./i18n.js";
 import { put } from "./store.js";
 import { indexStep, indexNeeded } from "./titleIndex.js";
 import { enrichTmdb, tmdbAvailable } from "./tmdbLazy.js";
@@ -241,6 +241,22 @@ const bump = (state) => ({ n: (state.n || 0) + 1 });
 
 const onlyCat = new Map(); // `${tab}:${lang}:${categoría}` -> { rails } (una categoría entera, hasta 60 títulos)
 
+// El sheet del selector de servidor: un ✓ y resalte en el servidor activo.
+function serverSheet(servers) {
+  const cur = servers.current;
+  const rows = (servers.items || []).slice(0, 60).map((s) => {
+    const t = `${s.label === s.host ? s.host : s.label + "  " + s.host}${s.https ? "" : " · http"}`;
+    const sel = s.i === cur;
+    return {
+      type: "ListTile", key: "srvrow-" + s.i, title: t, titleEn: t, selected: sel,
+      ...(sel ? { leading: { type: "Icon", name: "check" } } : {}),
+      onTap: { event: "srv.pick", arg: String(s.i) },
+    };
+  });
+  const body = rows.length ? rows : [{ type: "Text", key: "srvEmpty", ...twin("liveEmpty", "text") }];
+  return { ...twin("setPick", "title"), body };
+}
+
 const events = {
   open({ route, state }) {
     if (route && route.name && route.name !== "main") return null;
@@ -386,6 +402,20 @@ const events = {
     const r = await cat.refreshServers();
     const srv = await cat.serverStatus();
     return { state: { srv, busy: false }, toast: { text: say(r.ok ? "refreshed" : "refreshFail", lang, { n: r.total }), role: r.ok ? "success" : "error" } };
+  },
+  // Modal (sheet) del selector de servidor, abierto desde el botón del header.
+  async openServers() {
+    let servers;
+    try { servers = await cat.serverList(); } catch (_) { servers = { current: -1, items: [] }; }
+    return { state: { servers }, sheet: serverSheet(servers) };
+  },
+  // Elegido un servidor: fijar, recargar por debajo y re-dibujar el sheet con el ✓ en el elegido (NO cerrar el plugin).
+  async "srv.pick"({ arg, state, lang }) {
+    const r = await cat.selectServer(arg);
+    if (r.ok) { resetCaches(); cacheKey = cat.serverKey(); }
+    let servers;
+    try { servers = await cat.serverList(); } catch (_) { servers = { current: -1, items: [] }; }
+    return { state: { ...bump(state), failed: null, servers }, sheet: serverSheet(servers), toast: { text: say(r.ok ? "srvSelected" : "srvSelectFail", lang, { host: r.label || r.host || "" }), role: r.ok ? "success" : "error" } };
   },
   saved({ state }) { return { state: bump(state) }; },
 };

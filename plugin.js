@@ -1519,7 +1519,8 @@ function parseServerLine(line) {
     const password = u.searchParams.get("password") || u.searchParams.get("pass") || "";
     if (!username) return null;
     const base = (u.protocol + "//" + u.host).replace(/\/+$/, "");
-    return { url: base, username, password };
+    const name = line.slice(url.length).trim().replace(/^\[|\]$/g, "").trim().slice(0, 40);
+    return { url: base, username, password, ...name ? { name } : {} };
   } catch (_) {
     return null;
   }
@@ -1720,6 +1721,7 @@ var hostOf = (srv) => {
     return "";
   }
 };
+var labelOf = (srv) => srv && srv.name ? srv.name : hostOf(srv);
 async function serverStatus() {
   const cached = readSrvs();
   if (cached && cached.ok && cached.list && cached.list[cached.idx] && Date.now() - (cached.okAt || 0) < 2e4) return { ok: true, host: hostOf(cached.list[cached.idx]), index: cached.idx + 1, total: cached.list.length, at: cached.okAt };
@@ -1752,6 +1754,31 @@ async function switchServer() {
     }
   }
   return { changed: false, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: n, https };
+}
+async function serverList() {
+  const st = await loadServers(false);
+  return {
+    current: st.idx,
+    items: (st.list || []).map((s, i) => ({ i, label: labelOf(s), host: hostOf(s), https: String(s.url).startsWith("https://") }))
+  };
+}
+async function selectServer(i) {
+  const st = await loadServers(false);
+  const n = st.list.length;
+  const idx = parseInt(i, 10);
+  if (!(idx >= 0 && idx < n)) return { ok: false };
+  try {
+    await callServer(st.list[idx], "get_vod_categories", {});
+    st.idx = idx;
+    st.ok = true;
+    st.okAt = Date.now();
+    st.pin = idx !== homeIdx(st);
+    writeSrvs(st);
+    return { ok: true, host: hostOf(st.list[idx]), label: labelOf(st.list[idx]), index: idx + 1, total: n };
+  } catch (e) {
+    lastErr = errText(e);
+    return { ok: false, host: hostOf(st.list[idx]), label: labelOf(st.list[idx]), index: idx + 1, total: n };
+  }
 }
 async function refreshServers() {
   const before = readSrvs();
@@ -2428,6 +2455,10 @@ var TEXTS = Object.freeze({
   setServerDown: ["Sin respuesta", "No answer"],
   setServerNone: ["Sin servidores", "No servers"],
   setServerPos: ["{i} de {n} en la lista", "{i} of {n} in the list"],
+  setPick: ["Elegir servidor", "Choose server"],
+  setPickHint: ["Cada servidor trae la bandera de su pa\xEDs (\u{1F1F2}\u{1F1FD}, \u{1F1EA}\u{1F1F8}, \u{1F310}). Elige el tuyo; si uno no trae buenos canales o logos, prueba otro.", "Each server shows its country flag (\u{1F1F2}\u{1F1FD}, \u{1F1EA}\u{1F1F8}, \u{1F310}). Pick yours; if one has poor channels or logos, try another."],
+  srvSelected: ["Servidor fijado: {host}", "Server set: {host}"],
+  srvSelectFail: ["No respondi\xF3 {host}. Prueba otro.", "{host} did not answer. Try another."],
   setSwitch: ["Cambiar servidor", "Switch server"],
   setSwitchHint: ["Prueba el siguiente servidor de la lista.", "Tries the next server in the list."],
   setRefresh: ["Actualizar lista de servidores", "Update server list"],
@@ -2653,6 +2684,7 @@ function browseView({ tab, data, recent, country, loading, failed, device = "pho
       actions: [
         ...tv ? [barButton("searchButton", "search", "search", "openSearch")] : [],
         barButton("liveButton", "tv", "live", { event: "go", arg: "live" }),
+        barButton("serverBtn", "language", "setPick", "openServers"),
         barButton("settings", "settings", "settings", { event: "go", arg: "settings" })
       ]
     },
@@ -3031,6 +3063,24 @@ async function screen(ctx) {
 var cardsOf = (items) => (Array.isArray(items) ? items : []).filter((i) => i && typeof i.id === "string" && typeof i.ref === "string").slice(0, CHANNELS_CAP).map(cardOf);
 var bump = (state) => ({ n: (state.n || 0) + 1 });
 var onlyCat = /* @__PURE__ */ new Map();
+function serverSheet(servers) {
+  const cur = servers.current;
+  const rows = (servers.items || []).slice(0, 60).map((s) => {
+    const t = `${s.label === s.host ? s.host : s.label + "  " + s.host}${s.https ? "" : " \xB7 http"}`;
+    const sel = s.i === cur;
+    return {
+      type: "ListTile",
+      key: "srvrow-" + s.i,
+      title: t,
+      titleEn: t,
+      selected: sel,
+      ...sel ? { leading: { type: "Icon", name: "check" } } : {},
+      onTap: { event: "srv.pick", arg: String(s.i) }
+    };
+  });
+  const body = rows.length ? rows : [{ type: "Text", key: "srvEmpty", ...twin("liveEmpty", "text") }];
+  return { ...twin("setPick", "title"), body };
+}
 var events = {
   open({ route, state }) {
     if (route && route.name && route.name !== "main") return null;
@@ -3205,6 +3255,31 @@ var events = {
     const r = await refreshServers();
     const srv = await serverStatus();
     return { state: { srv, busy: false }, toast: { text: say(r.ok ? "refreshed" : "refreshFail", lang, { n: r.total }), role: r.ok ? "success" : "error" } };
+  },
+  // Modal (sheet) del selector de servidor, abierto desde el botón del header.
+  async openServers() {
+    let servers;
+    try {
+      servers = await serverList();
+    } catch (_) {
+      servers = { current: -1, items: [] };
+    }
+    return { state: { servers }, sheet: serverSheet(servers) };
+  },
+  // Elegido un servidor: fijar, recargar por debajo y re-dibujar el sheet con el ✓ en el elegido (NO cerrar el plugin).
+  async "srv.pick"({ arg, state, lang }) {
+    const r = await selectServer(arg);
+    if (r.ok) {
+      resetCaches();
+      cacheKey = serverKey();
+    }
+    let servers;
+    try {
+      servers = await serverList();
+    } catch (_) {
+      servers = { current: -1, items: [] };
+    }
+    return { state: { ...bump(state), failed: null, servers }, sheet: serverSheet(servers), toast: { text: say(r.ok ? "srvSelected" : "srvSelectFail", lang, { host: r.label || r.host || "" }), role: r.ok ? "success" : "error" } };
   },
   saved({ state }) {
     return { state: bump(state) };

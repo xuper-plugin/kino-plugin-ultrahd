@@ -155,6 +155,7 @@ export function browseView({ tab, data, recent, country, loading, failed, device
       actions: [
         ...(tv ? [barButton("searchButton", "search", "search", "openSearch")] : []),
         barButton("liveButton", "tv", "live", { event: "go", arg: "live" }),
+        barButton("serverBtn", "language", "setPick", "openServers"),
         barButton("settings", "settings", "settings", { event: "go", arg: "settings" }),
       ],
     },

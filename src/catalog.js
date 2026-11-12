@@ -44,7 +44,9 @@ function parseServerLine(line) {
     const password = u.searchParams.get("password") || u.searchParams.get("pass") || "";
     if (!username) return null;
     const base = (u.protocol + "//" + u.host).replace(/\/+$/, "");
-    return { url: base, username, password };
+    // Tras la URL, la línea puede traer un nombre: "http://host/player_api.php?... [Mi Servidor]".
+    const name = line.slice(url.length).trim().replace(/^\[|\]$/g, "").trim().slice(0, 40);
+    return { url: base, username, password, ...(name ? { name } : {}) };
   } catch (_) {
     return null;
   }
@@ -249,6 +251,7 @@ const img = (u) => {
 const hostOf = (srv) => {
   try { return new URL(srv.url).host; } catch (_) { return ""; }
 };
+const labelOf = (srv) => (srv && srv.name ? srv.name : hostOf(srv));
 
 // Nunca expone usuario ni contraseña: solo el host y la posición en la lista.
 export async function serverStatus() {
@@ -283,6 +286,32 @@ export async function switchServer() {
     } catch (e) { lastErr = errText(e); }
   }
   return { changed: false, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: n, https };
+}
+
+// La lista completa para el selector de Ajustes/header: solo nombre/host y posición (nunca usuario ni contraseña).
+export async function serverList() {
+  const st = await loadServers(false);
+  return {
+    current: st.idx,
+    items: (st.list || []).map((s, i) => ({ i, label: labelOf(s), host: hostOf(s), https: String(s.url).startsWith("https://") })),
+  };
+}
+
+// Fija un servidor elegido a mano (no se vuelve solo al de casa). Lo prueba antes con una petición ligera.
+export async function selectServer(i) {
+  const st = await loadServers(false);
+  const n = st.list.length;
+  const idx = parseInt(i, 10);
+  if (!(idx >= 0 && idx < n)) return { ok: false };
+  try {
+    await callServer(st.list[idx], "get_vod_categories", {});
+    st.idx = idx; st.ok = true; st.okAt = Date.now(); st.pin = idx !== homeIdx(st);
+    writeSrvs(st);
+    return { ok: true, host: hostOf(st.list[idx]), label: labelOf(st.list[idx]), index: idx + 1, total: n };
+  } catch (e) {
+    lastErr = errText(e);
+    return { ok: false, host: hostOf(st.list[idx]), label: labelOf(st.list[idx]), index: idx + 1, total: n };
+  }
 }
 
 export async function refreshServers() {
