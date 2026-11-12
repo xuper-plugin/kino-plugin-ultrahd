@@ -1,7 +1,7 @@
 {
   "id": "ultra-hd",
   "name": "Ultra Hd",
-  "version": "0.3.21",
+  "version": "0.3.22",
   "apiVersion": 13,
   "entry": "plugin.js",
   "description": "Películas, series y TV en vivo en Ultra HD.",
@@ -38,10 +38,6 @@
     },
     {
       "host": "avefenixtv.com",
-      "insecureHttp": true
-    },
-    {
-      "host": "bghahsw.top",
       "insecureHttp": true
     },
     {
@@ -128,10 +124,6 @@
       "insecureHttp": true
     },
     {
-      "host": "medin.club",
-      "insecureHttp": true
-    },
-    {
       "host": "myultratv.com",
       "insecureHttp": true
     },
@@ -153,14 +145,6 @@
     },
     {
       "host": "sa.xurvani.cfd",
-      "insecureHttp": true
-    },
-    {
-      "host": "superlatino.online",
-      "insecureHttp": true
-    },
-    {
-      "host": "thenewxtreme2025.xyz",
       "insecureHttp": true
     },
     {
@@ -186,9 +170,6 @@
     {
       "host": "wickediptv.live",
       "insecureHttp": true
-    },
-    {
-      "host": "xiques96sa.site"
     },
     {
       "host": "xvisnet.xyz",
