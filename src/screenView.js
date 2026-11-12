@@ -314,3 +314,48 @@ export function verifyingView({ device } = {}) {
     every: { ms: POLL_MS, event: "tick" },
   };
 }
+
+// Selector de servidor al abrir el plugin por primera vez: la persona elige desde dónde ver (no se entra con uno al azar).
+// `servers`: { current, items } ya ordenados (hispanohablantes primero) o null mientras cargan. El primero sale resaltado.
+export function firstPickView({ servers, failed = false, device } = {}) {
+  const appBar = {
+    type: "AppBar", divider: false, mergeWithKinoBar: true, dense: true,
+    leading: barButton("close", "close", "close", { go: { close: true } }),
+    title: title(),
+  };
+  if (!servers) {
+    return {
+      type: "Scaffold", appBar,
+      body: { type: "Column", key: "fpLoad", flex: 1, mainAxisAlignment: "center", crossAxisAlignment: "center", gap: 16, padding: { compact: 24, expanded: 48 }, children: failed
+        ? [{ type: "MaterialBanner", key: "fpFail", role: "error", ...twin("failed"), action: { ...twin("retry", "label"), onTap: "retry" } }]
+        : [{ type: "CircularProgressIndicator", key: "fpSpin" }, { type: "Text", ...twin("verifying", "text"), textAlign: "center", color: "muted" }] },
+      ...(failed ? {} : { every: { ms: POLL_MS, event: "tick" } }),
+    };
+  }
+  const items = (servers.items || []).slice(0, 60);
+  const rows = items.map((s, idx) => {
+    const hasCountry = s.label !== s.host;
+    const ttl = hasCountry ? s.label : s.host;
+    const sub = hasCountry ? (s.https ? s.host : `${s.host} · http`) : (s.https ? "" : "http");
+    const leading = s.flag
+      ? { type: "Image", key: "fpflag-" + s.i, url: `https://flagcdn.com/w40/${s.flag}.png`, w: 32, h: 24 }
+      : { type: "Icon", name: "language" };
+    return {
+      type: "ListTile", key: "fprow-" + s.i, title: ttl, titleEn: ttl, selected: idx === 0, leading,
+      ...(sub ? { subtitle: sub, subtitleEn: sub } : {}),
+      ...(idx === 0 ? { trailing: { type: "Icon", name: "check" } } : {}),
+      onTap: { event: "srv.first", arg: String(s.i) },
+    };
+  });
+  const list = items.length ? rows : [{ type: "Text", key: "fpEmpty", ...twin("setServerNone", "text"), color: "muted" }];
+  return {
+    type: "Scaffold", appBar,
+    body: { type: "Column", key: "fpPage", flex: 1, children: [
+      { type: "SingleChildScrollView", key: "fpScroll", flex: 1, children: [{ type: "Column", padding: { compact: 16, expanded: 24 }, gap: 12, children: [
+        { type: "Text", ...twin("firstPickTitle", "text"), style: "h4" },
+        { type: "Text", ...twin("firstPickHint", "text"), color: "muted" },
+        ...list,
+      ] }] },
+    ] },
+  };
+}

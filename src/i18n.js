@@ -30,6 +30,8 @@ export const TEXTS = Object.freeze({
   partial: ["Algunas filas no cargaron.", "Some rows did not load."],
   searchPartial: ["Resultados parciales: no se revisaron todas las categorías (el servidor limita las peticiones).", "Partial results: not every category was checked (the server limits requests)."],
   verifying: ["Verificando servidores…", "Checking servers…"],
+  firstPickTitle: ["Elige tu servidor", "Choose your server"],
+  firstPickHint: ["Elige desde dónde ver. El primero ya está listo; puedes elegir otro. Luego lo cambias cuando quieras con el botón 🌐.", "Pick where to watch from. The first one is ready; you can choose another. Change it anytime later with the 🌐 button."],
   empty: ["Todavía no hay nada para mostrar.", "Nothing to show yet."],
   failed: ["No se pudo cargar. Revisa tu conexión.", "Could not load. Check your connection."],
   setTitle: ["Ajustes de Ultra Hd", "Ultra Hd settings"],

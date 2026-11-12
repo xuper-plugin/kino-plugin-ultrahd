@@ -8,9 +8,9 @@ import { put } from "./store.js";
 import { indexStep, indexNeeded, idxRefFor, findKey } from "./titleIndex.js";
 import { enrichTmdb, tmdbAvailable } from "./tmdbLazy.js";
 import { LANG_ORDER, isLang } from "./names.js";
-import { TAB_IDS, browseView, searchView, liveView, settingsView, verifyingView, cardOf, slidesOf } from "./screenView.js";
+import { TAB_IDS, browseView, searchView, liveView, settingsView, verifyingView, firstPickView, cardOf, slidesOf } from "./screenView.js";
 
-const PLUGIN_VERSION = "0.3.34";
+const PLUGIN_VERSION = "0.3.35";
 const TAB_KEY = "browseTab";
 const LANG_KEY = "browseLang";
 const HIST_KEY = "searchHist:v1";
@@ -28,7 +28,13 @@ let recentCards = null;
 let liveCats = null;
 let found = null;
 let liveFound = null;
+let pickServers = null; // lista para el selector de servidor de la primera vez (null = aún sin cargar)
 let cacheKey = null;
+
+// La persona ya eligió servidor al menos una vez: se recuerda para no volver a mostrar el selector inicial (se cambia con 🌐).
+const SRVCHOSEN_KEY = "srvChosen:v1";
+const serverChosen = () => { try { return kino.storage.get(SRVCHOSEN_KEY) === "1"; } catch (_) { return false; } };
+const markServerChosen = () => { try { put(SRVCHOSEN_KEY, "1"); } catch (_) { /* da igual */ } };
 
 function resetCaches() {
   memo.clear();
@@ -144,6 +150,8 @@ async function loadRecent() {
 const countryOn = () => cat.homeCountry() !== "none";
 
 function unitsFor(tab, lang) {
+  // Primera vez: solo salud y la lista para el selector; no se carga el Home hasta que la persona elija (no un servidor al azar).
+  if (!serverChosen()) return ["health", "pick"];
   if (tab === "home") return ["health", `home:movies:${lang}`, `home:series:${lang}`, ...(countryOn() ? ["country"] : []), "recent", "index"];
   return ["health", tab === "live" ? "tab:live" : `tab:${tab}:${lang}`];
 }
@@ -159,6 +167,7 @@ function isDone(unit) {
   if (unit === "recent") return recentCards !== null;
   if (unit === "index") return !indexNeeded();
   if (unit === "health") return cat.healthReady();
+  if (unit === "pick") return pickServers !== null;
   return memo.has(memoKey(unit));
 }
 
@@ -179,6 +188,7 @@ async function runUnit(unit) {
     if (out === "error" || out === "wait") throw new Error("índice: " + out);
   }
   else if (unit === "health") await cat.healthCheck();
+  else if (unit === "pick") pickServers = await cat.serverList();
   else {
     const [prefix, tab, lang] = unit.split(":");
     if (tab === "live") await loadLiveTab();
@@ -210,6 +220,8 @@ function mainView(ctx) {
   const state = ctx.state || {};
   // Antes del Home: si aún no se verificaron los servidores (y no falló el chequeo), muestra "Verificando servidores…".
   if (!cat.healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
+  // Primera vez: la persona elige servidor antes de entrar (no se toma uno al azar). Después se recuerda y se salta al Home.
+  if (!serverChosen()) return firstPickView({ servers: pickServers, failed: !!(state.failed && state.failed.pick), device: ctx.device });
   const tab = tabOf(state, ctx.route);
   const lang = wantedLang(state);
   const data = tabData(tab, lang, state);
@@ -440,6 +452,13 @@ const events = {
     let servers;
     try { servers = await cat.serverList(); } catch (_) { servers = { current: -1, items: [] }; }
     return { state: { ...bump(state), failed: null, servers }, sheet: serverSheet(servers), toast: { text: say(r.ok ? "srvSelected" : "srvSelectFail", lang, { host: r.host || r.label || "" }), role: r.ok ? "success" : "error" } };
+  },
+  // Elegido un servidor en el selector de la primera vez: lo fija, lo recuerda y manda al Home (que ya carga con ese servidor).
+  // Si no respondió, se queda en el selector (con el aviso) para elegir otro.
+  async "srv.first"({ arg, state, lang }) {
+    const r = await cat.selectServer(arg);
+    if (r.ok) { resetCaches(); cacheKey = cat.serverKey(); markServerChosen(); }
+    return { state: { ...bump(state), failed: null }, toast: { text: say(r.ok ? "srvSelected" : "srvSelectFail", lang, { host: r.host || r.label || "" }), role: r.ok ? "success" : "error" } };
   },
   saved({ state }) { return { state: bump(state) }; },
 };

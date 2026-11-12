@@ -328,7 +328,17 @@ export async function serverList() {
   };
 }
 
-// Items del selector con bandera y estado online; con un chequeo fresco, solo los que responden.
+// Público hispanohablante: España, México y "Latino" primero, luego el resto de Latinoamérica, luego Global, luego otros países.
+const LATAM = new Set(["ar", "bo", "cl", "co", "cr", "cu", "do", "ec", "gt", "hn", "ni", "pa", "pe", "pr", "py", "sv", "uy", "ve"]);
+function srvPriority(x) {
+  const code = (x.flag || "").toLowerCase();
+  if (code === "es" || code === "mx" || /latino|latam/.test(String(x.label || "").toLowerCase())) return 0;
+  if (LATAM.has(code)) return 1;
+  if (!code) return 2; // Global / sin país
+  return 3;
+}
+
+// Items del selector con bandera y estado online; con un chequeo fresco, solo los que responden. Hispanohablantes primero.
 function itemsWithHealth(st) {
   const h = healthFresh();
   const online = h ? new Set(h.online) : null;
@@ -337,6 +347,7 @@ function itemsWithHealth(st) {
     return { i, label: niceLabel(s), host: hostOf(s), https: String(s.url).startsWith("https://"), flag: fi ? fi.code : "", online: online ? online.has(s.url) : true };
   });
   if (online && online.size > 0) items = items.filter((x) => x.online);
+  items.sort((a, b) => srvPriority(a) - srvPriority(b) || a.i - b.i); // estable por índice
   return items;
 }
 
