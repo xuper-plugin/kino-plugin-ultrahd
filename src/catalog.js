@@ -268,7 +268,7 @@ function flagInfo(s) {
   return String(s || "").includes("🌐") ? { code: "", name: "Global" } : null;
 }
 // Etiqueta legible en todas partes: la bandera (si la hay) + el nombre del país; en un TV solo se ve el nombre.
-const niceLabel = (srv) => { const base = labelOf(srv); const fi = flagInfo(base); return fi ? `${base} ${fi.name}` : base; };
+const niceLabel = (srv) => { const fi = flagInfo(labelOf(srv)); return fi ? (fi.code ? `${fi.code.toUpperCase()} · ${fi.name}` : fi.name) : labelOf(srv); };
 
 // Nunca expone usuario ni contraseña: solo el host y la posición en la lista.
 export async function serverStatus() {

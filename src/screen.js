@@ -263,13 +263,16 @@ const onlyCat = new Map(); // `${tab}:${lang}:${categoría}` -> { rails } (una c
 function serverSheet(servers) {
   const cur = servers.current;
   const rows = (servers.items || []).slice(0, 60).map((s) => {
-    const t = `${s.label === s.host ? s.host : s.label + "  " + s.host}${s.https ? "" : " · http"}`;
     const sel = s.i === cur;
+    const hasCountry = s.label !== s.host;
+    const title = hasCountry ? s.label : s.host; // "MX · México" (país) o el host
+    const sub = hasCountry ? (s.https ? s.host : `${s.host} · http`) : (s.https ? "" : "http"); // la URL
     const leading = s.flag
       ? { type: "Image", key: "flag-" + s.i, url: `https://flagcdn.com/w40/${s.flag}.png`, aspect: "4:3", h: 22 }
       : { type: "Icon", name: "language" };
     return {
-      type: "ListTile", key: "srvrow-" + s.i, title: t, titleEn: t, selected: sel, leading,
+      type: "ListTile", key: "srvrow-" + s.i, title, titleEn: title, selected: sel, leading,
+      ...(sub ? { subtitle: sub, subtitleEn: sub } : {}),
       ...(sel ? { trailing: { type: "Icon", name: "check" } } : {}),
       onTap: { event: "srv.pick", arg: String(s.i) },
     };
