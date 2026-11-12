@@ -3470,9 +3470,6 @@ async function section2(arg) {
   const hero2 = heroOf(rows);
   return { tabs: SECTION_TABS.map((t) => ({ id: t.id, label: english ? t.en : t.label })), tab, ...hero2 ? { hero: hero2 } : {}, rows };
 }
-
-// src/plugin.js
-globalThis.__kinoDropPendingFetches = true;
 export {
   action,
   browse,
