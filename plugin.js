@@ -1496,6 +1496,7 @@ function mergeLive(list, { showAdult: showAdult2 = false } = {}) {
 var BOOTSTRAP_URL = "http://vegetatvv2.duckdns.org/bootstrap.php";
 var VEGETA_VERSION_CODE = "21";
 var CACHE_TTL_MS = 6 * 60 * 60 * 1e3;
+var SRVS_V = 2;
 var PER_PAGE = 60;
 var HOME_PREVIEW = 20;
 function cfg(key, fallback) {
@@ -1615,10 +1616,10 @@ function writeSrvs(st) {
 async function loadServers(force) {
   const cached = readSrvs();
   const usable = cached && Array.isArray(cached.list) && cached.list.length;
-  if (!force && usable && cached.ts && Date.now() - cached.ts < CACHE_TTL_MS) return cached;
+  if (!force && usable && cached.ts && cached.v === SRVS_V && Date.now() - cached.ts < CACHE_TTL_MS) return cached;
   try {
     const list = await fetchServerList();
-    const st = { ts: Date.now(), list, idx: Math.max(0, list.findIndex((s) => indexFitsServer(s.url))), ok: false };
+    const st = { ts: Date.now(), list, idx: Math.max(0, list.findIndex((s) => indexFitsServer(s.url))), ok: false, v: SRVS_V };
     writeSrvs(st);
     return st;
   } catch (e) {
@@ -2934,7 +2935,7 @@ function verifyingView({ device } = {}) {
 }
 
 // src/screen.js
-var PLUGIN_VERSION = "0.3.0";
+var PLUGIN_VERSION = "0.3.30";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
