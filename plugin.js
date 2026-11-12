@@ -2556,6 +2556,11 @@ async function resolveAlt(s) {
     recordAvail(availId, k, ext);
     return { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${ext}` };
   }
+  if (kind === "l") {
+    const id = segs[2] || "";
+    if (!/^\d+$/.test(id)) throw kino.error("not_found", "fuente desconocida");
+    return { url: `${srv.url}/live/${srv.username}/${srv.password}/${id}.${liveFormat()}` };
+  }
   if (kind === "e") {
     const epId = segs[2] || "";
     const hintExt = segs[3] || "mp4";
@@ -2594,9 +2599,16 @@ async function resolve(ref) {
   const { url, username, password } = active;
   if (s.startsWith("idx:m:")) s = await resolveIdxRef(s, fetchCategory, serverCats);
   if (s.startsWith("live:")) {
-    const id = s.slice(5);
+    const id = s.slice(5).split("~")[0];
     if (!/^\d+$/.test(id)) throw kino.error("not_found");
-    return { url: `${url}/live/${username}/${password}/${id}.${liveFormat()}` };
+    const aKey = serverKey();
+    const out = { url: `${url}/live/${username}/${password}/${id}.${liveFormat()}` };
+    const alts = buildAlternatives("l:" + id, aKey, (k) => `at:${k}~l~${id}`);
+    if (alts.length) {
+      out.alternatives = alts;
+      out.label = niceLabel(active);
+    }
+    return out;
   }
   if (s.startsWith("vod:")) {
     const [core, ...rest] = s.slice(4).split("~");
@@ -3097,7 +3109,7 @@ function verifyingView({ device } = {}) {
 }
 
 // src/screen.js
-var PLUGIN_VERSION = "0.3.33";
+var PLUGIN_VERSION = "0.3.34";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";

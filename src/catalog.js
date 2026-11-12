@@ -1141,6 +1141,13 @@ async function resolveAlt(s) {
     return { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${ext}` };
   }
 
+  if (kind === "l") {
+    const id = segs[2] || "";
+    if (!/^\d+$/.test(id)) throw kino.error("not_found", "fuente desconocida");
+    // Mismo canal (mismo id) en el servidor [K]; sin verificar (ver la rama live de resolve). Si no lo tiene, el reproductor salta solo.
+    return { url: `${srv.url}/live/${srv.username}/${srv.password}/${id}.${liveFormat()}` };
+  }
+
   if (kind === "e") {
     const epId = segs[2] || "";
     const hintExt = segs[3] || "mp4";
@@ -1174,9 +1181,15 @@ export async function resolve(ref) {
   if (s.startsWith("idx:m:")) s = await resolveIdxRef(s, fetchCategory, serverCats);
 
   if (s.startsWith("live:")) {
-    const id = s.slice(5);
+    const id = s.slice(5).split("~")[0];
     if (!/^\d+$/.test(id)) throw kino.error("not_found");
-    return { url: `${url}/live/${username}/${password}/${id}.${liveFormat()}` };
+    const aKey = serverKey();
+    // En vivo no tiene consulta por id (verificar exigiría bajar toda la lista, ~MB → riesgo de OOM): se muestran todos los
+    // online, con el mismo id, y el que no tenga el canal lo cubre el fallback del reproductor. Sin "aprende" para en vivo.
+    const out = { url: `${url}/live/${username}/${password}/${id}.${liveFormat()}` };
+    const alts = buildAlternatives("l:" + id, aKey, (k) => `at:${k}~l~${id}`);
+    if (alts.length) { out.alternatives = alts; out.label = niceLabel(active); } // etiqueta del servidor activo en el menú "Servidor"
+    return out;
   }
 
   if (s.startsWith("vod:")) {
