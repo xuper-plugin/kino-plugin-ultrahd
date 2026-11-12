@@ -8,7 +8,7 @@ import { put } from "./store.js";
 import { indexStep, indexNeeded, idxRefFor, findKey } from "./titleIndex.js";
 import { enrichTmdb, tmdbAvailable } from "./tmdbLazy.js";
 import { LANG_ORDER, isLang } from "./names.js";
-import { TAB_IDS, browseView, searchView, liveView, settingsView, cardOf, slidesOf } from "./screenView.js";
+import { TAB_IDS, browseView, searchView, liveView, settingsView, verifyingView, cardOf, slidesOf } from "./screenView.js";
 
 const PLUGIN_VERSION = "0.3.0";
 const TAB_KEY = "browseTab";
@@ -144,8 +144,8 @@ async function loadRecent() {
 const countryOn = () => cat.homeCountry() !== "none";
 
 function unitsFor(tab, lang) {
-  if (tab === "home") return [`home:movies:${lang}`, `home:series:${lang}`, ...(countryOn() ? ["country"] : []), "recent", "index", "health"];
-  return [tab === "live" ? "tab:live" : `tab:${tab}:${lang}`, "health"];
+  if (tab === "home") return ["health", `home:movies:${lang}`, `home:series:${lang}`, ...(countryOn() ? ["country"] : []), "recent", "index"];
+  return ["health", tab === "live" ? "tab:live" : `tab:${tab}:${lang}`];
 }
 
 function memoKey(unit) {
@@ -158,7 +158,7 @@ function isDone(unit) {
   if (unit === "country") return countryCards !== null;
   if (unit === "recent") return recentCards !== null;
   if (unit === "index") return !indexNeeded();
-  if (unit === "health") return !cat.healthNeeded();
+  if (unit === "health") return cat.healthReady();
   return memo.has(memoKey(unit));
 }
 
@@ -208,6 +208,8 @@ const tabOf = (state, route) => {
 
 function mainView(ctx) {
   const state = ctx.state || {};
+  // Antes del Home: si aún no se verificaron los servidores (y no falló el chequeo), muestra "Verificando servidores…".
+  if (!cat.healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
   const tab = tabOf(state, ctx.route);
   const lang = wantedLang(state);
   const data = tabData(tab, lang, state);

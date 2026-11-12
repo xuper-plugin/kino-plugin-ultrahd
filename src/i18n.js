@@ -29,6 +29,7 @@ export const TEXTS = Object.freeze({
   seeLive: ["Ver todo En vivo", "See all Live"],
   partial: ["Algunas filas no cargaron.", "Some rows did not load."],
   searchPartial: ["Resultados parciales: no se revisaron todas las categorías (el servidor limita las peticiones).", "Partial results: not every category was checked (the server limits requests)."],
+  verifying: ["Verificando servidores…", "Checking servers…"],
   empty: ["Todavía no hay nada para mostrar.", "Nothing to show yet."],
   failed: ["No se pudo cargar. Revisa tu conexión.", "Could not load. Check your connection."],
   setTitle: ["Ajustes de Ultra Hd", "Ultra Hd settings"],

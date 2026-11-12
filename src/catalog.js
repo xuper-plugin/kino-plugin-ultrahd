@@ -357,11 +357,13 @@ function readHealth() {
 }
 const healthFresh = () => { const h = readHealth(); return h && Date.now() - h.ts < HEALTH_TTL_MS ? h : null; };
 export const healthNeeded = () => !healthFresh() && !healthRunning;
+export const healthReady = () => !!healthFresh();
 
 const probeAlive = async (srv) => { try { await callServer(srv, "get_vod_categories", {}); return true; } catch (_) { return false; } };
 
-// Prueba todos los servidores en paralelo (en segundo plano, tras cargar el contenido) y guarda las URLs de los que
-// responden. Si el servidor activo quedó caído, salta al primero online. Una corrida a la vez.
+// Prueba todos los servidores en paralelo y guarda las URLs de los que responden; si el activo quedó caído, salta al primero
+// online. Corre ANTES del Home (pantalla "Verificando servidores…"). Una corrida a la vez; nunca lanza (si no se pudo ni
+// cargar la lista, marca el chequeo hecho y vacío para no colgar la verificación).
 export async function healthCheck() {
   if (healthRunning) return 0;
   healthRunning = true;
@@ -377,6 +379,9 @@ export async function healthCheck() {
       if (i >= 0) { st.idx = i; st.ok = true; st.okAt = Date.now(); st.pin = true; writeSrvs(st); }
     }
     return online.length;
+  } catch (_) {
+    try { put(HEALTH_KEY, JSON.stringify({ ts: Date.now(), online: [] })); } catch (__) { /* nada */ }
+    return 0;
   } finally { healthRunning = false; }
 }
 

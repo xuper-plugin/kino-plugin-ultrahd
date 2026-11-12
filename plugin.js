@@ -1828,7 +1828,7 @@ var healthFresh = () => {
   const h = readHealth();
   return h && Date.now() - h.ts < HEALTH_TTL_MS ? h : null;
 };
-var healthNeeded = () => !healthFresh() && !healthRunning;
+var healthReady = () => !!healthFresh();
 var probeAlive = async (srv) => {
   try {
     await callServer(srv, "get_vod_categories", {});
@@ -1858,6 +1858,12 @@ async function healthCheck() {
       }
     }
     return online.length;
+  } catch (_) {
+    try {
+      put(HEALTH_KEY, JSON.stringify({ ts: Date.now(), online: [] }));
+    } catch (__) {
+    }
+    return 0;
   } finally {
     healthRunning = false;
   }
@@ -2527,6 +2533,7 @@ var TEXTS = Object.freeze({
   seeLive: ["Ver todo En vivo", "See all Live"],
   partial: ["Algunas filas no cargaron.", "Some rows did not load."],
   searchPartial: ["Resultados parciales: no se revisaron todas las categor\xEDas (el servidor limita las peticiones).", "Partial results: not every category was checked (the server limits requests)."],
+  verifying: ["Verificando servidores\u2026", "Checking servers\u2026"],
   empty: ["Todav\xEDa no hay nada para mostrar.", "Nothing to show yet."],
   failed: ["No se pudo cargar. Revisa tu conexi\xF3n.", "Could not load. Check your connection."],
   setTitle: ["Ajustes de Ultra Hd", "Ultra Hd settings"],
@@ -2728,16 +2735,19 @@ function browseView({ tab, data, recent, country, loading, failed, device = "pho
   const active = TAB_IDS.includes(tab) ? tab : TAB_IDS[0];
   const body = [];
   const chips = data && data.langs && data.langs.length > 1 && active !== "live" ? langChips(data.langs, data.lang) : null;
-  if (chips) body.push(chips);
-  if (data && data.cats && data.cats.length > 1 && active !== "live" && active !== "home") {
-    body.push({
-      type: "DropdownButton",
-      key: "vcat",
-      ...twin("category", "labelText"),
-      value: data.catSel || "",
-      onChanged: "vcat",
-      options: [{ value: "", ...twin("allCats", "label") }, ...data.cats.slice(0, 200).map((c) => ({ value: c.id, label: c.title, labelEn: c.title }))]
-    });
+  const catDrop = data && data.cats && data.cats.length > 1 && active !== "live" && active !== "home" ? {
+    type: "DropdownButton",
+    key: "vcat",
+    ...twin("category", "labelText"),
+    value: data.catSel || "",
+    onChanged: "vcat",
+    options: [{ value: "", ...twin("allCats", "label") }, ...data.cats.slice(0, 200).map((c) => ({ value: c.id, label: c.title, labelEn: c.title }))]
+  } : null;
+  if (tv && chips && catDrop) {
+    body.push({ type: "Row", key: "chipsCat", gap: 24, crossAxisAlignment: "center", children: [{ ...chips, flex: 1 }, catDrop] });
+  } else {
+    if (chips) body.push(chips);
+    if (catDrop) body.push(catDrop);
   }
   if (data) {
     if (data.slides.length > 0) body.push(hero(data.slides));
@@ -2905,6 +2915,24 @@ function settingsView({ srv, busy, pluginVersion, appVersion, device }) {
     ...!srv ? { every: { ms: 1e3, event: "sstatus" } } : {}
   };
 }
+function verifyingView({ device } = {}) {
+  return {
+    type: "Scaffold",
+    appBar: {
+      type: "AppBar",
+      divider: false,
+      mergeWithKinoBar: true,
+      dense: true,
+      leading: barButton("close", "close", "close", { go: { close: true } }),
+      title: title()
+    },
+    body: { type: "Column", key: "verifying", flex: 1, mainAxisAlignment: "center", crossAxisAlignment: "center", gap: 16, padding: { compact: 24, expanded: 48 }, children: [
+      { type: "CircularProgressIndicator", key: "verifySpin" },
+      { type: "Text", ...twin("verifying", "text"), textAlign: "center", color: "muted" }
+    ] },
+    every: { ms: POLL_MS, event: "tick" }
+  };
+}
 
 // src/screen.js
 var PLUGIN_VERSION = "0.3.0";
@@ -3051,8 +3079,8 @@ async function loadRecent() {
 }
 var countryOn = () => homeCountry() !== "none";
 function unitsFor(tab, lang) {
-  if (tab === "home") return [`home:movies:${lang}`, `home:series:${lang}`, ...countryOn() ? ["country"] : [], "recent", "index", "health"];
-  return [tab === "live" ? "tab:live" : `tab:${tab}:${lang}`, "health"];
+  if (tab === "home") return ["health", `home:movies:${lang}`, `home:series:${lang}`, ...countryOn() ? ["country"] : [], "recent", "index"];
+  return ["health", tab === "live" ? "tab:live" : `tab:${tab}:${lang}`];
 }
 function memoKey(unit) {
   const [prefix, tab, lang] = unit.split(":");
@@ -3063,7 +3091,7 @@ function isDone(unit) {
   if (unit === "country") return countryCards !== null;
   if (unit === "recent") return recentCards !== null;
   if (unit === "index") return !indexNeeded();
-  if (unit === "health") return !healthNeeded();
+  if (unit === "health") return healthReady();
   return memo.has(memoKey(unit));
 }
 function pendingUnit(state, tab, device) {
@@ -3106,6 +3134,7 @@ var tabOf = (state, route) => {
 };
 function mainView(ctx) {
   const state = ctx.state || {};
+  if (!healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
   const tab = tabOf(state, ctx.route);
   const lang = wantedLang(state);
   const data = tabData(tab, lang, state);

@@ -126,10 +126,16 @@ export function browseView({ tab, data, recent, country, loading, failed, device
   const active = TAB_IDS.includes(tab) ? tab : TAB_IDS[0];
   const body = [];
   const chips = data && data.langs && data.langs.length > 1 && active !== "live" ? langChips(data.langs, data.lang) : null;
-  if (chips) body.push(chips);
-  if (data && data.cats && data.cats.length > 1 && active !== "live" && active !== "home") {
-    body.push({ type: "DropdownButton", key: "vcat", ...twin("category", "labelText"), value: data.catSel || "", onChanged: "vcat",
-      options: [{ value: "", ...twin("allCats", "label") }, ...data.cats.slice(0, 200).map((c) => ({ value: c.id, label: c.title, labelEn: c.title }))] });
+  const catDrop = data && data.cats && data.cats.length > 1 && active !== "live" && active !== "home"
+    ? { type: "DropdownButton", key: "vcat", ...twin("category", "labelText"), value: data.catSel || "", onChanged: "vcat",
+        options: [{ value: "", ...twin("allCats", "label") }, ...data.cats.slice(0, 200).map((c) => ({ value: c.id, label: c.title, labelEn: c.title }))] }
+    : null;
+  // En TV, idiomas a la izquierda y categoría a la derecha en la misma fila (aprovecha el ancho, no gasta otra fila).
+  if (tv && chips && catDrop) {
+    body.push({ type: "Row", key: "chipsCat", gap: 24, crossAxisAlignment: "center", children: [{ ...chips, flex: 1 }, catDrop] });
+  } else {
+    if (chips) body.push(chips);
+    if (catDrop) body.push(catDrop);
   }
   if (data) {
     if (data.slides.length > 0) body.push(hero(data.slides));
@@ -289,5 +295,22 @@ export function settingsView({ srv, busy, pluginVersion, appVersion, device }) {
       ] },
     ] }] },
     ...(!srv ? { every: { ms: 1_000, event: "sstatus" } } : {}),
+  };
+}
+
+// Pantalla previa al Home mientras se verifican los servidores (health check). El tick dispara el chequeo.
+export function verifyingView({ device } = {}) {
+  return {
+    type: "Scaffold",
+    appBar: {
+      type: "AppBar", divider: false, mergeWithKinoBar: true, dense: true,
+      leading: barButton("close", "close", "close", { go: { close: true } }),
+      title: title(),
+    },
+    body: { type: "Column", key: "verifying", flex: 1, mainAxisAlignment: "center", crossAxisAlignment: "center", gap: 16, padding: { compact: 24, expanded: 48 }, children: [
+      { type: "CircularProgressIndicator", key: "verifySpin" },
+      { type: "Text", ...twin("verifying", "text"), textAlign: "center", color: "muted" },
+    ] },
+    every: { ms: POLL_MS, event: "tick" },
   };
 }
