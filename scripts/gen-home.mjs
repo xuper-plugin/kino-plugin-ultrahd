@@ -8,6 +8,10 @@ import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+// Al re-crear el kino por servidor, un kino.sleep pendiente del servidor anterior (rate-limit de TMDB) puede rechazar tarde:
+// es inofensivo (una espera de un servidor ya terminado), no debe tumbar el build.
+process.on("unhandledRejection", () => {});
+
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const { createKino } = await import(pathToFileURL(join(root, "sdk", "kino-shim.mjs")).href);
 const { validateManifest } = await import(pathToFileURL(join(root, "sdk", "contract.mjs")).href);
@@ -20,8 +24,11 @@ const HOME_MOVIES = 7, HOME_SERIES = 4, RAIL_ITEMS = 20, FEATURED = 6;
 const SCHEMA = 1;
 
 const tmp = mkdtempSync(join(tmpdir(), "uhd-gen-"));
-const { kino } = createKino(checked.manifest, { storageFile: join(tmp, "s.json"), cookiesFile: join(tmp, "c.json"), secretsFile: join(tmp, "x.json"), config: {}, env: process.env });
-globalThis.kino = kino;
+// Mismo storage para todas las instancias (comparte servidores/categorías, sin re-bootstrap); kino nuevo por servidor para
+// RESETEAR los límites del shim (rate-limit de kino.tmdb, presupuestos), que si no se agotan tras un par de servidores.
+const kinoOpts = { storageFile: join(tmp, "s.json"), cookiesFile: join(tmp, "c.json"), secretsFile: join(tmp, "x.json"), config: {}, env: process.env };
+const freshKino = () => { globalThis.kino = createKino(checked.manifest, kinoOpts).kino; };
+freshKino();
 const cat = await import(pathToFileURL(join(root, "src", "catalog.js")).href);
 const sv = await import(pathToFileURL(join(root, "src", "screenView.js")).href);
 const { enrichTmdb } = await import(pathToFileURL(join(root, "src", "tmdbLazy.js")).href);
@@ -75,6 +82,7 @@ const builtKeys = new Set();
 for (let i = 0; i < total; i++) {
   const t0 = performance.now();
   try {
+    freshKino(); // resetea los límites del shim para este servidor
     const sel = await cat.selectServer(i);
     if (!sel.ok) { console.log(`#${i + 1} (${ms(t0)} ms): servidor no responde, se salta`); fail++; continue; }
     const key = cat.serverKey();
