@@ -43,7 +43,7 @@ try {
   }
 } catch (_) { /* kino congelado: sin log de peticiones */ }
 
-const PLUGIN_VERSION = "0.8.4";
+const PLUGIN_VERSION = "0.8.5";
 const TAB_KEY = "browseTab";
 const LANG_KEY = "browseLang";
 const HIST_KEY = "searchHist:v1";

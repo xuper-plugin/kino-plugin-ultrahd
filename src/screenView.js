@@ -141,7 +141,19 @@ export function browseView({ tab, data, recent, country, loading, failed, refres
       };
     }) }],
   } : null;
-  if (chips) body.push(chips);
+  // El botón de categorías va a la derecha de la fila de chips de idioma (o solo, a la derecha, si no hay chips). Con una categoría
+  // elegida muestra su nombre y se resalta; sin ella dice "Categoría". Abre la hoja de abajo.
+  const clip = (t) => (String(t).length > 22 ? String(t).slice(0, 21) + "…" : String(t));
+  const curCat = hasCats && data.catSel ? data.cats.find((c) => String(c.id) === String(data.catSel)) : null;
+  const catBtn = hasCats ? {
+    type: curCat ? "ElevatedButton" : "TextButton", key: "catButton", radius: "full", icon: "filter_list",
+    ...(curCat ? { labelText: clip(curCat.title), labelTextEn: clip(curCat.title) } : twin("category", "labelText")),
+    onPressed: { ui: [{ open: "catSheet" }] },
+  } : null;
+  if (catBtn) {
+    body.push({ type: "Row", key: "chipsCat", gap: 16, crossAxisAlignment: "center", stackOnNarrow: true, ...(chips ? {} : { mainAxisAlignment: "end" }),
+      children: [chips ? { ...chips, flex: 1 } : { type: "Spacer" }, catBtn] });
+  } else if (chips) body.push(chips);
   if (catSheet) body.push(catSheet);
   if (data) {
     if (data.slides.length > 0) body.push(hero(data.slides));
@@ -167,9 +179,7 @@ export function browseView({ tab, data, recent, country, loading, failed, refres
       title: tv ? { type: "Row", key: "titleRow", gap: 24, crossAxisAlignment: "center", children: [title(), tabBar(active)] } : title(),
       actions: [
         ...(tv ? [barButton("searchButton", "search", "search", "openSearch")] : []),
-        ...(hasCats ? [barButton("catButton", data.catSel ? "tune" : "filter_list", "category", { ui: [{ open: "catSheet" }] })] : []),
-        // La barra admite 4 acciones como máximo. En TV, con el icono de categorías, el de En vivo sobra: la pestaña En vivo está al lado.
-        ...(tv && hasCats ? [] : [barButton("liveButton", "tv", "live", { event: "go", arg: "live" })]),
+        barButton("liveButton", "tv", "live", { event: "go", arg: "live" }),
         barButton("serverBtn", "language", "setPick", "openServers"),
         barButton("settings", "settings", "settings", { event: "go", arg: "settings" }),
       ],
