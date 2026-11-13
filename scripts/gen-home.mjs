@@ -50,7 +50,8 @@ async function buildTab(kind, maxRails) {
     await enrichTmdb(rail.items, { max: 16, budgetMs: 8000 }).catch(() => {}); // pósters/ids de TMDB (sin prisa, es un build)
     rails.push({ ...rail, items: rail.items.map(cat.withFicha) });
   }
-  return { lang, langs: plan.langs || [], rails, cats: plan.cats };
+  // El selector de categorías del plugin muestra hasta 200: no vale la pena cargar el feed con más.
+  return { lang, langs: plan.langs || [], rails, cats: (plan.cats || []).slice(0, 200) };
 }
 
 // Las tarjetas de las filas NO llevan sinopsis (solo los slides la necesitan): sin eso el archivo pesa mucho menos.
