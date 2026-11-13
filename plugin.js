@@ -853,12 +853,18 @@ async function resolveIdxRef(ref, fetchCategory2, moreCats) {
       failed++;
       return null;
     }
+    let fallback = null;
     for (const x of data) {
       const { name, year } = cleanTitle(x.name || x.title, x.year || (x.release_date ? String(x.release_date).slice(0, 4) : ""));
-      if (year !== p.year || findKey(name) !== p.find) continue;
-      return p.kind === "movies" ? `vod:${x.stream_id}:${x.container_extension || "mp4"}` : `series:${x.series_id}`;
+      if (findKey(name) !== p.find) continue;
+      const out = p.kind === "movies" ? `vod:${x.stream_id}:${x.container_extension || "mp4"}` : `series:${x.series_id}`;
+      if (p.year && year) {
+        if (year === p.year) return out;
+        continue;
+      }
+      if (!fallback) fallback = out;
     }
-    return null;
+    return fallback;
   };
   let list = [];
   if (typeof moreCats === "function") {
@@ -2592,12 +2598,75 @@ async function resolveAlt(s) {
   }
   throw kino.error("not_found", "fuente desconocida");
 }
+async function resolveIdxOn(srv, idxRef) {
+  const fetchCat = async (action2, cat) => {
+    const data = await callServer(srv, action2, { category_id: String(cat) });
+    if (!Array.isArray(data)) throw new Error("respuesta que no es lista");
+    return data;
+  };
+  const moreCats = async (kind) => {
+    const data = await callServer(srv, kind === "movies" ? "get_vod_categories" : "get_series_categories", {});
+    const out = (Array.isArray(data) ? data : []).map((c) => String(c.category_id || "")).filter(Boolean);
+    out.matched = 0;
+    return out;
+  };
+  return await resolveIdxRef(idxRef, fetchCat, moreCats);
+}
+async function resolveIdxAnywhere(idxRef) {
+  const st = readSrvs();
+  const list = st && Array.isArray(st.list) ? st.list : [];
+  const active = list[st ? st.idx : 0] || null;
+  const asMovie = (direct) => {
+    const mv = /^vod:(\d+):(.+)$/.exec(String(direct || ""));
+    return mv ? { id: mv[1], ext: mv[2] } : null;
+  };
+  if (active) {
+    try {
+      const m = asMovie(await resolveIdxRef(idxRef, fetchCategory, serverCats));
+      if (m) return { srv: active, ...m };
+    } catch (e) {
+      if (e && e.code === "rate_limited") throw e;
+    }
+  }
+  const h = healthFresh();
+  const online = h ? new Set(h.online) : null;
+  const homeI = list.findIndex((s) => indexFitsServer(s.url));
+  const order = [];
+  if (homeI >= 0 && list[homeI] && list[homeI] !== active && (!online || online.has(list[homeI].url))) order.push(list[homeI]);
+  for (const s of list) {
+    if (s !== active && s !== list[homeI] && (!online || online.has(s.url))) order.push(s);
+  }
+  let tried = 0;
+  for (const srv of order) {
+    if (tried++ >= 4) break;
+    try {
+      const m = asMovie(await resolveIdxOn(srv, idxRef));
+      if (m) return { srv, ...m };
+    } catch (_) {
+    }
+  }
+  throw kino.error("not_found", "no est\xE1 en ning\xFAn servidor", { userMessage: "Este t\xEDtulo no est\xE1 disponible ahora." });
+}
 async function resolve(ref) {
   let s = String(ref || "");
   if (s.startsWith("at:")) return await resolveAlt(s);
+  if (s.startsWith("idx:m:")) {
+    const { srv, id, ext } = await resolveIdxAnywhere(s);
+    const key = keyOf(srv);
+    const p = parseIdxRef(s);
+    const tok = p && p.find || "";
+    noteRecent(id, ext, key);
+    recordAvail("m:" + id, key, ext);
+    const out = { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${ext}` };
+    const alts = buildAlternatives("m:" + id, key, (k) => `at:${k}~m~${id}~${ext}~${tok}`);
+    if (alts.length) {
+      out.alternatives = alts;
+      out.label = niceLabel(srv);
+    }
+    return out;
+  }
   const active = await activeServer();
   const { url, username, password } = active;
-  if (s.startsWith("idx:m:")) s = await resolveIdxRef(s, fetchCategory, serverCats);
   if (s.startsWith("live:")) {
     const id = s.slice(5).split("~")[0];
     if (!/^\d+$/.test(id)) throw kino.error("not_found");
@@ -3159,7 +3228,7 @@ function firstPickView({ servers, failed = false, device } = {}) {
 }
 
 // src/screen.js
-var PLUGIN_VERSION = "0.3.36";
+var PLUGIN_VERSION = "0.3.37";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";

@@ -531,12 +531,17 @@ export async function resolveIdxRef(ref, fetchCategory, moreCats) {
     tried++;
     let data;
     try { data = await fetchCategory(action, cat); } catch (_) { failed++; return null; }
+    // El año solo desempata cuando el ítem lo trae: muchos servidores no dan año en get_vod_streams (sí en get_vod_info), y antes
+    // un ref con año (del índice) no emparejaba nunca. Año exacto gana; si el ítem no trae año, se empareja por título.
+    let fallback = null;
     for (const x of data) {
       const { name, year } = cleanTitle(x.name || x.title, x.year || (x.release_date ? String(x.release_date).slice(0, 4) : ""));
-      if (year !== p.year || findKey(name) !== p.find) continue;
-      return p.kind === "movies" ? `vod:${x.stream_id}:${x.container_extension || "mp4"}` : `series:${x.series_id}`;
+      if (findKey(name) !== p.find) continue;
+      const out = p.kind === "movies" ? `vod:${x.stream_id}:${x.container_extension || "mp4"}` : `series:${x.series_id}`;
+      if (p.year && year) { if (year === p.year) return out; continue; } // año distinto = otra versión del título
+      if (!fallback) fallback = out; // sin año: candidato por título
     }
-    return null;
+    return fallback;
   };
   let list = [];
   if (typeof moreCats === "function") {
