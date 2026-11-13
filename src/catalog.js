@@ -1188,10 +1188,17 @@ async function resolveIdxOn(srv, idxRef) {
     if (!Array.isArray(data)) throw new Error("respuesta que no es lista");
     return data;
   };
-  const moreCats = async (kind) => {
+  // Como serverCats pero contra [srv]: empareja por NOMBRE las categorías del índice con las de este servidor, así se buscan
+  // primero las categorías correctas (rápido) en vez de barrer a ciegas (lento → timeout).
+  const moreCats = async (kind, wanted = []) => {
     const data = await callServer(srv, kind === "movies" ? "get_vod_categories" : "get_series_categories", {});
-    const out = (Array.isArray(data) ? data : []).map((c) => String(c.category_id || "")).filter(Boolean);
-    out.matched = 0;
+    const cats = (Array.isArray(data) ? data : []).map((c) => ({ id: String(c.category_id || ""), title: String(c.category_name || "") })).filter((c) => c.id);
+    const key = (t) => String(t).toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const wantKeys = new Set((wanted || []).map(([t]) => key(t)));
+    const same = cats.filter((c) => wantKeys.has(key(c.title)));
+    const rest = cats.filter((c) => !wantKeys.has(key(c.title)));
+    const out = [...same, ...rest].map((c) => c.id);
+    out.matched = same.length;
     return out;
   };
   return await resolveIdxRef(idxRef, fetchCat, moreCats);
