@@ -1,7 +1,7 @@
 {
   "id": "ultra-hd",
   "name": "Ultra Hd",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "apiVersion": 13,
   "entry": "plugin.js",
   "description": "Películas, series y TV en vivo en Ultra HD.",
@@ -629,6 +629,6 @@
   },
   "signature": {
     "authorKey": "6693946bd5c56196960959c4b9665fad5094374bcb85ddb282f8bf762c835263",
-    "value": "571f1dfa7669b07e9654ef11dbc09f0b9cd06e680003f799746a45ba5beabe50eb54895f020c500653ea02417122957e2c2f22cd9af7fd6df1e9a3c812ccaf0c"
+    "value": "21d2d8807c0f0134658072f230c53189577dcbd8fd7a994ebb2f9c5b20b4adc58aebd013b258b938d603ce8a2a95d90f0c1bd0fb7ba8c3e45bf8f0e6b249d00b"
   }
 }

@@ -3264,7 +3264,7 @@ function firstPickView({ servers, failed = false, device } = {}) {
 }
 
 // src/screen.js
-var PLUGIN_VERSION = "0.5.0";
+var PLUGIN_VERSION = "0.5.1";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
@@ -3624,17 +3624,18 @@ function tabData(tab, lang, state = {}) {
     const one = base && state.cat ? onlyCat.get(`${tab}:${lang}:${state.cat}`) : null;
     return one ? { ...base, rails: one.rails, hasMore: false, catSel: state.cat } : base ? { ...base, catSel: "" } : null;
   }
+  const rnd = (rows) => randomizeHome(rows, homeSeed);
   const feed = homeFeedData.get(lang);
-  if (feed) return { slides: (feed.slides || []).slice(0, FEATURED), rails: feed.rows, langs: homeLangsList || feed.langs, lang, partial: false };
+  if (feed) return { slides: (feed.slides || []).slice(0, FEATURED), rails: rnd(feed.rows), langs: homeLangsList || feed.langs, lang, partial: false };
   const plan = homePlan.get(lang) || [];
   const m = homeRails.get(lang);
   const freshRails = m ? plan.map((p) => m.get(`${p.kind}:${p.id}`)).filter((e) => e && e.card).map((e) => e.card) : [];
-  const fresh = () => ({ slides: (homeSlides.get(lang) || []).slice(0, FEATURED), rails: freshRails, langs: homeLangsList, lang, partial: false });
-  const snap = readHomeSnap(lang);
   const allDone = homePlan.has(lang) && plan.length > 0 && m && m.size >= plan.length;
-  if (snap && !allDone) return { slides: (snap.slides || []).slice(0, FEATURED), rails: snap.rails, langs: homeLangsList, lang, partial: false, stale: true };
+  const fresh = () => ({ slides: (homeSlides.get(lang) || []).slice(0, FEATURED), rails: allDone ? rnd(freshRails) : freshRails, langs: homeLangsList, lang, partial: false });
+  const snap = readHomeSnap(lang);
+  if (snap && !allDone) return { slides: (snap.slides || []).slice(0, FEATURED), rails: rnd(snap.rails), langs: homeLangsList, lang, partial: false, stale: true };
   if (freshRails.length) return fresh();
-  if (snap) return { slides: (snap.slides || []).slice(0, FEATURED), rails: snap.rails, langs: homeLangsList, lang, partial: false, stale: true };
+  if (snap) return { slides: (snap.slides || []).slice(0, FEATURED), rails: rnd(snap.rails), langs: homeLangsList, lang, partial: false, stale: true };
   return null;
 }
 var tabOf2 = (state, route) => {
@@ -3703,6 +3704,33 @@ async function screen(ctx) {
 }
 var cardsOf = (items) => (Array.isArray(items) ? items : []).filter((i) => i && typeof i.id === "string" && typeof i.ref === "string").slice(0, CHANNELS_CAP).map(cardOf);
 var bump = (state) => ({ n: (state.n || 0) + 1 });
+var homeSeed = Math.random() * 2147483647 | 0;
+var newHomeSeed = () => {
+  homeSeed = Math.random() * 2147483647 | 0;
+};
+function mulberry32(a) {
+  return function() {
+    a |= 0;
+    a = a + 1831565813 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+function shuffleSeeded(arr, seed) {
+  const a = arr.slice();
+  const rnd = mulberry32(seed);
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    const t = a[i];
+    a[i] = a[j];
+    a[j] = t;
+  }
+  return a;
+}
+function randomizeHome(rows, seed) {
+  return shuffleSeeded(rows, seed).map((r, i) => r && Array.isArray(r.items) ? { ...r, items: shuffleSeeded(r.items, seed + (i + 1) * 1013904223 | 0) } : r);
+}
 var onlyCat = /* @__PURE__ */ new Map();
 function serverSheet(servers) {
   const cur = servers.current;
@@ -3730,6 +3758,7 @@ function serverSheet(servers) {
 var events = {
   open({ route, state }) {
     if (route && route.name && route.name !== "main") return null;
+    newHomeSeed();
     return { state: { tab: tabOf2(state, route), lang: wantedLang(state), ...bump(state), failed: null } };
   },
   tab({ value, arg, state }) {
