@@ -94,17 +94,31 @@ async function buildServer() {
 
 // La primera pantalla de En vivo: una fila de canales por categoría (hasta LIVE_RAILS). Devuelve el objeto a publicar o null.
 const channelCard = (i) => ({ id: i.id, ref: i.ref, title: i.title, kind: "live", ...(i.logo ? { poster: i.logo } : {}), ...(i.adult ? { adult: true } : {}) });
+
+// Solo se pre-arman los canales ESTABLES (iguales todo el día). Los EVENTOS del día (partidos con hora, "X vs Y", PPV, agenda)
+// cambian de un momento a otro: cachearlos 1x/día los dejaría desfasados, así que se excluyen; esos se cargan en vivo normal.
+const EVENT_CAT = /event|ppv|pay.?per.?view|agenda|jornada|cartelera|fecha\b|partidos?\b|deporte.*(vivo|hoy|evento)|24.?7.*event/i;
+const EVENT_TITLE = /(\b\d{1,2}:\d{2}\b)|(\bvs\.?\b)|(\b\d{1,2}[/-]\d{1,2}\b)|(\bppv\b)|(\bfinal\b.*\d)/i;
+function isEventRail(name, items) {
+  if (EVENT_CAT.test(String(name || ""))) return true;
+  if (!items.length) return false;
+  const hits = items.filter((it) => EVENT_TITLE.test(it.title || "")).length;
+  return hits / items.length >= 0.3; // muchas filas con hora/fecha/"vs" = categoría de eventos
+}
+
 async function buildLive() {
-  const cats = (await cat.liveCategories()).slice(0, LIVE_RAILS);
+  const cats = (await cat.liveCategories()).slice(0, LIVE_RAILS * 2); // de más, porque se descartan las de eventos
   const rails = [];
-  for (let i = 0; i < cats.length; i += 3) {
+  for (let i = 0; i < cats.length && rails.length < LIVE_RAILS; i += 3) {
     const batch = await Promise.all(cats.slice(i, i + 3).map(async (c) => {
       try { return { c, page: await cat.liveChannels({ categoryId: c.id }) }; } catch (_) { return null; }
     }));
     for (const r of batch) {
-      if (!r) continue;
+      if (!r || rails.length >= LIVE_RAILS) continue;
       const items = r.page.items.slice(0, RAIL_ITEMS).map(channelCard);
-      if (items.length) rails.push({ id: "lcat-" + r.c.id, title: r.c.title, ref: "lcat:" + r.c.id, items });
+      if (!items.length) continue;
+      if (isEventRail(r.c.title, items)) continue; // eventos del día: no se cachean (se desfasan)
+      rails.push({ id: "lcat-" + r.c.id, title: r.c.title, ref: "lcat:" + r.c.id, items });
     }
   }
   return rails.length ? { v: 1, at: Date.now(), serverKey: cat.serverKey(), rails } : null;
