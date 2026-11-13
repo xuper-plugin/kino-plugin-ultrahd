@@ -209,7 +209,7 @@ export async function indexLabel(serverUrl) {
     if (gen) parts.push("lista del " + gen);
     if (st.checked) parts.push("comprobada hace " + ago(st.checked));
     parts.push("en el aparato: " + fmt(n));
-    if (serverUrl && !indexFitsServer(serverUrl)) parts.push("es de otro servidor que el activo: aquí la búsqueda va en vivo (con «Cambiar servidor» puedes volver al primero)");
+    if (serverUrl && !indexFitsServer(serverUrl)) parts.push("de otro servidor, pero la búsqueda lo usa igual (los resultados se abren en el servidor activo)");
     if (st.perf && st.perf.b) parts.push(`lote medio ${Math.round(st.perf.ms / st.perf.b)} ms (${Math.round(st.perf.rows / st.perf.b)} filas)`);
     return parts.join(" · ");
   }

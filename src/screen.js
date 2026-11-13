@@ -10,7 +10,7 @@ import { enrichTmdb, tmdbAvailable } from "./tmdbLazy.js";
 import { LANG_ORDER, isLang } from "./names.js";
 import { TAB_IDS, browseView, searchView, liveView, settingsView, verifyingView, firstPickView, cardOf, slidesOf } from "./screenView.js";
 
-const PLUGIN_VERSION = "0.3.35";
+const PLUGIN_VERSION = "0.3.36";
 const TAB_KEY = "browseTab";
 const LANG_KEY = "browseLang";
 const HIST_KEY = "searchHist:v1";

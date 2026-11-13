@@ -795,10 +795,10 @@ async function searchKind(kind, cats, q, limit, seen, { maxCats, deadline }) {
 }
 
 // Primero el índice de títulos (kino.catalog). Sin catálogo, sin índice listo o sin resultados devuelve null y se busca en vivo.
+// El índice sirve en CUALQUIER servidor: sus refs `idx:` se resuelven por título en el servidor activo (resolveIdxRef), igual que
+// las fuentes por servidor del reproductor. Antes se limitaba al servidor de casa, cuando esos refs solo se abrían ahí; ahora no.
 async function viaIndex(q, type) {
   await backHome().catch(() => {});
-  const fits = (() => { try { const st = readSrvs(); return indexFitsServer(st.list[st.idx].url); } catch (_) { return true; } })();
-  if (!fits) return null; // el índice es de otro servidor: se busca en vivo en el activo
   const ready = indexReady();
   const [found] = await Promise.all([ready ? indexSearch(q, type) : null, !ready || indexStale() ? indexStep({ budgetMs: 1500 }) : null]);
   const res = found || (!ready && indexReady() ? await indexSearch(q, type) : null);

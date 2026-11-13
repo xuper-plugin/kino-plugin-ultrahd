@@ -488,7 +488,7 @@ async function indexLabel(serverUrl) {
     if (gen) parts.push("lista del " + gen);
     if (st.checked) parts.push("comprobada hace " + ago(st.checked));
     parts.push("en el aparato: " + fmt(n));
-    if (serverUrl && !indexFitsServer(serverUrl)) parts.push("es de otro servidor que el activo: aqu\xED la b\xFAsqueda va en vivo (con \xABCambiar servidor\xBB puedes volver al primero)");
+    if (serverUrl && !indexFitsServer(serverUrl)) parts.push("de otro servidor, pero la b\xFAsqueda lo usa igual (los resultados se abren en el servidor activo)");
     if (st.perf && st.perf.b) parts.push(`lote medio ${Math.round(st.perf.ms / st.perf.b)} ms (${Math.round(st.perf.rows / st.perf.b)} filas)`);
     return parts.join(" \xB7 ");
   }
@@ -2238,15 +2238,6 @@ async function searchKind(kind, cats, q, limit, seen, { maxCats, deadline }) {
 async function viaIndex(q, type) {
   await backHome().catch(() => {
   });
-  const fits = (() => {
-    try {
-      const st = readSrvs();
-      return indexFitsServer(st.list[st.idx].url);
-    } catch (_) {
-      return true;
-    }
-  })();
-  if (!fits) return null;
   const ready = indexReady();
   const [found2] = await Promise.all([ready ? indexSearch(q, type) : null, !ready || indexStale() ? indexStep({ budgetMs: 1500 }) : null]);
   const res = found2 || (!ready && indexReady() ? await indexSearch(q, type) : null);
@@ -3168,7 +3159,7 @@ function firstPickView({ servers, failed = false, device } = {}) {
 }
 
 // src/screen.js
-var PLUGIN_VERSION = "0.3.35";
+var PLUGIN_VERSION = "0.3.36";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
