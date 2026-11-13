@@ -1202,25 +1202,32 @@ async function resolveIdxOn(srv, idxRef) {
 // unos pocos online más. Devuelve { srv, id, ext } del primero que lo tenga, o lanza not_found. Evita que la búsqueda muestre
 // títulos que luego "no están disponibles".
 async function resolveIdxAnywhere(idxRef) {
+  await activeServer(); // asegura la lista de servidores cargada y un activo válido antes de leer readSrvs()
   const st = readSrvs();
   const list = st && Array.isArray(st.list) ? st.list : [];
   const active = list[st ? st.idx : 0] || null;
+  const homeI = list.findIndex((s) => indexFitsServer(s.url));
+  const home = homeI >= 0 ? list[homeI] : null;
   const asMovie = (direct) => { const mv = /^vod:(\d+):(.+)$/.exec(String(direct || "")); return mv ? { id: mv[1], ext: mv[2] } : null; };
-
-  if (active) {
-    try { const m = asMovie(await resolveIdxRef(idxRef, fetchCategory, serverCats)); if (m) return { srv: active, ...m }; }
-    catch (e) { if (e && e.code === "rate_limited") throw e; }
-  }
   const h = healthFresh();
   const online = h ? new Set(h.online) : null;
-  const homeI = list.findIndex((s) => indexFitsServer(s.url));
-  const order = [];
-  if (homeI >= 0 && list[homeI] && list[homeI] !== active && (!online || online.has(list[homeI].url))) order.push(list[homeI]); // casa primero: tiene el índice y resuelve rápido
-  for (const s of list) { if (s !== active && s !== list[homeI] && (!online || online.has(s.url))) order.push(s); }
+  const okOnline = (s) => !online || online.has(s.url);
+  // En el servidor de casa las categorías del ref son válidas → resuelve RÁPIDO; en otro hay que barrer categorías (lento).
+  const on = async (srv) => asMovie(srv === active ? await resolveIdxRef(idxRef, fetchCategory, serverCats) : await resolveIdxOn(srv, idxRef));
+
+  // 1. Servidor de casa primero (rápido y tiene el índice). Así no se agota el tiempo barriendo un servidor cualquiera. Casa y
+  //    activo se prueban siempre (el chequeo de salud puede estar viejo); el filtro online solo acota los demás.
+  if (home) {
+    try { const m = await on(home); if (m) return { srv: home, ...m }; } catch (e) { if (e && e.code === "rate_limited") throw e; }
+  }
+  // 2. Activo (si no es el de casa) y unos pocos online más (barren categorías: más lento, acotado).
+  const rest = [];
+  if (active && active !== home) rest.push(active);
+  for (const s of list) { if (s !== home && s !== active && okOnline(s)) rest.push(s); }
   let tried = 0;
-  for (const srv of order) {
-    if (tried++ >= 4) break; // tope: no demorar demasiado si varios no lo tienen
-    try { const m = asMovie(await resolveIdxOn(srv, idxRef)); if (m) return { srv, ...m }; } catch (_) { /* no está en este, sigue */ }
+  for (const srv of rest) {
+    if (tried++ >= 2) break; // tope bajo: el de casa ya cubre casi todo; no demorar hasta el timeout
+    try { const m = await on(srv); if (m) return { srv, ...m }; } catch (_) { /* no está en este, sigue */ }
   }
   throw kino.error("not_found", "no está en ningún servidor", { userMessage: "Este título no está disponible ahora." });
 }

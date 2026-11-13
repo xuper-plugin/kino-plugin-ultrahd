@@ -2613,34 +2613,38 @@ async function resolveIdxOn(srv, idxRef) {
   return await resolveIdxRef(idxRef, fetchCat, moreCats);
 }
 async function resolveIdxAnywhere(idxRef) {
+  await activeServer();
   const st = readSrvs();
   const list = st && Array.isArray(st.list) ? st.list : [];
   const active = list[st ? st.idx : 0] || null;
+  const homeI = list.findIndex((s) => indexFitsServer(s.url));
+  const home2 = homeI >= 0 ? list[homeI] : null;
   const asMovie = (direct) => {
     const mv = /^vod:(\d+):(.+)$/.exec(String(direct || ""));
     return mv ? { id: mv[1], ext: mv[2] } : null;
   };
-  if (active) {
+  const h = healthFresh();
+  const online = h ? new Set(h.online) : null;
+  const okOnline = (s) => !online || online.has(s.url);
+  const on = async (srv) => asMovie(srv === active ? await resolveIdxRef(idxRef, fetchCategory, serverCats) : await resolveIdxOn(srv, idxRef));
+  if (home2) {
     try {
-      const m = asMovie(await resolveIdxRef(idxRef, fetchCategory, serverCats));
-      if (m) return { srv: active, ...m };
+      const m = await on(home2);
+      if (m) return { srv: home2, ...m };
     } catch (e) {
       if (e && e.code === "rate_limited") throw e;
     }
   }
-  const h = healthFresh();
-  const online = h ? new Set(h.online) : null;
-  const homeI = list.findIndex((s) => indexFitsServer(s.url));
-  const order = [];
-  if (homeI >= 0 && list[homeI] && list[homeI] !== active && (!online || online.has(list[homeI].url))) order.push(list[homeI]);
+  const rest = [];
+  if (active && active !== home2) rest.push(active);
   for (const s of list) {
-    if (s !== active && s !== list[homeI] && (!online || online.has(s.url))) order.push(s);
+    if (s !== home2 && s !== active && okOnline(s)) rest.push(s);
   }
   let tried = 0;
-  for (const srv of order) {
-    if (tried++ >= 4) break;
+  for (const srv of rest) {
+    if (tried++ >= 2) break;
     try {
-      const m = asMovie(await resolveIdxOn(srv, idxRef));
+      const m = await on(srv);
       if (m) return { srv, ...m };
     } catch (_) {
     }
@@ -3228,7 +3232,7 @@ function firstPickView({ servers, failed = false, device } = {}) {
 }
 
 // src/screen.js
-var PLUGIN_VERSION = "0.3.37";
+var PLUGIN_VERSION = "0.3.38";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
