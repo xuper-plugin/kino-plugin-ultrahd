@@ -1181,62 +1181,24 @@ async function resolveAlt(s) {
   throw kino.error("not_found", "fuente desconocida");
 }
 
-// Resuelve una identidad idx: contra UN servidor concreto (sus categorías), sin tocar el activo. Devuelve "vod:<id>:<ext>" o lanza.
-async function resolveIdxOn(srv, idxRef) {
-  const fetchCat = async (action, cat) => {
-    const data = await callServer(srv, action, { category_id: String(cat) });
-    if (!Array.isArray(data)) throw new Error("respuesta que no es lista");
-    return data;
-  };
-  // Como serverCats pero contra [srv]: empareja por NOMBRE las categorías del índice con las de este servidor, así se buscan
-  // primero las categorías correctas (rápido) en vez de barrer a ciegas (lento → timeout).
-  const moreCats = async (kind, wanted = []) => {
-    const data = await callServer(srv, kind === "movies" ? "get_vod_categories" : "get_series_categories", {});
-    const cats = (Array.isArray(data) ? data : []).map((c) => ({ id: String(c.category_id || ""), title: String(c.category_name || "") })).filter((c) => c.id);
-    const key = (t) => String(t).toLowerCase().replace(/[^a-z0-9]+/g, "");
-    const wantKeys = new Set((wanted || []).map(([t]) => key(t)));
-    const same = cats.filter((c) => wantKeys.has(key(c.title)));
-    const rest = cats.filter((c) => !wantKeys.has(key(c.title)));
-    const out = [...same, ...rest].map((c) => c.id);
-    out.matched = same.length;
-    return out;
-  };
-  return await resolveIdxRef(idxRef, fetchCat, moreCats);
-}
-
-// Un resultado del índice puede ser de un título que el servidor activo no tiene (el índice es del servidor de casa). Se busca en el
-// activo (rápido, por las pistas de categoría del índice); si no, en el de casa (que sí lo tiene y también resuelve rápido) y en
-// unos pocos online más. Devuelve { srv, id, ext } del primero que lo tenga, o lanza not_found. Evita que la búsqueda muestre
-// títulos que luego "no están disponibles".
-async function resolveIdxAnywhere(idxRef) {
-  await activeServer(); // asegura la lista de servidores cargada y un activo válido antes de leer readSrvs()
+// Resuelve un idx: en el servidor de CASA (el índice es suyo → resolveIdxRef+serverCats ahí es RÁPIDO), sin cambiar el servidor del
+// usuario: fija el activo a casa solo durante la resolución y lo restaura. Devuelve { srv (el que lo resolvió), direct } o null.
+async function resolveIdxOnHome(idxRef) {
   const st = readSrvs();
-  const list = st && Array.isArray(st.list) ? st.list : [];
-  const active = list[st ? st.idx : 0] || null;
-  const homeI = list.findIndex((s) => indexFitsServer(s.url));
-  const home = homeI >= 0 ? list[homeI] : null;
-  const asMovie = (direct) => { const mv = /^vod:(\d+):(.+)$/.exec(String(direct || "")); return mv ? { id: mv[1], ext: mv[2] } : null; };
-  const h = healthFresh();
-  const online = h ? new Set(h.online) : null;
-  const okOnline = (s) => !online || online.has(s.url);
-  // En el servidor de casa las categorías del ref son válidas → resuelve RÁPIDO; en otro hay que barrer categorías (lento).
-  const on = async (srv) => asMovie(srv === active ? await resolveIdxRef(idxRef, fetchCategory, serverCats) : await resolveIdxOn(srv, idxRef));
-
-  // 1. Servidor de casa primero (rápido y tiene el índice). Así no se agota el tiempo barriendo un servidor cualquiera. Casa y
-  //    activo se prueban siempre (el chequeo de salud puede estar viejo); el filtro online solo acota los demás.
-  if (home) {
-    try { const m = await on(home); if (m) return { srv: home, ...m }; } catch (e) { if (e && e.code === "rate_limited") throw e; }
-  }
-  // 2. Activo (si no es el de casa) y unos pocos online más (barren categorías: más lento, acotado).
-  const rest = [];
-  if (active && active !== home) rest.push(active);
-  for (const s of list) { if (s !== home && s !== active && okOnline(s)) rest.push(s); }
-  let tried = 0;
-  for (const srv of rest) {
-    if (tried++ >= 2) break; // tope bajo: el de casa ya cubre casi todo; no demorar hasta el timeout
-    try { const m = await on(srv); if (m) return { srv, ...m }; } catch (_) { /* no está en este, sigue */ }
-  }
-  throw kino.error("not_found", "no está en ningún servidor", { userMessage: "Este título no está disponible ahora." });
+  if (!st || !Array.isArray(st.list)) return null;
+  const homeI = st.list.findIndex((x) => indexFitsServer(x.url));
+  if (homeI < 0 || homeI === st.idx) return null; // el activo ya es casa: lo resuelve el camino normal
+  const saved = { idx: st.idx, pin: st.pin, ok: st.ok, okAt: st.okAt };
+  writeSrvs({ ...st, idx: homeI, pin: true, ok: true, okAt: Date.now() });
+  let direct = null, srv = st.list[homeI];
+  try {
+    direct = await resolveIdxRef(idxRef, fetchCategory, serverCats);
+    const after = readSrvs(); // api() pudo saltar a otro servidor: la URL se arma con el que de verdad respondió
+    if (after && Array.isArray(after.list) && after.list[after.idx]) srv = after.list[after.idx];
+  } catch (_) { direct = null; }
+  const now = readSrvs() || st;
+  writeSrvs({ ...now, ...saved }); // restaurar el servidor del usuario
+  return direct ? { srv, direct } : null;
 }
 
 export async function resolve(ref) {
@@ -1245,24 +1207,29 @@ export async function resolve(ref) {
   // Fuente alternativa: la misma película en otro servidor (no el activo, y sin cambiarlo).
   if (s.startsWith("at:")) return await resolveAlt(s);
 
-  // Resultado del índice (idx:m:): puede estar en el activo o en otro servidor (el índice es del servidor de casa). Se reproduce
-  // desde el que lo tenga, con las demás fuentes por servidor como alternativas, para que la búsqueda no muestre títulos que
-  // luego "no están disponibles".
-  if (s.startsWith("idx:m:")) {
-    const { srv, id, ext } = await resolveIdxAnywhere(s);
-    const key = keyOf(srv);
-    const p = parseIdxRef(s);
-    const tok = (p && p.find) || "";
-    noteRecent(id, ext, key);
-    recordAvail("m:" + id, key, ext);
-    const out = { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${ext}` };
-    const alts = buildAlternatives("m:" + id, key, (k) => `at:${k}~m~${id}~${ext}~${tok}`);
-    if (alts.length) { out.alternatives = alts; out.label = niceLabel(srv); }
-    return out;
-  }
-
   const active = await activeServer();
   const { url, username, password } = active;
+
+  // Resultado del índice (idx:m:): se resuelve en el servidor de CASA (rápido y con todos los títulos del índice); si el activo ya
+  // es casa, cae al camino normal de abajo. Lleva el find para las fuentes por servidor.
+  if (s.startsWith("idx:m:")) {
+    const p = parseIdxRef(s);
+    const tok = (p && p.find) || "";
+    const onHome = await resolveIdxOnHome(s);
+    const mv = onHome && /^vod:(\d+):(.+)$/.exec(onHome.direct);
+    if (mv) {
+      const [, id, ext] = mv, srv = onHome.srv, key = keyOf(srv);
+      noteRecent(id, ext, key);
+      recordAvail("m:" + id, key, ext);
+      const out = { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${ext}` };
+      const alts = buildAlternatives("m:" + id, key, (k) => `at:${k}~m~${id}~${ext}~${tok}`);
+      if (alts.length) { out.alternatives = alts; out.label = niceLabel(srv); }
+      return out;
+    }
+    // El activo ES casa (o casa no respondió): se resuelve en el activo y se sigue como una película normal.
+    const direct = await resolveIdxRef(s, fetchCategory, serverCats); // "vod:<id>:<ext>" en el activo, o lanza not_found
+    s = direct + (tok ? "~" + tok : "");
+  }
 
   if (s.startsWith("live:")) {
     const id = s.slice(5).split("~")[0];

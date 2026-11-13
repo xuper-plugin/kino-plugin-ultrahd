@@ -2598,84 +2598,50 @@ async function resolveAlt(s) {
   }
   throw kino.error("not_found", "fuente desconocida");
 }
-async function resolveIdxOn(srv, idxRef) {
-  const fetchCat = async (action2, cat) => {
-    const data = await callServer(srv, action2, { category_id: String(cat) });
-    if (!Array.isArray(data)) throw new Error("respuesta que no es lista");
-    return data;
-  };
-  const moreCats = async (kind, wanted = []) => {
-    const data = await callServer(srv, kind === "movies" ? "get_vod_categories" : "get_series_categories", {});
-    const cats = (Array.isArray(data) ? data : []).map((c) => ({ id: String(c.category_id || ""), title: String(c.category_name || "") })).filter((c) => c.id);
-    const key = (t) => String(t).toLowerCase().replace(/[^a-z0-9]+/g, "");
-    const wantKeys = new Set((wanted || []).map(([t]) => key(t)));
-    const same = cats.filter((c) => wantKeys.has(key(c.title)));
-    const rest = cats.filter((c) => !wantKeys.has(key(c.title)));
-    const out = [...same, ...rest].map((c) => c.id);
-    out.matched = same.length;
-    return out;
-  };
-  return await resolveIdxRef(idxRef, fetchCat, moreCats);
-}
-async function resolveIdxAnywhere(idxRef) {
-  await activeServer();
+async function resolveIdxOnHome(idxRef) {
   const st = readSrvs();
-  const list = st && Array.isArray(st.list) ? st.list : [];
-  const active = list[st ? st.idx : 0] || null;
-  const homeI = list.findIndex((s) => indexFitsServer(s.url));
-  const home2 = homeI >= 0 ? list[homeI] : null;
-  const asMovie = (direct) => {
-    const mv = /^vod:(\d+):(.+)$/.exec(String(direct || ""));
-    return mv ? { id: mv[1], ext: mv[2] } : null;
-  };
-  const h = healthFresh();
-  const online = h ? new Set(h.online) : null;
-  const okOnline = (s) => !online || online.has(s.url);
-  const on = async (srv) => asMovie(srv === active ? await resolveIdxRef(idxRef, fetchCategory, serverCats) : await resolveIdxOn(srv, idxRef));
-  if (home2) {
-    try {
-      const m = await on(home2);
-      if (m) return { srv: home2, ...m };
-    } catch (e) {
-      if (e && e.code === "rate_limited") throw e;
-    }
+  if (!st || !Array.isArray(st.list)) return null;
+  const homeI = st.list.findIndex((x) => indexFitsServer(x.url));
+  if (homeI < 0 || homeI === st.idx) return null;
+  const saved = { idx: st.idx, pin: st.pin, ok: st.ok, okAt: st.okAt };
+  writeSrvs({ ...st, idx: homeI, pin: true, ok: true, okAt: Date.now() });
+  let direct = null, srv = st.list[homeI];
+  try {
+    direct = await resolveIdxRef(idxRef, fetchCategory, serverCats);
+    const after = readSrvs();
+    if (after && Array.isArray(after.list) && after.list[after.idx]) srv = after.list[after.idx];
+  } catch (_) {
+    direct = null;
   }
-  const rest = [];
-  if (active && active !== home2) rest.push(active);
-  for (const s of list) {
-    if (s !== home2 && s !== active && okOnline(s)) rest.push(s);
-  }
-  let tried = 0;
-  for (const srv of rest) {
-    if (tried++ >= 2) break;
-    try {
-      const m = await on(srv);
-      if (m) return { srv, ...m };
-    } catch (_) {
-    }
-  }
-  throw kino.error("not_found", "no est\xE1 en ning\xFAn servidor", { userMessage: "Este t\xEDtulo no est\xE1 disponible ahora." });
+  const now = readSrvs() || st;
+  writeSrvs({ ...now, ...saved });
+  return direct ? { srv, direct } : null;
 }
 async function resolve(ref) {
   let s = String(ref || "");
   if (s.startsWith("at:")) return await resolveAlt(s);
-  if (s.startsWith("idx:m:")) {
-    const { srv, id, ext } = await resolveIdxAnywhere(s);
-    const key = keyOf(srv);
-    const p = parseIdxRef(s);
-    const tok = p && p.find || "";
-    noteRecent(id, ext, key);
-    recordAvail("m:" + id, key, ext);
-    const out = { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${ext}` };
-    const alts = buildAlternatives("m:" + id, key, (k) => `at:${k}~m~${id}~${ext}~${tok}`);
-    if (alts.length) {
-      out.alternatives = alts;
-      out.label = niceLabel(srv);
-    }
-    return out;
-  }
   const active = await activeServer();
   const { url, username, password } = active;
+  if (s.startsWith("idx:m:")) {
+    const p = parseIdxRef(s);
+    const tok = p && p.find || "";
+    const onHome = await resolveIdxOnHome(s);
+    const mv = onHome && /^vod:(\d+):(.+)$/.exec(onHome.direct);
+    if (mv) {
+      const [, id, ext] = mv, srv = onHome.srv, key = keyOf(srv);
+      noteRecent(id, ext, key);
+      recordAvail("m:" + id, key, ext);
+      const out = { url: `${srv.url}/movie/${srv.username}/${srv.password}/${id}.${ext}` };
+      const alts = buildAlternatives("m:" + id, key, (k) => `at:${k}~m~${id}~${ext}~${tok}`);
+      if (alts.length) {
+        out.alternatives = alts;
+        out.label = niceLabel(srv);
+      }
+      return out;
+    }
+    const direct = await resolveIdxRef(s, fetchCategory, serverCats);
+    s = direct + (tok ? "~" + tok : "");
+  }
   if (s.startsWith("live:")) {
     const id = s.slice(5).split("~")[0];
     if (!/^\d+$/.test(id)) throw kino.error("not_found");
@@ -3237,7 +3203,7 @@ function firstPickView({ servers, failed = false, device } = {}) {
 }
 
 // src/screen.js
-var PLUGIN_VERSION = "0.3.39";
+var PLUGIN_VERSION = "0.3.40";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
