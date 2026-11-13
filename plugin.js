@@ -3136,8 +3136,9 @@ function browseView({ tab, data, recent, country, loading, failed, refresh = fal
       title: tv ? { type: "Row", key: "titleRow", gap: 24, crossAxisAlignment: "center", children: [title(), tabBar(active)] } : title(),
       actions: [
         ...tv ? [barButton("searchButton", "search", "search", "openSearch")] : [],
-        ...hasCats ? [barButton("catButton", data.catSel ? "filter_alt" : "category", "category", { ui: [{ open: "catSheet" }] })] : [],
-        barButton("liveButton", "tv", "live", { event: "go", arg: "live" }),
+        ...hasCats ? [barButton("catButton", data.catSel ? "tune" : "filter_list", "category", { ui: [{ open: "catSheet" }] })] : [],
+        // La barra admite 4 acciones como máximo. En TV, con el icono de categorías, el de En vivo sobra: la pestaña En vivo está al lado.
+        ...tv && hasCats ? [] : [barButton("liveButton", "tv", "live", { event: "go", arg: "live" })],
         barButton("serverBtn", "language", "setPick", "openServers"),
         barButton("settings", "settings", "settings", { event: "go", arg: "settings" })
       ]
@@ -3376,7 +3377,7 @@ try {
   }
 } catch (_) {
 }
-var PLUGIN_VERSION = "0.8.3";
+var PLUGIN_VERSION = "0.8.4";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
