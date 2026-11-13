@@ -754,6 +754,8 @@ export async function oneRail(kind, catId, perRail, lang) {
 // ---- home -----------------------------------------------------------------------
 
 export async function home() {
+  const dbgT = Date.now();
+  console.log("[dbg] home() de Kino: inicio (fila de inicio, carga en vivo del IPTV) server=" + serverKey());
   // El índice de títulos se puebla/actualiza mientras carga el Home (un paso acotado en tiempo; nunca lanza).
   const indexing = indexStep({ budgetMs: 1500 }); // paso corto: el poblado sigue en los siguientes Homes (nunca frena la carga)
   const vod = await loadRailsInfo("vod", 7, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
@@ -763,6 +765,7 @@ export async function home() {
   const rows = [...vod.rails, ...series.rails].map(({ lang, ...r }) => r);
   if (!rows.length) throw kino.error("unavailable", "sin contenido", { userMessage: "Sin contenido disponible por ahora." });
   if (live) rows.push({ id: live.id, title: live.title, genre: "tv", items: live.items });
+  console.log("[dbg] home() de Kino: fin rows=" + rows.length + " " + (Date.now() - dbgT) + "ms");
   return rows;
 }
 

@@ -11,7 +11,39 @@ import { LANG_ORDER, isLang } from "./names.js";
 import { fetchHomeFeed, fetchLiveFeed } from "./homeFeed.js";
 import { TAB_IDS, browseView, searchView, liveView, settingsView, verifyingView, firstPickView, cardOf, slidesOf } from "./screenView.js";
 
-const PLUGIN_VERSION = "0.8.0";
+
+// ---- Depuración (v0.8.1): registra cada petición SIN credenciales (solo host, primer tramo del camino y `action`). ----
+const dbgUrl = (u) => {
+  try {
+    const m = /^https?:\/\/([^\/?#]+)([^?#]*)(\?[^#]*)?/.exec(String(u));
+    if (!m) return "?";
+    const host = m[1].replace(/^[^@]*@/, "");
+    if (host === "raw.githubusercontent.com") return host + m[2];
+    const seg0 = m[2].split("/").filter(Boolean)[0] || "";
+    const seg = /^(player_api\.php|get\.php|panel_api\.php|xmltv\.php|enigma2\.php|movie|series|live|timeshift)$/.test(seg0) ? seg0 : "*"; // nunca el usuario/clave si van en el camino
+    const act = /[?&]action=([a-z_]+)/.exec(m[3] || "");
+    return host + "/" + seg + (act ? "?action=" + act[1] : "");
+  } catch (_) { return "?"; }
+};
+try {
+  if (!globalThis.__uhdDbgFetch && kino && typeof kino.fetch === "function") {
+    globalThis.__uhdDbgFetch = true;
+    const origFetch = kino.fetch;
+    kino.fetch = async function (u, o) {
+      const t = Date.now();
+      try {
+        const r = await origFetch.call(kino, u, o);
+        console.log("[dbg] http " + dbgUrl(u) + " -> " + (r && r.status) + " " + (Date.now() - t) + "ms");
+        return r;
+      } catch (e) {
+        console.log("[dbg] http " + dbgUrl(u) + " -> EXC " + (e && e.code || e && e.message) + " " + (Date.now() - t) + "ms");
+        throw e;
+      }
+    };
+  }
+} catch (_) { /* kino congelado: sin log de peticiones */ }
+
+const PLUGIN_VERSION = "0.8.1";
 const TAB_KEY = "browseTab";
 const LANG_KEY = "browseLang";
 const HIST_KEY = "searchHist:v1";
@@ -169,7 +201,9 @@ async function loadHomeFeed(lang) {
   if (!feed || !feed.rows.length) return;
   // El feed trae el idioma por defecto del servidor; se usa para ese idioma (los demás caen a vivo).
   const key = feed.lang && isLang(feed.lang) ? feed.lang : lang;
-  homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [], movies: feed.movies || null, series: feed.series || null });
+  const entry = { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [], movies: feed.movies || null, series: feed.series || null };
+  homeFeedData.set(key, entry);
+  console.log("[dbg] feed ok wanted=" + lang + " feed.lang=" + feed.lang + " storedUnder=" + key + (key !== lang ? " MISMATCH(wanted!=feed)" : "") + " movies=" + (feed.movies ? feed.movies.rows.length : 0));
   if (Array.isArray(feed.langs) && feed.langs.length) homeLangsList = feed.langs;
   // Snapshot local de cada pestaña, para que la próxima apertura pinte al instante aun antes de bajar el feed.
   writeTabSnap("home", key, feed.slides, feed.rows);
@@ -386,9 +420,10 @@ async function runUnit(unit) {
   else if (unit === "index") {
     // Un paso corto por tick: el índice se llena a ratos sin frenar el Home. "paused" = sigue en el próximo tick.
     const out = await indexStep({ budgetMs: 2500 });
+    console.log("[dbg] index step -> " + out);
     if (out === "error" || out === "wait") throw new Error("índice: " + out);
   }
-  else if (unit === "health") await cat.healthCheck();
+  else if (unit === "health") { const n = await cat.healthCheck(); console.log("[dbg] health online=" + n); }
   else if (unit === "autopick") await autoPick();
   else if (unit === "pick") pickServers = await cat.serverList();
   else if (unit === "lfeed") await loadLiveFeed();
@@ -453,6 +488,7 @@ const tabOf = (state, route) => {
   return TAB_IDS.includes(state.tab) ? state.tab : TAB_IDS.includes(a.tab) ? a.tab : storedTab() || TAB_IDS[0];
 };
 
+let dbgLastView = "";
 function mainView(ctx) {
   const state = ctx.state || {};
   // Primera instalación: mientras se auto-elige el servidor (en español), un breve "Verificando…". Si no encontró ninguno, se
@@ -465,6 +501,8 @@ function mainView(ctx) {
   const tab = tabOf(state, ctx.route);
   const lang = wantedLang(state);
   const data = tabData(tab, lang, state);
+  { const sig = tab + "|" + lang + "|" + (data ? (data.stale ? "snap" : "data:" + (data.rails || []).length) : "null") + "|" + (homeFeedData.has(lang) ? "feed" : "nofeed");
+    if (sig !== dbgLastView) { dbgLastView = sig; console.log("[dbg] view tab=" + tab + " lang=" + lang + " data=" + (data ? (data.stale ? "SNAPSHOT" : "rails=" + (data.rails || []).length) : "NULL(skeleton)") + " feedForLang=" + homeFeedData.has(lang) + " movieFeedTab=" + !!feedTabFor("movies", lang)); } }
   // Arranque rápido: con un servidor ya elegido, si hay Home que mostrar (feed pre-armado o snapshot de la última sesión),
   // se pinta YA, sin esperar a "Verificando servidores…". El chequeo sigue corriendo por detrás (unitsFor) y la verificación
   // real del servidor ocurre antes de reproducir (resolve). Solo se muestra "Verificando…" cuando no hay nada que pintar.
@@ -613,7 +651,10 @@ const events = {
     const unit = pendingUnit(state, tab, device);
     if (!unit) return null;
     const failed = { ...(state.failed || {}) };
+    const t0 = Date.now();
+    console.log("[dbg] tick start tab=" + tab + " wantedLang=" + wantedLang(state) + " storedLang=" + String(getStored(LANG_KEY)) + " unit=" + unit + " plan=[" + unitsFor(tab, wantedLang(state)).join(",") + "] feedLangs=[" + [...homeFeedData.keys()].join(",") + "] tried=[" + [...homeFeedTried].join(",") + "] server=" + cat.serverKey() + " healthReady=" + cat.healthReady());
     try { await runUnit(unit); } catch (_) { failed[unit] = true; }
+    console.log("[dbg] unit " + unit + " tab=" + tab + " " + (Date.now() - t0) + "ms" + (failed[unit] ? " FAILED" : ""));
     cacheKey = cat.serverKey();
     return { state: { ...bump(state), failed } };
   },

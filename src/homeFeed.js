@@ -34,12 +34,14 @@ export async function fetchHomeFeed(serverKey) {
   try {
     // El `v` por hora evita una caché de CDN demasiado pegajosa sin pedir siempre de nuevo.
     const r = await kino.fetch(`${BASE}${encodeURIComponent(serverKey)}.enc.json?v=${Math.floor(Date.now() / 3600000)}`, { headers: { Accept: "application/json" } });
-    if (!r.ok) return null;
+    if (!r.ok) { console.log("[dbg] homefeed: HTTP no ok status=" + r.status + " key=" + serverKey); return null; }
     const d = openBox(r.text());
-    if (!d || d.v !== 1 || d.serverKey !== serverKey || !Array.isArray(d.rows) || !d.rows.length) return null;
-    if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) return null;
+    if (!d) { console.log("[dbg] homefeed: NO ABRE (descifrado fallido o sobre invalido) key=" + serverKey); return null; }
+    if (d.v !== 1 || d.serverKey !== serverKey || !Array.isArray(d.rows) || !d.rows.length) { console.log("[dbg] homefeed: contenido no valido v=" + d.v + " serverKey=" + d.serverKey + " esperado=" + serverKey + " rows=" + (Array.isArray(d.rows) ? d.rows.length : "n/a")); return null; }
+    if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) { console.log("[dbg] homefeed: VIEJO " + Math.round((Date.now() - d.at) / 36e5) + " h"); return null; }
     const home = tabOf({ slides: d.slides, rows: d.rows }); // Inicio (compat v1: slides/rows están arriba)
-    if (!home) return null;
+    if (!home) { console.log("[dbg] homefeed: tabOf(home) vacio"); return null; }
+    console.log("[dbg] homefeed: OK key=" + serverKey + " lang=" + d.lang + " home=" + home.rows.length + " movies=" + (d.movies && d.movies.rows ? d.movies.rows.length : 0) + " series=" + (d.series && d.series.rows ? d.series.rows.length : 0) + " " + Math.round(r.text().length / 1024) + "KB");
     return {
       lang: typeof d.lang === "string" ? d.lang : null,
       langs: Array.isArray(d.langs) ? d.langs : [],
@@ -48,7 +50,7 @@ export async function fetchHomeFeed(serverKey) {
       movies: tabOf(d.movies), // null en feeds v1
       series: tabOf(d.series),
     };
-  } catch (_) { return null; }
+  } catch (e) { console.log("[dbg] homefeed: EXCEPCION " + (e && e.message)); return null; }
 }
 
 /**

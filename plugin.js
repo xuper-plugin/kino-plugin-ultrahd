@@ -2204,6 +2204,8 @@ async function oneRail(kind, catId, perRail, lang) {
   }
 }
 async function home() {
+  const dbgT = Date.now();
+  console.log("[dbg] home() de Kino: inicio (fila de inicio, carga en vivo del IPTV) server=" + serverKey());
   const indexing = indexStep({ budgetMs: 1500 });
   const vod = await loadRailsInfo("vod", 7, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
   const series = await loadRailsInfo("series", 4, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
@@ -2212,6 +2214,7 @@ async function home() {
   const rows = [...vod.rails, ...series.rails].map(({ lang, ...r }) => r);
   if (!rows.length) throw kino.error("unavailable", "sin contenido", { userMessage: "Sin contenido disponible por ahora." });
   if (live) rows.push({ id: live.id, title: live.title, genre: "tv", items: live.items });
+  console.log("[dbg] home() de Kino: fin rows=" + rows.length + " " + (Date.now() - dbgT) + "ms");
   return rows;
 }
 async function browse(ref, cursor) {
@@ -2856,12 +2859,29 @@ async function fetchHomeFeed(serverKey2) {
   if (!serverKey2) return null;
   try {
     const r = await kino.fetch(`${BASE2}${encodeURIComponent(serverKey2)}.enc.json?v=${Math.floor(Date.now() / 36e5)}`, { headers: { Accept: "application/json" } });
-    if (!r.ok) return null;
+    if (!r.ok) {
+      console.log("[dbg] homefeed: HTTP no ok status=" + r.status + " key=" + serverKey2);
+      return null;
+    }
     const d = openBox(r.text());
-    if (!d || d.v !== 1 || d.serverKey !== serverKey2 || !Array.isArray(d.rows) || !d.rows.length) return null;
-    if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) return null;
+    if (!d) {
+      console.log("[dbg] homefeed: NO ABRE (descifrado fallido o sobre invalido) key=" + serverKey2);
+      return null;
+    }
+    if (d.v !== 1 || d.serverKey !== serverKey2 || !Array.isArray(d.rows) || !d.rows.length) {
+      console.log("[dbg] homefeed: contenido no valido v=" + d.v + " serverKey=" + d.serverKey + " esperado=" + serverKey2 + " rows=" + (Array.isArray(d.rows) ? d.rows.length : "n/a"));
+      return null;
+    }
+    if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) {
+      console.log("[dbg] homefeed: VIEJO " + Math.round((Date.now() - d.at) / 36e5) + " h");
+      return null;
+    }
     const home2 = tabOf({ slides: d.slides, rows: d.rows });
-    if (!home2) return null;
+    if (!home2) {
+      console.log("[dbg] homefeed: tabOf(home) vacio");
+      return null;
+    }
+    console.log("[dbg] homefeed: OK key=" + serverKey2 + " lang=" + d.lang + " home=" + home2.rows.length + " movies=" + (d.movies && d.movies.rows ? d.movies.rows.length : 0) + " series=" + (d.series && d.series.rows ? d.series.rows.length : 0) + " " + Math.round(r.text().length / 1024) + "KB");
     return {
       lang: typeof d.lang === "string" ? d.lang : null,
       langs: Array.isArray(d.langs) ? d.langs : [],
@@ -2871,7 +2891,8 @@ async function fetchHomeFeed(serverKey2) {
       // null en feeds v1
       series: tabOf(d.series)
     };
-  } catch (_) {
+  } catch (e) {
+    console.log("[dbg] homefeed: EXCEPCION " + (e && e.message));
     return null;
   }
 }
@@ -3295,7 +3316,39 @@ function firstPickView({ servers, failed = false, device } = {}) {
 }
 
 // src/screen.js
-var PLUGIN_VERSION = "0.8.0";
+var dbgUrl = (u) => {
+  try {
+    const m = /^https?:\/\/([^\/?#]+)([^?#]*)(\?[^#]*)?/.exec(String(u));
+    if (!m) return "?";
+    const host = m[1].replace(/^[^@]*@/, "");
+    if (host === "raw.githubusercontent.com") return host + m[2];
+    const seg0 = m[2].split("/").filter(Boolean)[0] || "";
+    const seg = /^(player_api\.php|get\.php|panel_api\.php|xmltv\.php|enigma2\.php|movie|series|live|timeshift)$/.test(seg0) ? seg0 : "*";
+    const act = /[?&]action=([a-z_]+)/.exec(m[3] || "");
+    return host + "/" + seg + (act ? "?action=" + act[1] : "");
+  } catch (_) {
+    return "?";
+  }
+};
+try {
+  if (!globalThis.__uhdDbgFetch && kino && typeof kino.fetch === "function") {
+    globalThis.__uhdDbgFetch = true;
+    const origFetch = kino.fetch;
+    kino.fetch = async function(u, o) {
+      const t = Date.now();
+      try {
+        const r = await origFetch.call(kino, u, o);
+        console.log("[dbg] http " + dbgUrl(u) + " -> " + (r && r.status) + " " + (Date.now() - t) + "ms");
+        return r;
+      } catch (e) {
+        console.log("[dbg] http " + dbgUrl(u) + " -> EXC " + (e && e.code || e && e.message) + " " + (Date.now() - t) + "ms");
+        throw e;
+      }
+    };
+  }
+} catch (_) {
+}
+var PLUGIN_VERSION = "0.8.1";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
@@ -3466,7 +3519,9 @@ async function loadHomeFeed(lang) {
   }
   if (!feed || !feed.rows.length) return;
   const key = feed.lang && isLang(feed.lang) ? feed.lang : lang;
-  homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [], movies: feed.movies || null, series: feed.series || null });
+  const entry = { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [], movies: feed.movies || null, series: feed.series || null };
+  homeFeedData.set(key, entry);
+  console.log("[dbg] feed ok wanted=" + lang + " feed.lang=" + feed.lang + " storedUnder=" + key + (key !== lang ? " MISMATCH(wanted!=feed)" : "") + " movies=" + (feed.movies ? feed.movies.rows.length : 0));
   if (Array.isArray(feed.langs) && feed.langs.length) homeLangsList = feed.langs;
   writeTabSnap("home", key, feed.slides, feed.rows);
   if (feed.movies) writeTabSnap("movies", key, feed.movies.slides, feed.movies.rows);
@@ -3668,9 +3723,12 @@ async function runUnit(unit) {
   } else if (unit === "recent") await loadRecent();
   else if (unit === "index") {
     const out = await indexStep({ budgetMs: 2500 });
+    console.log("[dbg] index step -> " + out);
     if (out === "error" || out === "wait") throw new Error("\xEDndice: " + out);
-  } else if (unit === "health") await healthCheck();
-  else if (unit === "autopick") await autoPick();
+  } else if (unit === "health") {
+    const n = await healthCheck();
+    console.log("[dbg] health online=" + n);
+  } else if (unit === "autopick") await autoPick();
   else if (unit === "pick") pickServers = await serverList();
   else if (unit === "lfeed") await loadLiveFeed();
   else if (unit.startsWith("hfeed:")) await loadHomeFeed(unit.slice("hfeed:".length));
@@ -3722,6 +3780,7 @@ var tabOf2 = (state, route) => {
   const a = route && route.args && typeof route.args === "object" ? route.args : {};
   return TAB_IDS.includes(state.tab) ? state.tab : TAB_IDS.includes(a.tab) ? a.tab : storedTab() || TAB_IDS[0];
 };
+var dbgLastView = "";
 function mainView(ctx) {
   const state = ctx.state || {};
   if (!serverChosen()) {
@@ -3732,6 +3791,13 @@ function mainView(ctx) {
   const tab = tabOf2(state, ctx.route);
   const lang = wantedLang(state);
   const data = tabData(tab, lang, state);
+  {
+    const sig = tab + "|" + lang + "|" + (data ? data.stale ? "snap" : "data:" + (data.rails || []).length : "null") + "|" + (homeFeedData.has(lang) ? "feed" : "nofeed");
+    if (sig !== dbgLastView) {
+      dbgLastView = sig;
+      console.log("[dbg] view tab=" + tab + " lang=" + lang + " data=" + (data ? data.stale ? "SNAPSHOT" : "rails=" + (data.rails || []).length : "NULL(skeleton)") + " feedForLang=" + homeFeedData.has(lang) + " movieFeedTab=" + !!feedTabFor("movies", lang));
+    }
+  }
   if (!data && !healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
   const failed = unitsFor(tab, lang).some((u) => state.failed && state.failed[u]);
   return browseView({
@@ -3893,11 +3959,14 @@ var events = {
     const unit = pendingUnit(state, tab, device);
     if (!unit) return null;
     const failed = { ...state.failed || {} };
+    const t0 = Date.now();
+    console.log("[dbg] tick start tab=" + tab + " wantedLang=" + wantedLang(state) + " storedLang=" + String(getStored(LANG_KEY)) + " unit=" + unit + " plan=[" + unitsFor(tab, wantedLang(state)).join(",") + "] feedLangs=[" + [...homeFeedData.keys()].join(",") + "] tried=[" + [...homeFeedTried].join(",") + "] server=" + serverKey() + " healthReady=" + healthReady());
     try {
       await runUnit(unit);
     } catch (_) {
       failed[unit] = true;
     }
+    console.log("[dbg] unit " + unit + " tab=" + tab + " " + (Date.now() - t0) + "ms" + (failed[unit] ? " FAILED" : ""));
     cacheKey = serverKey();
     return { state: { ...bump(state), failed } };
   },
