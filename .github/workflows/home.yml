@@ -2,9 +2,9 @@ name: Home pre-armado
 
 # Genera, por servidor, un Home pre-armado (plan + filas + hero) y lo publica en home/<serverKey>.json. El plugin lo baja
 # y pinta su Home al instante (si falta o está viejo, cae a la carga en vivo progresiva). Dos veces al día.
+# El generador corre en el Mac del autor (cron launchd) porque desde los runners de GitHub (EEUU) casi ningún servidor IPTV
+# responde: el límite del shim + la vantage dejan ~2 de 30. Aquí queda solo como disparo MANUAL de respaldo.
 on:
-  schedule:
-    - cron: "0 0,4,8,12,16,20 * * *"  # 6 veces al día (cada 4h): Home fresco y lista de servidores sanos (index.json) al día
   workflow_dispatch:
 
 permissions:
