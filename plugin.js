@@ -3249,7 +3249,7 @@ function firstPickView({ servers, failed = false, device } = {}) {
 }
 
 // src/screen.js
-var PLUGIN_VERSION = "0.3.40";
+var PLUGIN_VERSION = "0.4.0";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
