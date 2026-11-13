@@ -43,7 +43,7 @@ try {
   }
 } catch (_) { /* kino congelado: sin log de peticiones */ }
 
-const PLUGIN_VERSION = "0.8.2";
+const PLUGIN_VERSION = "0.8.3";
 const TAB_KEY = "browseTab";
 const LANG_KEY = "browseLang";
 const HIST_KEY = "searchHist:v1";
@@ -623,11 +623,11 @@ const events = {
     }
     return { state: { failed: null, ...bump(state) } };
   },
-  async vcat({ value, state }) {
+  async vcat({ value, arg, state }) {
     const tab = tabOf(state);
     if (tab === "live" || tab === "home") return null;
-    const id = typeof value === "string" ? value : "";
-    if (id === "") return { state: { cat: null, ...bump(state) } };
+    const id = typeof arg === "string" ? arg : typeof value === "string" ? value : "";
+    if (id === "" || id === "all") return { state: { cat: null, ...bump(state) } }; // "all" = Todas las categorías (el host no admite value vacío)
     const lang = wantedLang(state);
     const key = `${tab}:${lang}:${id}`;
     if (!onlyCat.has(key)) {

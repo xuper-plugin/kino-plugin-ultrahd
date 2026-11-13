@@ -3089,20 +3089,26 @@ function browseView({ tab, data, recent, country, loading, failed, refresh = fal
   const active = TAB_IDS.includes(tab) ? tab : TAB_IDS[0];
   const body = [];
   const chips = data && data.langs && data.langs.length > 1 && active !== "live" ? langChips(data.langs, data.lang) : null;
-  const catDrop = data && data.cats && data.cats.length > 1 && active !== "live" && active !== "home" ? {
-    type: "DropdownButton",
-    key: "vcat",
-    ...twin("category", "labelText"),
-    value: data.catSel || "",
-    onChanged: "vcat",
-    options: [{ value: "", ...twin("allCats", "label") }, ...data.cats.slice(0, 200).map((c) => ({ value: c.id, label: c.title, labelEn: c.title }))]
+  const hasCats = !!(data && data.cats && data.cats.length > 1 && active !== "live" && active !== "home");
+  const catSheet = hasCats ? {
+    type: "BottomSheet",
+    key: "catSheet",
+    ...twin("category", "title"),
+    children: [{ type: "ListView", key: "catList", items: [{ id: "all", title: null }, ...data.cats.slice(0, 200)].map((c) => {
+      const val = c.id === "all" ? "all" : String(c.id);
+      const sel = val === (data.catSel || "all");
+      return {
+        type: "ListTile",
+        key: "cat-" + val,
+        dense: true,
+        ...c.id === "all" ? twin("allCats", "title") : { title: c.title, titleEn: c.title },
+        ...sel ? { selected: true, trailing: { type: "Icon", name: "check" } } : {},
+        onTap: { ui: [{ close: "catSheet" }], event: "vcat", arg: val }
+      };
+    }) }]
   } : null;
-  if (tv && chips && catDrop) {
-    body.push({ type: "Row", key: "chipsCat", gap: 24, crossAxisAlignment: "center", children: [{ ...chips, flex: 1 }, catDrop] });
-  } else {
-    if (chips) body.push(chips);
-    if (catDrop) body.push(catDrop);
-  }
+  if (chips) body.push(chips);
+  if (catSheet) body.push(catSheet);
   if (data) {
     if (data.slides.length > 0) body.push(hero(data.slides));
     if (active === "home" && recent.length > 0) body.push(rail({ items: recent }, "recent", twin("recent", "title")));
@@ -3130,6 +3136,7 @@ function browseView({ tab, data, recent, country, loading, failed, refresh = fal
       title: tv ? { type: "Row", key: "titleRow", gap: 24, crossAxisAlignment: "center", children: [title(), tabBar(active)] } : title(),
       actions: [
         ...tv ? [barButton("searchButton", "search", "search", "openSearch")] : [],
+        ...hasCats ? [barButton("catButton", data.catSel ? "filter_alt" : "category", "category", { ui: [{ open: "catSheet" }] })] : [],
         barButton("liveButton", "tv", "live", { event: "go", arg: "live" }),
         barButton("serverBtn", "language", "setPick", "openServers"),
         barButton("settings", "settings", "settings", { event: "go", arg: "settings" })
@@ -3369,7 +3376,7 @@ try {
   }
 } catch (_) {
 }
-var PLUGIN_VERSION = "0.8.2";
+var PLUGIN_VERSION = "0.8.3";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
@@ -3951,11 +3958,11 @@ var events = {
     }
     return { state: { failed: null, ...bump(state) } };
   },
-  async vcat({ value, state }) {
+  async vcat({ value, arg, state }) {
     const tab = tabOf2(state);
     if (tab === "live" || tab === "home") return null;
-    const id = typeof value === "string" ? value : "";
-    if (id === "") return { state: { cat: null, ...bump(state) } };
+    const id = typeof arg === "string" ? arg : typeof value === "string" ? value : "";
+    if (id === "" || id === "all") return { state: { cat: null, ...bump(state) } };
     const lang = wantedLang(state);
     const key = `${tab}:${lang}:${id}`;
     if (!onlyCat.has(key)) {

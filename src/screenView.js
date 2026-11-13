@@ -127,17 +127,22 @@ export function browseView({ tab, data, recent, country, loading, failed, refres
   const active = TAB_IDS.includes(tab) ? tab : TAB_IDS[0];
   const body = [];
   const chips = data && data.langs && data.langs.length > 1 && active !== "live" ? langChips(data.langs, data.lang) : null;
-  const catDrop = data && data.cats && data.cats.length > 1 && active !== "live" && active !== "home"
-    ? { type: "DropdownButton", key: "vcat", ...twin("category", "labelText"), value: data.catSel || "", onChanged: "vcat",
-        options: [{ value: "", ...twin("allCats", "label") }, ...data.cats.slice(0, 200).map((c) => ({ value: c.id, label: c.title, labelEn: c.title }))] }
-    : null;
-  // En TV, idiomas a la izquierda y categoría a la derecha en la misma fila (aprovecha el ancho, no gasta otra fila).
-  if (tv && chips && catDrop) {
-    body.push({ type: "Row", key: "chipsCat", gap: 24, crossAxisAlignment: "center", children: [{ ...chips, flex: 1 }, catDrop] });
-  } else {
-    if (chips) body.push(chips);
-    if (catDrop) body.push(catDrop);
-  }
+  // Categorías: un icono en la barra (junto a buscar) abre una hoja con la lista; así no ocupa una franja de la página.
+  const hasCats = !!(data && data.cats && data.cats.length > 1 && active !== "live" && active !== "home");
+  const catSheet = hasCats ? {
+    type: "BottomSheet", key: "catSheet", ...twin("category", "title"),
+    children: [{ type: "ListView", key: "catList", items: [{ id: "all", title: null }, ...data.cats.slice(0, 200)].map((c) => {
+      const val = c.id === "all" ? "all" : String(c.id);
+      const sel = val === (data.catSel || "all");
+      return {
+        type: "ListTile", key: "cat-" + val, dense: true, ...(c.id === "all" ? twin("allCats", "title") : { title: c.title, titleEn: c.title }),
+        ...(sel ? { selected: true, trailing: { type: "Icon", name: "check" } } : {}),
+        onTap: { ui: [{ close: "catSheet" }], event: "vcat", arg: val },
+      };
+    }) }],
+  } : null;
+  if (chips) body.push(chips);
+  if (catSheet) body.push(catSheet);
   if (data) {
     if (data.slides.length > 0) body.push(hero(data.slides));
     if (active === "home" && recent.length > 0) body.push(rail({ items: recent }, "recent", twin("recent", "title")));
@@ -162,6 +167,7 @@ export function browseView({ tab, data, recent, country, loading, failed, refres
       title: tv ? { type: "Row", key: "titleRow", gap: 24, crossAxisAlignment: "center", children: [title(), tabBar(active)] } : title(),
       actions: [
         ...(tv ? [barButton("searchButton", "search", "search", "openSearch")] : []),
+        ...(hasCats ? [barButton("catButton", data.catSel ? "filter_alt" : "category", "category", { ui: [{ open: "catSheet" }] })] : []),
         barButton("liveButton", "tv", "live", { event: "go", arg: "live" }),
         barButton("serverBtn", "language", "setPick", "openServers"),
         barButton("settings", "settings", "settings", { event: "go", arg: "settings" }),
