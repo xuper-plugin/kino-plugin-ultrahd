@@ -121,7 +121,8 @@ const barButton = (key, icon, labelKey, onPressed) => ({ type: "IconButton", key
  * `data`: { slides, rails } del tab activo o null. `recent`: tarjetas. `country`: tarjetas de la fila de tu país.
  * `loading`: algo falta por cargar (el temporizador solo corre entonces). `failed`: el tab activo no cargó.
  */
-export function browseView({ tab, data, recent, country, loading, failed, device = "phone" }) {
+const REFRESH_MS = 30 * 60 * 1000; // en una sesión larga, el Home del feed se vuelve a bajar cada 30 min
+export function browseView({ tab, data, recent, country, loading, failed, refresh = false, device = "phone" }) {
   const tv = device === "tv";
   const active = TAB_IDS.includes(tab) ? tab : TAB_IDS[0];
   const body = [];
@@ -171,7 +172,7 @@ export function browseView({ tab, data, recent, country, loading, failed, device
       ...(tv ? [] : [{ type: "Column", key: "tabsRow", padding: { compact: 0, expanded: 24 }, children: [tabBar(active)] }]),
       { type: "SingleChildScrollView", key: "browse-" + active, flex: 1, children: [{ type: "Column", padding: { compact: 12, expanded: 24 }, gap: 16, children: body }] },
     ] },
-    ...(loading ? { every: { ms: POLL_MS, event: "tick" } } : {}),
+    ...(loading ? { every: { ms: POLL_MS, event: "tick" } } : refresh ? { every: { ms: REFRESH_MS, event: "hrefresh" } } : {}),
   };
 }
 

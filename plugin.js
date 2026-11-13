@@ -2996,7 +2996,8 @@ var rail = (r, key, titleProps) => ({
   size: "medium"
 });
 var barButton = (key, icon, labelKey, onPressed) => ({ type: "IconButton", key, icon, ...twin(labelKey, "labelText"), ...twin(labelKey, "tooltip"), onPressed });
-function browseView({ tab, data, recent, country, loading, failed, device = "phone" }) {
+var REFRESH_MS = 30 * 60 * 1e3;
+function browseView({ tab, data, recent, country, loading, failed, refresh = false, device = "phone" }) {
   const tv = device === "tv";
   const active = TAB_IDS.includes(tab) ? tab : TAB_IDS[0];
   const body = [];
@@ -3052,7 +3053,7 @@ function browseView({ tab, data, recent, country, loading, failed, device = "pho
       ...tv ? [] : [{ type: "Column", key: "tabsRow", padding: { compact: 0, expanded: 24 }, children: [tabBar(active)] }],
       { type: "SingleChildScrollView", key: "browse-" + active, flex: 1, children: [{ type: "Column", padding: { compact: 12, expanded: 24 }, gap: 16, children: body }] }
     ] },
-    ...loading ? { every: { ms: POLL_MS, event: "tick" } } : {}
+    ...loading ? { every: { ms: POLL_MS, event: "tick" } } : refresh ? { every: { ms: REFRESH_MS, event: "hrefresh" } } : {}
   };
 }
 var searchForm = (tv, query, key, field, event, hintKey, goKey) => ({
@@ -3631,6 +3632,8 @@ function mainView(ctx) {
     country: countryCards || [],
     loading: pendingUnit(state, tab, ctx.device) !== null,
     failed: !data && failed,
+    // Con el Home del feed a la vista, se re-baja cada 30 min por si el Action publicó uno nuevo durante la sesión.
+    refresh: tab === "home" && homeFeedData.has(lang),
     device: ctx.device
   });
 }
@@ -3760,6 +3763,36 @@ var events = {
     }
     cacheKey = serverKey();
     return { state: { ...bump(state), failed } };
+  },
+  // Sesión larga: cada 30 min (browseView) vuelve a bajar el feed del Home por si el Action publicó uno nuevo. Nunca falla
+  // la vista: si no hay feed nuevo o el servidor cambió, se queda con lo que ya mostraba.
+  async hrefresh({ state }) {
+    const lang = wantedLang(state);
+    if (!homeFeedData.has(lang)) return null;
+    let feed = null;
+    try {
+      feed = await fetchHomeFeed(serverKey());
+    } catch (_) {
+      feed = null;
+    }
+    if (!feed || !feed.rows.length) return null;
+    const key = feed.lang && isLang(feed.lang) ? feed.lang : lang;
+    const cur = homeFeedData.get(key);
+    if (cur && cur.rows.length === feed.rows.length && JSON.stringify(cur.rows[0]) === JSON.stringify(feed.rows[0])) return null;
+    homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [] });
+    if (Array.isArray(feed.langs) && feed.langs.length) homeLangsList = feed.langs;
+    try {
+      for (let per = 12; per >= 6; per -= 3) {
+        const slim2 = { v: 2, at: Date.now(), slides: (feed.slides || []).slice(0, FEATURED).map(slimCard), rails: feed.rows.map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items.slice(0, per).map(slimCard) })) };
+        const text2 = JSON.stringify(slim2);
+        if (text2.length <= HOME_SNAP_MAX) {
+          put(homeSnapKey(key), text2);
+          break;
+        }
+      }
+    } catch (_) {
+    }
+    return { state: { ...bump(state) } };
   },
   openSearch() {
     return { route: { push: "search" }, state: { sq: "", sstate: null } };

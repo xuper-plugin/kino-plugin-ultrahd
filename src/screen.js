@@ -392,7 +392,10 @@ function mainView(ctx) {
   const failed = unitsFor(tab, lang).some((u) => state.failed && state.failed[u]);
   return browseView({
     tab, data, recent: recentCards || [], country: countryCards || [],
-    loading: pendingUnit(state, tab, ctx.device) !== null, failed: !data && failed, device: ctx.device,
+    loading: pendingUnit(state, tab, ctx.device) !== null, failed: !data && failed,
+    // Con el Home del feed a la vista, se re-baja cada 30 min por si el Action publicó uno nuevo durante la sesión.
+    refresh: tab === "home" && homeFeedData.has(lang),
+    device: ctx.device,
   });
 }
 
@@ -516,6 +519,28 @@ const events = {
     try { await runUnit(unit); } catch (_) { failed[unit] = true; }
     cacheKey = cat.serverKey();
     return { state: { ...bump(state), failed } };
+  },
+  // Sesión larga: cada 30 min (browseView) vuelve a bajar el feed del Home por si el Action publicó uno nuevo. Nunca falla
+  // la vista: si no hay feed nuevo o el servidor cambió, se queda con lo que ya mostraba.
+  async hrefresh({ state }) {
+    const lang = wantedLang(state);
+    if (!homeFeedData.has(lang)) return null;
+    let feed = null;
+    try { feed = await fetchHomeFeed(cat.serverKey()); } catch (_) { feed = null; }
+    if (!feed || !feed.rows.length) return null;
+    const key = feed.lang && isLang(feed.lang) ? feed.lang : lang;
+    const cur = homeFeedData.get(key);
+    if (cur && cur.rows.length === feed.rows.length && JSON.stringify(cur.rows[0]) === JSON.stringify(feed.rows[0])) return null; // igual: sin re-render
+    homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [] });
+    if (Array.isArray(feed.langs) && feed.langs.length) homeLangsList = feed.langs;
+    try {
+      for (let per = 12; per >= 6; per -= 3) {
+        const slim = { v: 2, at: Date.now(), slides: (feed.slides || []).slice(0, FEATURED).map(slimCard), rails: feed.rows.map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items.slice(0, per).map(slimCard) })) };
+        const text = JSON.stringify(slim);
+        if (text.length <= HOME_SNAP_MAX) { put(homeSnapKey(key), text); break; }
+      }
+    } catch (_) { /* da igual */ }
+    return { state: { ...bump(state) } };
   },
   openSearch() { return { route: { push: "search" }, state: { sq: "", sstate: null } }; },
   search({ value, route }) {
