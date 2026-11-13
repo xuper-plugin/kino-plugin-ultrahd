@@ -1809,7 +1809,9 @@ function itemsWithHealth(st) {
   const online = h ? new Set(h.online) : null;
   let items = (st.list || []).map((s, i) => {
     const fi = flagInfo(labelOf(s));
-    return { i, label: niceLabel(s), host: hostOf(s), https: String(s.url).startsWith("https://"), flag: fi ? fi.code : "", online: online ? online.has(s.url) : true };
+    const flag = fi ? fi.code : "";
+    const label = niceLabel(s);
+    return { i, label, host: hostOf(s), https: String(s.url).startsWith("https://"), flag, es: srvPriority({ flag, label }) <= 1, online: online ? online.has(s.url) : true };
   });
   if (online && online.size > 0) items = items.filter((x) => x.online);
   items.sort((a, b) => srvPriority(a) - srvPriority(b) || a.i - b.i);
@@ -3279,7 +3281,7 @@ function firstPickView({ servers, failed = false, device } = {}) {
 }
 
 // src/screen.js
-var PLUGIN_VERSION = "0.6.0";
+var PLUGIN_VERSION = "0.7.0";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
@@ -3307,6 +3309,7 @@ var found = null;
 var liveFound = null;
 var pickServers = null;
 var cacheKey = null;
+var autoPickTried = false;
 var SRVCHOSEN_KEY = "srvChosen:v1";
 var serverChosen = () => {
   try {
@@ -3578,8 +3581,25 @@ function feedTabFor(tab, lang) {
   const t = tab === "movies" ? f.movies : tab === "series" ? f.series : null;
   return t && Array.isArray(t.rows) && t.rows.length ? t : null;
 }
+async function autoPick() {
+  autoPickTried = true;
+  try {
+    const list = await serverList();
+    const items = list.items || [];
+    const order = [...items.filter((x) => x.es), ...items.filter((x) => !x.es)].slice(0, 6);
+    for (const it of order) {
+      const r = await selectServer(String(it.i)).catch(() => ({ ok: false }));
+      if (r && r.ok) {
+        markServerChosen();
+        cacheKey = serverKey();
+        return;
+      }
+    }
+  } catch (_) {
+  }
+}
 function unitsFor(tab, lang) {
-  if (!serverChosen()) return ["health", "pick"];
+  if (!serverChosen()) return autoPickTried ? ["health", "pick"] : ["autopick"];
   if (tab === "home") {
     if (homeFeedData.has(lang)) return [`hfeed:${lang}`, "health", ...countryOn() ? ["country"] : [], "recent", "index"];
     const plan = homePlan.get(lang) || [];
@@ -3609,6 +3629,7 @@ function isDone(unit) {
   if (unit === "recent") return recentCards !== null;
   if (unit === "index") return !indexNeeded();
   if (unit === "health") return healthReady();
+  if (unit === "autopick") return autoPickTried;
   if (unit === "pick") return pickServers !== null;
   if (unit === "lfeed") return liveFeedTried;
   if (unit.startsWith("hfeed:")) return homeFeedTried.has(unit.slice("hfeed:".length));
@@ -3635,6 +3656,7 @@ async function runUnit(unit) {
     const out = await indexStep({ budgetMs: 2500 });
     if (out === "error" || out === "wait") throw new Error("\xEDndice: " + out);
   } else if (unit === "health") await healthCheck();
+  else if (unit === "autopick") await autoPick();
   else if (unit === "pick") pickServers = await serverList();
   else if (unit === "lfeed") await loadLiveFeed();
   else if (unit.startsWith("hfeed:")) await loadHomeFeed(unit.slice("hfeed:".length));
@@ -3689,6 +3711,7 @@ var tabOf2 = (state, route) => {
 function mainView(ctx) {
   const state = ctx.state || {};
   if (!serverChosen()) {
+    if (!autoPickTried) return verifyingView({ device: ctx.device });
     if (!healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
     return firstPickView({ servers: pickServers, failed: !!(state.failed && state.failed.pick), device: ctx.device });
   }

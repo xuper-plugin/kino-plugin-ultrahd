@@ -11,7 +11,7 @@ import { LANG_ORDER, isLang } from "./names.js";
 import { fetchHomeFeed, fetchLiveFeed } from "./homeFeed.js";
 import { TAB_IDS, browseView, searchView, liveView, settingsView, verifyingView, firstPickView, cardOf, slidesOf } from "./screenView.js";
 
-const PLUGIN_VERSION = "0.6.0";
+const PLUGIN_VERSION = "0.7.0";
 const TAB_KEY = "browseTab";
 const LANG_KEY = "browseLang";
 const HIST_KEY = "searchHist:v1";
@@ -40,8 +40,9 @@ let recentCards = null;
 let liveCats = null;
 let found = null;
 let liveFound = null;
-let pickServers = null; // lista para el selector de servidor de la primera vez (null = aún sin cargar)
+let pickServers = null; // lista para el selector de servidor (respaldo si el auto-elegido no responde)
 let cacheKey = null;
+let autoPickTried = false; // primera instalación: ya se intentó elegir servidor automáticamente (en español, sin que la persona elija)
 
 // La persona ya eligió servidor al menos una vez: se recuerda para no volver a mostrar el selector inicial (se cambia con 🌐).
 const SRVCHOSEN_KEY = "srvChosen:v1";
@@ -299,9 +300,25 @@ function feedTabFor(tab, lang) {
   return t && Array.isArray(t.rows) && t.rows.length ? t : null;
 }
 
+// Primera instalación: elige el servidor automáticamente, PREFIRIENDO los de habla hispana (la mayoría del público), sin que la
+// persona elija ni ver el selector. selectServer prueba el servidor (y alterna dentro del mismo país), así el elegido responde.
+// Si ninguno responde (p. ej. sin internet), queda sin elegir y mainView muestra el selector como respaldo. El 🌐 lo cambia luego.
+async function autoPick() {
+  autoPickTried = true;
+  try {
+    const list = await cat.serverList();
+    const items = list.items || [];
+    const order = [...items.filter((x) => x.es), ...items.filter((x) => !x.es)].slice(0, 6);
+    for (const it of order) {
+      const r = await cat.selectServer(String(it.i)).catch(() => ({ ok: false }));
+      if (r && r.ok) { markServerChosen(); cacheKey = cat.serverKey(); return; }
+    }
+  } catch (_) { /* sin internet: queda el selector de respaldo */ }
+}
+
 function unitsFor(tab, lang) {
-  // Primera vez: solo salud y la lista para el selector; no se carga el Home hasta que la persona elija (no un servidor al azar).
-  if (!serverChosen()) return ["health", "pick"];
+  // Primera instalación: se elige servidor automáticamente (autopick, en español). Si no logró ninguno, se cae al selector manual.
+  if (!serverChosen()) return autoPickTried ? ["health", "pick"] : ["autopick"];
   if (tab === "home") {
     // El Home carga fila por fila: primero el plan (categorías ordenadas), luego UNA unidad por fila (`hrail:...`), que aparece
     // apenas carga; país, recientes e índice van al final. Hasta tener el plan, solo health + plan.
@@ -341,6 +358,7 @@ function isDone(unit) {
   if (unit === "recent") return recentCards !== null;
   if (unit === "index") return !indexNeeded();
   if (unit === "health") return cat.healthReady();
+  if (unit === "autopick") return autoPickTried;
   if (unit === "pick") return pickServers !== null;
   if (unit === "lfeed") return liveFeedTried;
   if (unit.startsWith("hfeed:")) return homeFeedTried.has(unit.slice("hfeed:".length));
@@ -371,6 +389,7 @@ async function runUnit(unit) {
     if (out === "error" || out === "wait") throw new Error("índice: " + out);
   }
   else if (unit === "health") await cat.healthCheck();
+  else if (unit === "autopick") await autoPick();
   else if (unit === "pick") pickServers = await cat.serverList();
   else if (unit === "lfeed") await loadLiveFeed();
   else if (unit.startsWith("hfeed:")) await loadHomeFeed(unit.slice("hfeed:".length));
@@ -436,8 +455,10 @@ const tabOf = (state, route) => {
 
 function mainView(ctx) {
   const state = ctx.state || {};
-  // Primera vez (sin servidor elegido): la persona elige uno. Ese flujo sí necesita el chequeo para listar los que responden.
+  // Primera instalación: mientras se auto-elige el servidor (en español), un breve "Verificando…". Si no encontró ninguno, se
+  // muestra el selector manual como respaldo. El 🌐 del header permite cambiar de servidor cuando se quiera.
   if (!serverChosen()) {
+    if (!autoPickTried) return verifyingView({ device: ctx.device });
     if (!cat.healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
     return firstPickView({ servers: pickServers, failed: !!(state.failed && state.failed.pick), device: ctx.device });
   }

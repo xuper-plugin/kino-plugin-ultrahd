@@ -344,7 +344,10 @@ function itemsWithHealth(st) {
   const online = h ? new Set(h.online) : null;
   let items = (st.list || []).map((s, i) => {
     const fi = flagInfo(labelOf(s));
-    return { i, label: niceLabel(s), host: hostOf(s), https: String(s.url).startsWith("https://"), flag: fi ? fi.code : "", online: online ? online.has(s.url) : true };
+    const flag = fi ? fi.code : "";
+    const label = niceLabel(s);
+    // es = servidor hispanohablante (ES/MX/Latino o país de LATAM): para preferirlo al elegir automáticamente.
+    return { i, label, host: hostOf(s), https: String(s.url).startsWith("https://"), flag, es: srvPriority({ flag, label }) <= 1, online: online ? online.has(s.url) : true };
   });
   if (online && online.size > 0) items = items.filter((x) => x.online);
   items.sort((a, b) => srvPriority(a) - srvPriority(b) || a.i - b.i); // estable por índice
