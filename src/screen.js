@@ -8,6 +8,7 @@ import { put } from "./store.js";
 import { indexStep, indexNeeded, idxRefFor, findKey } from "./titleIndex.js";
 import { enrichTmdb, tmdbAvailable } from "./tmdbLazy.js";
 import { LANG_ORDER, isLang } from "./names.js";
+import { fetchHomeFeed } from "./homeFeed.js";
 import { TAB_IDS, browseView, searchView, liveView, settingsView, verifyingView, firstPickView, cardOf, slidesOf } from "./screenView.js";
 
 const PLUGIN_VERSION = "0.3.40";
@@ -23,6 +24,15 @@ const SCREEN_ROUTES = ["main", "search", "live", "settings"];
 
 const memo = new Map();
 const liveChans = new Map();
+// Home fila por fila: el plan (categorías ordenadas) y las filas que van llegando, por idioma. Cada fila es una unidad del
+// `tick`, así que aparece apenas carga en vez de esperar al bloque entero. Snapshot en kino.storage pinta al instante al reabrir.
+const homePlan = new Map();  // lang -> [{ kind:'movies'|'series', id, title }]
+const homeRails = new Map(); // lang -> Map(`${kind}:${id}` -> { rail, card } | null (cargada, sin resultados))
+const homeSlides = new Map(); // lang -> [slide,...] acumulados (tope FEATURED)
+const homeHeroDone = new Set(); // idiomas cuyo hero (slides enriquecidos) ya se armó
+const homeFeedData = new Map(); // lang -> { slides, rows, langs } del feed pre-armado (si se bajó): Home al instante
+const homeFeedTried = new Set(); // idiomas en los que ya se intentó el feed (haya salido o no)
+let homeLangsList = null; // idiomas disponibles (para los chips Español/Latino/España/English); se llena con el plan
 let countryCards = null;
 let recentCards = null;
 let liveCats = null;
@@ -39,11 +49,49 @@ const markServerChosen = () => { try { put(SRVCHOSEN_KEY, "1"); } catch (_) { /*
 function resetCaches() {
   memo.clear();
   liveChans.clear();
+  homePlan.clear();
+  homeRails.clear();
+  homeSlides.clear();
+  homeHeroDone.clear();
+  homeFeedData.clear();
+  homeFeedTried.clear();
+  homeLangsList = null;
   countryCards = null;
   recentCards = null;
   liveCats = null;
   found = null;
   liveFound = null;
+}
+
+// ---- snapshot del Home (pintado instantáneo al reabrir) ----
+// Guarda las filas ya cargadas del Home en kino.storage, por servidor + idioma. Al abrir, si todavía no hay filas frescas en
+// memoria, se pintan las del snapshot (marcadas como viejas); el `tick` recarga por detrás y las reemplaza por las frescas.
+const HOME_SNAP_PREFIX = "homeSnap:v2:";
+const HOME_SNAP_MAX = 20 * 1024; // cabe en el presupuesto de la clase homeSnap (24 KB) con holgura
+const slimCard = (c) => ({ id: c.id, ref: c.ref, title: c.title, ...(c.kind ? { kind: c.kind } : {}), ...(c.poster ? { poster: c.poster } : {}) });
+const homeSnapKey = (lang) => HOME_SNAP_PREFIX + cat.serverKey() + ":" + lang;
+function writeHomeSnap(lang) {
+  try {
+    const m = homeRails.get(lang);
+    if (!m) return;
+    const plan = homePlan.get(lang) || [];
+    const rails = plan.map((p) => m.get(`${p.kind}:${p.id}`)).filter((e) => e && e.card).map((e) => e.card);
+    if (!rails.length) return;
+    // Se recorta hasta caber: menos ítems por fila y, si hace falta, menos filas. Tarjetas slim (lo que una fila necesita).
+    for (const maxRails of [rails.length, 10, 8, 6]) {
+      for (let per = 12; per >= 6; per -= 3) {
+        const slim = { v: 2, at: Date.now(), slides: (homeSlides.get(lang) || []).slice(0, FEATURED).map(slimCard), rails: rails.slice(0, maxRails).map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items.slice(0, per).map(slimCard) })) };
+        const text = JSON.stringify(slim);
+        if (text.length <= HOME_SNAP_MAX) { put(homeSnapKey(lang), text); return; }
+      }
+    }
+  } catch (_) { /* almacenamiento lleno: sin snapshot */ }
+}
+function readHomeSnap(lang) {
+  try {
+    const o = JSON.parse(kino.storage.get(homeSnapKey(lang)) || "null");
+    return o && o.v === 2 && Array.isArray(o.rails) && o.rails.length ? o : null;
+  } catch (_) { return null; }
 }
 
 function syncServer() {
@@ -93,6 +141,81 @@ async function loadVodTab(tab, lang, { home = false, offset = 0 } = {}) {
   const have = new Set(prev ? prev.rails.map((r) => r.id) : []);
   const fresh = railCards(rails).filter((r) => !have.has(r.id));
   memo.set(key, { slides: prev ? prev.slides : slidesOf(rails), rails: prev ? [...prev.rails, ...fresh] : fresh, langs: info.langs, lang: info.lang, partial: info.failed > 0, hasMore: !home && !!info.hasMore, next: info.next, cats: prev ? prev.cats : info.cats });
+}
+
+// ---- Home fila por fila ----
+const HOME_MOVIES = 7;
+const HOME_SERIES = 4;
+
+// Intenta el feed pre-armado del servidor. Si llega, el Home queda listo para pintar al instante (sin tocar el IPTV) y se
+// guarda el snapshot local; si no, se marca intentado y unitsFor deja correr la carga en vivo. Nunca lanza.
+async function loadHomeFeed(lang) {
+  homeFeedTried.add(lang);
+  let feed = null;
+  try { feed = await fetchHomeFeed(cat.serverKey()); } catch (_) { feed = null; }
+  if (!feed || !feed.rows.length) return;
+  // El feed trae el idioma por defecto del servidor; se usa para ese idioma (los demás caen a vivo).
+  const key = feed.lang && isLang(feed.lang) ? feed.lang : lang;
+  homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [] });
+  if (Array.isArray(feed.langs) && feed.langs.length) homeLangsList = feed.langs;
+  // Snapshot local con la forma que lee readHomeSnap, para que la próxima apertura pinte al instante aun antes de bajar el feed.
+  try {
+    for (let per = 12; per >= 6; per -= 3) {
+      const slim = { v: 2, at: Date.now(), slides: (feed.slides || []).slice(0, FEATURED).map(slimCard), rails: feed.rows.map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items.slice(0, per).map(slimCard) })) };
+      const text = JSON.stringify(slim);
+      if (text.length <= HOME_SNAP_MAX) { put(homeSnapKey(key), text); break; }
+    }
+  } catch (_) { /* da igual */ }
+}
+
+// El plan del Home: la lista ordenada de categorías (películas y series) a mostrar como filas, barato (solo listas cacheadas).
+async function loadHomePlan(lang) {
+  const [mv, sr] = await Promise.all([
+    cat.homeRailPlan("vod", HOME_MOVIES, lang).catch(() => ({ cats: [] })),
+    cat.homeRailPlan("series", HOME_SERIES, lang).catch(() => ({ cats: [] })),
+  ]);
+  const plan = [
+    ...mv.cats.map((c) => ({ kind: "movies", id: c.id, title: c.title })),
+    ...sr.cats.map((c) => ({ kind: "series", id: c.id, title: c.title })),
+  ];
+  homePlan.set(lang, plan);
+  if (Array.isArray(mv.langs) && mv.langs.length) homeLangsList = mv.langs;
+  if (!homeRails.has(lang)) homeRails.set(lang, new Map());
+}
+
+// Carga UNA fila (categoría) del Home y la deja lista para pintar; no bloquea con TMDB (Kino completa los logos después).
+async function loadHomeRail(kindTab, lang, catId) {
+  const kind = kindTab === "movies" ? "vod" : "series";
+  const rail = await cat.oneRail(kind, catId, RAIL_ITEMS, lang);
+  if (!homeRails.has(lang)) homeRails.set(lang, new Map());
+  const slot = `${kindTab}:${catId}`;
+  if (!rail || !rail.items || !rail.items.length) { homeRails.get(lang).set(slot, null); return; }
+  const full = { ...rail, items: rail.items.map(cat.withFicha) };
+  homeRails.get(lang).set(slot, { rail: full, card: railCards([full])[0] });
+  writeHomeSnap(lang);
+}
+
+// El hero (slider): necesita portada ancha (backdrop, de la ficha) + sinopsis (del listado). Corre tras las primeras filas:
+// enriquece unos candidatos con TMDB y arma los slides. Así las filas salen primero y el banner se llena enseguida.
+async function loadHomeHero(lang) {
+  const m = homeRails.get(lang);
+  if (!m) return;
+  const plan = homePlan.get(lang) || [];
+  const loaded = plan.map((p) => m.get(`${p.kind}:${p.id}`)).filter((e) => e && e.rail);
+  // Candidatos: los primeros ítems de las filas cargadas (el enrich les trae backdrop Y sinopsis desde la ficha).
+  // Un ítem por fila (variedad) para el pool del hero; se enriquecen varios porque no todos traen backdrop.
+  const oneEachVod = loaded.filter((e) => e.rail.id.startsWith("vod-")).map((e) => e.rail.items[0]).filter(Boolean);
+  const oneEachSr = loaded.filter((e) => e.rail.id.startsWith("series-")).map((e) => e.rail.items[0]).filter(Boolean);
+  if (oneEachVod.length) await cat.enrichFeatured("vod", oneEachVod, 10).catch(() => {});
+  if (oneEachSr.length) await cat.enrichFeatured("series", oneEachSr, 6).catch(() => {});
+  const slides = [];
+  for (const p of plan) {
+    const e = m.get(`${p.kind}:${p.id}`);
+    if (!e || !e.rail) continue;
+    const refreshed = { ...e.rail, items: e.rail.items.map(cat.withFicha) };
+    for (const s of slidesOf([refreshed])) if (slides.length < FEATURED && !slides.some((x) => x.id === s.id)) slides.push(s);
+  }
+  if (slides.length) { homeSlides.set(lang, slides); writeHomeSnap(lang); }
 }
 
 async function loadLiveTab() {
@@ -152,7 +275,18 @@ const countryOn = () => cat.homeCountry() !== "none";
 function unitsFor(tab, lang) {
   // Primera vez: solo salud y la lista para el selector; no se carga el Home hasta que la persona elija (no un servidor al azar).
   if (!serverChosen()) return ["health", "pick"];
-  if (tab === "home") return ["health", `home:movies:${lang}`, `home:series:${lang}`, ...(countryOn() ? ["country"] : []), "recent", "index"];
+  if (tab === "home") {
+    // El Home carga fila por fila: primero el plan (categorías ordenadas), luego UNA unidad por fila (`hrail:...`), que aparece
+    // apenas carga; país, recientes e índice van al final. Hasta tener el plan, solo health + plan.
+    // Primero el feed pre-armado (una sola descarga): si está, el Home se pinta entero al instante y NO se recorre el IPTV.
+    // Si el feed falta/está viejo/falló, se cae a la carga en vivo progresiva (plan + una unidad por fila + hero).
+    if (homeFeedData.has(lang)) return [`hfeed:${lang}`, "health", ...(countryOn() ? ["country"] : []), "recent", "index"];
+    const plan = homePlan.get(lang) || [];
+    const railUnits = plan.map((p) => `hrail:${p.kind}:${lang}:${p.id}`);
+    const heroUnit = railUnits.length ? [`hhero:${lang}`] : [];
+    // hfeed va primero (no necesita el chequeo): si está el feed, el Home sale sin esperar los ~3s de "Verificando…".
+    return [`hfeed:${lang}`, "health", `hplan:${lang}`, ...railUnits, ...heroUnit, ...(countryOn() ? ["country"] : []), "recent", "index"];
+  }
   return ["health", tab === "live" ? "tab:live" : `tab:${tab}:${lang}`];
 }
 
@@ -168,6 +302,14 @@ function isDone(unit) {
   if (unit === "index") return !indexNeeded();
   if (unit === "health") return cat.healthReady();
   if (unit === "pick") return pickServers !== null;
+  if (unit.startsWith("hfeed:")) return homeFeedTried.has(unit.slice("hfeed:".length));
+  if (unit.startsWith("hplan:")) return homePlan.has(unit.slice("hplan:".length));
+  if (unit.startsWith("hhero:")) return homeHeroDone.has(unit.slice("hhero:".length));
+  if (unit.startsWith("hrail:")) {
+    const [, kind, lang, id] = unit.split(":");
+    const m = homeRails.get(lang);
+    return !!m && m.has(`${kind}:${id}`); // cargada (o vacía) = hecha
+  }
   return memo.has(memoKey(unit));
 }
 
@@ -189,6 +331,13 @@ async function runUnit(unit) {
   }
   else if (unit === "health") await cat.healthCheck();
   else if (unit === "pick") pickServers = await cat.serverList();
+  else if (unit.startsWith("hfeed:")) await loadHomeFeed(unit.slice("hfeed:".length));
+  else if (unit.startsWith("hplan:")) await loadHomePlan(unit.slice("hplan:".length));
+  else if (unit.startsWith("hhero:")) { await loadHomeHero(unit.slice("hhero:".length)); homeHeroDone.add(unit.slice("hhero:".length)); }
+  else if (unit.startsWith("hrail:")) {
+    const [, kind, lang, id] = unit.split(":");
+    await loadHomeRail(kind, lang, id);
+  }
   else {
     const [prefix, tab, lang] = unit.split(":");
     if (tab === "live") await loadLiveTab();
@@ -203,12 +352,22 @@ function tabData(tab, lang, state = {}) {
     const one = base && state.cat ? onlyCat.get(`${tab}:${lang}:${state.cat}`) : null;
     return one ? { ...base, rails: one.rails, hasMore: false, catSel: state.cat } : base ? { ...base, catSel: "" } : null;
   }
-  const m = memo.get(`home-movies:${lang}`);
-  const s = memo.get(`home-series:${lang}`);
-  if (!m && !s) return null;
-  const rails = [...(m ? m.rails : []), ...(s ? s.rails : [])];
-  const src = m || s;
-  return { slides: [...(m ? m.slides : []), ...(s ? s.slides : [])].slice(0, FEATURED), rails, langs: src.langs, lang: src.lang, partial: !!((m && m.partial) || (s && s.partial)) };
+  // Feed pre-armado: si se bajó para este idioma, es la fuente (Home entero al instante, sin recorrer el IPTV).
+  const feed = homeFeedData.get(lang);
+  if (feed) return { slides: (feed.slides || []).slice(0, FEATURED), rails: feed.rows, langs: homeLangsList || feed.langs, lang, partial: false };
+  // Home fila por fila: las filas frescas ya cargadas, en el orden del plan.
+  const plan = homePlan.get(lang) || [];
+  const m = homeRails.get(lang);
+  const freshRails = m ? plan.map((p) => m.get(`${p.kind}:${p.id}`)).filter((e) => e && e.card).map((e) => e.card) : [];
+  const fresh = () => ({ slides: (homeSlides.get(lang) || []).slice(0, FEATURED), rails: freshRails, langs: homeLangsList, lang, partial: false });
+  const snap = readHomeSnap(lang);
+  const allDone = homePlan.has(lang) && plan.length > 0 && m && m.size >= plan.length;
+  // Con snapshot (reapertura): se pinta al instante y se mantiene mientras recarga por detrás, hasta terminar TODAS las filas;
+  // así no parpadea (no encoge a 1 fila para volver a crecer). Sin snapshot (primera vez): las filas van apareciendo una a una.
+  if (snap && !allDone) return { slides: (snap.slides || []).slice(0, FEATURED), rails: snap.rails, langs: homeLangsList, lang, partial: false, stale: true };
+  if (freshRails.length) return fresh();
+  if (snap) return { slides: (snap.slides || []).slice(0, FEATURED), rails: snap.rails, langs: homeLangsList, lang, partial: false, stale: true };
+  return null;
 }
 
 const tabOf = (state, route) => {
@@ -218,13 +377,18 @@ const tabOf = (state, route) => {
 
 function mainView(ctx) {
   const state = ctx.state || {};
-  // Antes del Home: si aún no se verificaron los servidores (y no falló el chequeo), muestra "Verificando servidores…".
-  if (!cat.healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
-  // Primera vez: la persona elige servidor antes de entrar (no se toma uno al azar). Después se recuerda y se salta al Home.
-  if (!serverChosen()) return firstPickView({ servers: pickServers, failed: !!(state.failed && state.failed.pick), device: ctx.device });
+  // Primera vez (sin servidor elegido): la persona elige uno. Ese flujo sí necesita el chequeo para listar los que responden.
+  if (!serverChosen()) {
+    if (!cat.healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
+    return firstPickView({ servers: pickServers, failed: !!(state.failed && state.failed.pick), device: ctx.device });
+  }
   const tab = tabOf(state, ctx.route);
   const lang = wantedLang(state);
   const data = tabData(tab, lang, state);
+  // Arranque rápido: con un servidor ya elegido, si hay Home que mostrar (feed pre-armado o snapshot de la última sesión),
+  // se pinta YA, sin esperar a "Verificando servidores…". El chequeo sigue corriendo por detrás (unitsFor) y la verificación
+  // real del servidor ocurre antes de reproducir (resolve). Solo se muestra "Verificando…" cuando no hay nada que pintar.
+  if (!data && !cat.healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
   const failed = unitsFor(tab, lang).some((u) => state.failed && state.failed[u]);
   return browseView({
     tab, data, recent: recentCards || [], country: countryCards || [],

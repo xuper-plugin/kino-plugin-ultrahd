@@ -13,9 +13,11 @@ export const CLASSES = {
   recent: { match: (k) => k.startsWith("recent:"), budget: 30 * 1024 },
   idx: { match: (k) => k.startsWith("idx:"), budget: 6 * 1024 },
   tmdb: { match: (k) => k.startsWith("tmdb:"), budget: 24 * 1024 },
+  // El snapshot del Home (una entrada por servidor+idioma) pinta la pantalla al instante al reabrir.
+  homeSnap: { match: (k) => k.startsWith("homeSnap:"), budget: 24 * 1024 },
   misc: { match: () => true, budget: 2 * 1024 },
 };
-const ORDER = ["servers", "cats", "hero", "hist", "recent", "idx", "tmdb", "misc"];
+const ORDER = ["servers", "cats", "hero", "hist", "recent", "idx", "tmdb", "homeSnap", "misc"];
 const IDX = "_idx";
 
 export const classOf = (key) => ORDER.find((c) => CLASSES[c].match(key));

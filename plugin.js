@@ -8,9 +8,11 @@ var CLASSES = {
   recent: { match: (k) => k.startsWith("recent:"), budget: 30 * 1024 },
   idx: { match: (k) => k.startsWith("idx:"), budget: 6 * 1024 },
   tmdb: { match: (k) => k.startsWith("tmdb:"), budget: 24 * 1024 },
+  // El snapshot del Home (una entrada por servidor+idioma) pinta la pantalla al instante al reabrir.
+  homeSnap: { match: (k) => k.startsWith("homeSnap:"), budget: 24 * 1024 },
   misc: { match: () => true, budget: 2 * 1024 }
 };
-var ORDER = ["servers", "cats", "hero", "hist", "recent", "idx", "tmdb", "misc"];
+var ORDER = ["servers", "cats", "hero", "hist", "recent", "idx", "tmdb", "homeSnap", "misc"];
 var IDX = "_idx";
 var classOf = (key) => ORDER.find((c) => CLASSES[c].match(key));
 function utf8Len(s) {
@@ -1970,6 +1972,7 @@ function extras(m, ficha) {
   if (typeof backdrop === "string" && backdrop) out.backdrop = backdrop;
   const runtime = Math.round(num(m.duration_secs) / 60) || parseInt(m.episode_run_time, 10) || f.runtime || 0;
   if (runtime > 0) out.runtimeMinutes = runtime;
+  if (f.overview) out.overview = f.overview;
   const ids = {};
   const tmdb = parseInt(m.tmdb || m.tmdb_id, 10) || f.tmdb || 0;
   if (tmdb > 0) ids.tmdb = tmdb;
@@ -2031,6 +2034,7 @@ async function fetchFicha(kind, id) {
   if (Array.isArray(backdrop)) backdrop = backdrop[0];
   const ficha = {};
   if (typeof backdrop === "string" && /^https:\/\//.test(backdrop)) ficha.backdrop = backdrop;
+  if (info.plot) ficha.overview = String(info.plot).slice(0, 500);
   const tmdb = parseInt(info.tmdb_id || info.tmdb, 10);
   if (tmdb > 0) ficha.tmdb = tmdb;
   const runtime = Math.round(num(info.duration_secs) / 60) || parseInt(info.episode_run_time, 10) || 0;
@@ -2172,8 +2176,30 @@ async function loadRailsInfo(kind, maxRails, perRail, opts = {}) {
     });
   }
   if (!rails.length && failed) throw kino.error("unavailable", "ninguna categor\xEDa carg\xF3", { userMessage: "No se pudo cargar el cat\xE1logo." });
-  await enrichTmdb(rails.slice(0, vod ? 2 : 1).flatMap((r) => r.items.slice(0, 8)), { max: vod ? 16 : 8, budgetMs: 2500 });
+  if (!opts.noEnrich) await enrichTmdb(rails.slice(0, vod ? 2 : 1).flatMap((r) => r.items.slice(0, 8)), { max: vod ? 16 : 8, budgetMs: 2500 });
   return { rails, langs, lang, failed, hasMore, next: offset + maxRails, cats: catsList };
+}
+async function homeRailPlan(kind, max, wantLang) {
+  const cats = await mergedVod(kind);
+  const hasEs = cats.some((c) => c.lang === "es-419" || c.lang === "es-ES");
+  const extra = [...new Set(cats.map((c) => c.lang).filter((l) => /^x-/.test(l)))].sort((a, b) => langLabel(a)[0].localeCompare(langLabel(b)[0]));
+  const langs = [...LANG_ORDER.filter((l) => l === "es" ? hasEs : cats.some((c) => c.lang === l)), ...extra];
+  const lang = wantLang && langs.includes(wantLang) ? wantLang : langs[0] || null;
+  let inLang = cats;
+  if (lang === "es") {
+    const seen = /* @__PURE__ */ new Set();
+    inLang = cats.filter((c) => (c.lang === "es-419" || c.lang === "es-ES") && !seen.has(c.title.toLowerCase()) && seen.add(c.title.toLowerCase()));
+  } else if (lang) inLang = cats.filter((c) => c.lang === lang);
+  const ordered = homeOrder(inLang);
+  return { lang, langs, cats: ordered.slice(0, max).map((c) => ({ id: c.id, title: c.title })) };
+}
+async function oneRail(kind, catId, perRail, lang) {
+  try {
+    const info = await loadRailsInfo(kind, 1, perRail, { lang, only: catId, noEnrich: true });
+    return info.rails[0] || null;
+  } catch (_) {
+    return null;
+  }
 }
 async function home() {
   const indexing = indexStep({ budgetMs: 1500 });
@@ -2714,6 +2740,7 @@ function withFicha(item) {
   const e = extras({}, infoCache()[item.id]);
   const out = { ...item };
   if (!out.backdrop && e.backdrop) out.backdrop = e.backdrop;
+  if (!out.overview && e.overview) out.overview = e.overview;
   if (!out.ids && e.ids) out.ids = e.ids;
   if (!out.runtimeMinutes && e.runtimeMinutes) out.runtimeMinutes = e.runtimeMinutes;
   if (!out.genres && e.genres) out.genres = e.genres;
@@ -2798,6 +2825,25 @@ var say = (key, lang, vars) => {
   const [es, en] = TEXTS[key] || [key, key];
   return fill(lang === "en" ? en : es, vars);
 };
+
+// src/homeFeed.js
+var BASE2 = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/main/home/";
+var MAX_AGE_MS = 3 * 24 * 60 * 60 * 1e3;
+async function fetchHomeFeed(serverKey2) {
+  if (!serverKey2) return null;
+  try {
+    const r = await kino.fetch(`${BASE2}${encodeURIComponent(serverKey2)}.json?v=${Math.floor(Date.now() / 36e5)}`, { headers: { Accept: "application/json" } });
+    if (!r.ok) return null;
+    const d = r.json();
+    if (!d || d.v !== 1 || d.serverKey !== serverKey2 || !Array.isArray(d.rows) || !d.rows.length) return null;
+    if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) return null;
+    const rows = d.rows.filter((r2) => r2 && typeof r2.id === "string" && typeof r2.title === "string" && Array.isArray(r2.items) && r2.items.length);
+    if (!rows.length) return null;
+    return { lang: typeof d.lang === "string" ? d.lang : null, langs: Array.isArray(d.langs) ? d.langs : [], slides: Array.isArray(d.slides) ? d.slides : [], rows };
+  } catch (_) {
+    return null;
+  }
+}
 
 // src/logo.js
 var LOGO_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAIAAABt+uBvAAABV0lEQVR4nO3dQZKCMBgFYddzBK/o/dczaxGTAdFuyv7rbQRJvXwHSC7XXfN7u5wu+3b638/w7VFek//h28ClRq/x6gaj9Xd4Yw/TylO8qMpo+QiviGcEhJeTJKBdQHgtVZZAeCFhAgroKCC8ijYBBRRQQDQQXkIevoE8fAN5+Aby8A3k4RvIwzeQh28gD99AHr6BPHwDefgG8ix//9zPprXG335s5U0TUEABBRTQaVcOKKCAAgpIvHJAAQUU0LcCvTIBBRRQQAG9GegUKwcUUEABBSReOaCAAgpIBjT+fjwvVjkK6MDOAQUUUEBuoMI3kIdvIA/fQB6+gTx8A3n4BvLwDeThG8jDN5CHbyAP30AevoE8HW4ySqe/BBRQQAKgjJ7pBBTQUUAZrep0XPJEJ6CNQBlNjmzP6FGjayNGOl08MqKZA32J0Vigy48ms/NSKXx77xNZzB/7TgYOhL71YQAAAABJRU5ErkJggg==";
@@ -3215,6 +3261,13 @@ var FEATURED = 6;
 var SCREEN_ROUTES = ["main", "search", "live", "settings"];
 var memo = /* @__PURE__ */ new Map();
 var liveChans = /* @__PURE__ */ new Map();
+var homePlan = /* @__PURE__ */ new Map();
+var homeRails = /* @__PURE__ */ new Map();
+var homeSlides = /* @__PURE__ */ new Map();
+var homeHeroDone = /* @__PURE__ */ new Set();
+var homeFeedData = /* @__PURE__ */ new Map();
+var homeFeedTried = /* @__PURE__ */ new Set();
+var homeLangsList = null;
 var countryCards = null;
 var recentCards = null;
 var liveCats2 = null;
@@ -3239,11 +3292,50 @@ var markServerChosen = () => {
 function resetCaches() {
   memo.clear();
   liveChans.clear();
+  homePlan.clear();
+  homeRails.clear();
+  homeSlides.clear();
+  homeHeroDone.clear();
+  homeFeedData.clear();
+  homeFeedTried.clear();
+  homeLangsList = null;
   countryCards = null;
   recentCards = null;
   liveCats2 = null;
   found = null;
   liveFound = null;
+}
+var HOME_SNAP_PREFIX = "homeSnap:v2:";
+var HOME_SNAP_MAX = 20 * 1024;
+var slimCard = (c) => ({ id: c.id, ref: c.ref, title: c.title, ...c.kind ? { kind: c.kind } : {}, ...c.poster ? { poster: c.poster } : {} });
+var homeSnapKey = (lang) => HOME_SNAP_PREFIX + serverKey() + ":" + lang;
+function writeHomeSnap(lang) {
+  try {
+    const m = homeRails.get(lang);
+    if (!m) return;
+    const plan = homePlan.get(lang) || [];
+    const rails = plan.map((p) => m.get(`${p.kind}:${p.id}`)).filter((e) => e && e.card).map((e) => e.card);
+    if (!rails.length) return;
+    for (const maxRails of [rails.length, 10, 8, 6]) {
+      for (let per = 12; per >= 6; per -= 3) {
+        const slim2 = { v: 2, at: Date.now(), slides: (homeSlides.get(lang) || []).slice(0, FEATURED).map(slimCard), rails: rails.slice(0, maxRails).map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items.slice(0, per).map(slimCard) })) };
+        const text2 = JSON.stringify(slim2);
+        if (text2.length <= HOME_SNAP_MAX) {
+          put(homeSnapKey(lang), text2);
+          return;
+        }
+      }
+    }
+  } catch (_) {
+  }
+}
+function readHomeSnap(lang) {
+  try {
+    const o = JSON.parse(kino.storage.get(homeSnapKey(lang)) || "null");
+    return o && o.v === 2 && Array.isArray(o.rails) && o.rails.length ? o : null;
+  } catch (_) {
+    return null;
+  }
 }
 function syncServer() {
   const key = serverKey();
@@ -3305,6 +3397,81 @@ async function loadVodTab(tab, lang, { home: home2 = false, offset = 0 } = {}) {
   const fresh = railCards(rails).filter((r) => !have.has(r.id));
   memo.set(key, { slides: prev ? prev.slides : slidesOf(rails), rails: prev ? [...prev.rails, ...fresh] : fresh, langs: info.langs, lang: info.lang, partial: info.failed > 0, hasMore: !home2 && !!info.hasMore, next: info.next, cats: prev ? prev.cats : info.cats });
 }
+var HOME_MOVIES = 7;
+var HOME_SERIES = 4;
+async function loadHomeFeed(lang) {
+  homeFeedTried.add(lang);
+  let feed = null;
+  try {
+    feed = await fetchHomeFeed(serverKey());
+  } catch (_) {
+    feed = null;
+  }
+  if (!feed || !feed.rows.length) return;
+  const key = feed.lang && isLang(feed.lang) ? feed.lang : lang;
+  homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [] });
+  if (Array.isArray(feed.langs) && feed.langs.length) homeLangsList = feed.langs;
+  try {
+    for (let per = 12; per >= 6; per -= 3) {
+      const slim2 = { v: 2, at: Date.now(), slides: (feed.slides || []).slice(0, FEATURED).map(slimCard), rails: feed.rows.map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items.slice(0, per).map(slimCard) })) };
+      const text2 = JSON.stringify(slim2);
+      if (text2.length <= HOME_SNAP_MAX) {
+        put(homeSnapKey(key), text2);
+        break;
+      }
+    }
+  } catch (_) {
+  }
+}
+async function loadHomePlan(lang) {
+  const [mv, sr] = await Promise.all([
+    homeRailPlan("vod", HOME_MOVIES, lang).catch(() => ({ cats: [] })),
+    homeRailPlan("series", HOME_SERIES, lang).catch(() => ({ cats: [] }))
+  ]);
+  const plan = [
+    ...mv.cats.map((c) => ({ kind: "movies", id: c.id, title: c.title })),
+    ...sr.cats.map((c) => ({ kind: "series", id: c.id, title: c.title }))
+  ];
+  homePlan.set(lang, plan);
+  if (Array.isArray(mv.langs) && mv.langs.length) homeLangsList = mv.langs;
+  if (!homeRails.has(lang)) homeRails.set(lang, /* @__PURE__ */ new Map());
+}
+async function loadHomeRail(kindTab, lang, catId) {
+  const kind = kindTab === "movies" ? "vod" : "series";
+  const rail2 = await oneRail(kind, catId, RAIL_ITEMS, lang);
+  if (!homeRails.has(lang)) homeRails.set(lang, /* @__PURE__ */ new Map());
+  const slot = `${kindTab}:${catId}`;
+  if (!rail2 || !rail2.items || !rail2.items.length) {
+    homeRails.get(lang).set(slot, null);
+    return;
+  }
+  const full = { ...rail2, items: rail2.items.map(withFicha) };
+  homeRails.get(lang).set(slot, { rail: full, card: railCards([full])[0] });
+  writeHomeSnap(lang);
+}
+async function loadHomeHero(lang) {
+  const m = homeRails.get(lang);
+  if (!m) return;
+  const plan = homePlan.get(lang) || [];
+  const loaded = plan.map((p) => m.get(`${p.kind}:${p.id}`)).filter((e) => e && e.rail);
+  const oneEachVod = loaded.filter((e) => e.rail.id.startsWith("vod-")).map((e) => e.rail.items[0]).filter(Boolean);
+  const oneEachSr = loaded.filter((e) => e.rail.id.startsWith("series-")).map((e) => e.rail.items[0]).filter(Boolean);
+  if (oneEachVod.length) await enrichFeatured("vod", oneEachVod, 10).catch(() => {
+  });
+  if (oneEachSr.length) await enrichFeatured("series", oneEachSr, 6).catch(() => {
+  });
+  const slides = [];
+  for (const p of plan) {
+    const e = m.get(`${p.kind}:${p.id}`);
+    if (!e || !e.rail) continue;
+    const refreshed = { ...e.rail, items: e.rail.items.map(withFicha) };
+    for (const s of slidesOf([refreshed])) if (slides.length < FEATURED && !slides.some((x) => x.id === s.id)) slides.push(s);
+  }
+  if (slides.length) {
+    homeSlides.set(lang, slides);
+    writeHomeSnap(lang);
+  }
+}
 async function loadLiveTab() {
   const cats = (await liveCategories()).slice(0, RAILS_PER_TAB);
   let failed = 0;
@@ -3363,7 +3530,13 @@ async function loadRecent() {
 var countryOn = () => homeCountry() !== "none";
 function unitsFor(tab, lang) {
   if (!serverChosen()) return ["health", "pick"];
-  if (tab === "home") return ["health", `home:movies:${lang}`, `home:series:${lang}`, ...countryOn() ? ["country"] : [], "recent", "index"];
+  if (tab === "home") {
+    if (homeFeedData.has(lang)) return [`hfeed:${lang}`, "health", ...countryOn() ? ["country"] : [], "recent", "index"];
+    const plan = homePlan.get(lang) || [];
+    const railUnits = plan.map((p) => `hrail:${p.kind}:${lang}:${p.id}`);
+    const heroUnit = railUnits.length ? [`hhero:${lang}`] : [];
+    return [`hfeed:${lang}`, "health", `hplan:${lang}`, ...railUnits, ...heroUnit, ...countryOn() ? ["country"] : [], "recent", "index"];
+  }
   return ["health", tab === "live" ? "tab:live" : `tab:${tab}:${lang}`];
 }
 function memoKey(unit) {
@@ -3377,6 +3550,14 @@ function isDone(unit) {
   if (unit === "index") return !indexNeeded();
   if (unit === "health") return healthReady();
   if (unit === "pick") return pickServers !== null;
+  if (unit.startsWith("hfeed:")) return homeFeedTried.has(unit.slice("hfeed:".length));
+  if (unit.startsWith("hplan:")) return homePlan.has(unit.slice("hplan:".length));
+  if (unit.startsWith("hhero:")) return homeHeroDone.has(unit.slice("hhero:".length));
+  if (unit.startsWith("hrail:")) {
+    const [, kind, lang, id] = unit.split(":");
+    const m = homeRails.get(lang);
+    return !!m && m.has(`${kind}:${id}`);
+  }
   return memo.has(memoKey(unit));
 }
 function pendingUnit(state, tab, device) {
@@ -3394,7 +3575,15 @@ async function runUnit(unit) {
     if (out === "error" || out === "wait") throw new Error("\xEDndice: " + out);
   } else if (unit === "health") await healthCheck();
   else if (unit === "pick") pickServers = await serverList();
-  else {
+  else if (unit.startsWith("hfeed:")) await loadHomeFeed(unit.slice("hfeed:".length));
+  else if (unit.startsWith("hplan:")) await loadHomePlan(unit.slice("hplan:".length));
+  else if (unit.startsWith("hhero:")) {
+    await loadHomeHero(unit.slice("hhero:".length));
+    homeHeroDone.add(unit.slice("hhero:".length));
+  } else if (unit.startsWith("hrail:")) {
+    const [, kind, lang, id] = unit.split(":");
+    await loadHomeRail(kind, lang, id);
+  } else {
     const [prefix, tab, lang] = unit.split(":");
     if (tab === "live") await loadLiveTab();
     else await loadVodTab(tab, lang, { home: prefix === "home" });
@@ -3407,12 +3596,18 @@ function tabData(tab, lang, state = {}) {
     const one = base && state.cat ? onlyCat.get(`${tab}:${lang}:${state.cat}`) : null;
     return one ? { ...base, rails: one.rails, hasMore: false, catSel: state.cat } : base ? { ...base, catSel: "" } : null;
   }
-  const m = memo.get(`home-movies:${lang}`);
-  const s = memo.get(`home-series:${lang}`);
-  if (!m && !s) return null;
-  const rails = [...m ? m.rails : [], ...s ? s.rails : []];
-  const src = m || s;
-  return { slides: [...m ? m.slides : [], ...s ? s.slides : []].slice(0, FEATURED), rails, langs: src.langs, lang: src.lang, partial: !!(m && m.partial || s && s.partial) };
+  const feed = homeFeedData.get(lang);
+  if (feed) return { slides: (feed.slides || []).slice(0, FEATURED), rails: feed.rows, langs: homeLangsList || feed.langs, lang, partial: false };
+  const plan = homePlan.get(lang) || [];
+  const m = homeRails.get(lang);
+  const freshRails = m ? plan.map((p) => m.get(`${p.kind}:${p.id}`)).filter((e) => e && e.card).map((e) => e.card) : [];
+  const fresh = () => ({ slides: (homeSlides.get(lang) || []).slice(0, FEATURED), rails: freshRails, langs: homeLangsList, lang, partial: false });
+  const snap = readHomeSnap(lang);
+  const allDone = homePlan.has(lang) && plan.length > 0 && m && m.size >= plan.length;
+  if (snap && !allDone) return { slides: (snap.slides || []).slice(0, FEATURED), rails: snap.rails, langs: homeLangsList, lang, partial: false, stale: true };
+  if (freshRails.length) return fresh();
+  if (snap) return { slides: (snap.slides || []).slice(0, FEATURED), rails: snap.rails, langs: homeLangsList, lang, partial: false, stale: true };
+  return null;
 }
 var tabOf = (state, route) => {
   const a = route && route.args && typeof route.args === "object" ? route.args : {};
@@ -3420,11 +3615,14 @@ var tabOf = (state, route) => {
 };
 function mainView(ctx) {
   const state = ctx.state || {};
-  if (!healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
-  if (!serverChosen()) return firstPickView({ servers: pickServers, failed: !!(state.failed && state.failed.pick), device: ctx.device });
+  if (!serverChosen()) {
+    if (!healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
+    return firstPickView({ servers: pickServers, failed: !!(state.failed && state.failed.pick), device: ctx.device });
+  }
   const tab = tabOf(state, ctx.route);
   const lang = wantedLang(state);
   const data = tabData(tab, lang, state);
+  if (!data && !healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
   const failed = unitsFor(tab, lang).some((u) => state.failed && state.failed[u]);
   return browseView({
     tab,

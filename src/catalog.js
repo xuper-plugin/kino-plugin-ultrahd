@@ -485,6 +485,7 @@ function extras(m, ficha) {
   if (typeof backdrop === "string" && backdrop) out.backdrop = backdrop;
   const runtime = Math.round(num(m.duration_secs) / 60) || parseInt(m.episode_run_time, 10) || f.runtime || 0;
   if (runtime > 0) out.runtimeMinutes = runtime;
+  if (f.overview) out.overview = f.overview; // la sinopsis de la ficha (para el hero)
   const ids = {};
   const tmdb = parseInt(m.tmdb || m.tmdb_id, 10) || f.tmdb || 0;
   if (tmdb > 0) ids.tmdb = tmdb;
@@ -553,6 +554,7 @@ async function fetchFicha(kind, id) {
   if (Array.isArray(backdrop)) backdrop = backdrop[0];
   const ficha = {};
   if (typeof backdrop === "string" && /^https:\/\//.test(backdrop)) ficha.backdrop = backdrop;
+  if (info.plot) ficha.overview = String(info.plot).slice(0, 500); // sinopsis para el hero (el listado no siempre la trae)
   const tmdb = parseInt(info.tmdb_id || info.tmdb, 10);
   if (tmdb > 0) ficha.tmdb = tmdb;
   const runtime = Math.round(num(info.duration_secs) / 60) || parseInt(info.episode_run_time, 10) || 0;
@@ -711,12 +713,39 @@ export async function loadRailsInfo(kind, maxRails, perRail, opts = {}) {
   }
   if (!rails.length && failed) throw kino.error("unavailable", "ninguna categoría cargó", { userMessage: "No se pudo cargar el catálogo." });
   // TMDB perezoso: solo el id de lo que se ve al abrir (primeras filas), con tope por llamada; Kino completa el resto con él.
-  await enrichTmdb(rails.slice(0, vod ? 2 : 1).flatMap((r) => r.items.slice(0, 8)), { max: vod ? 16 : 8, budgetMs: 2500 });
+  // `noEnrich` lo salta por completo (la carga fila por fila del Home enriquece aparte, para que la fila aparezca ya).
+  if (!opts.noEnrich) await enrichTmdb(rails.slice(0, vod ? 2 : 1).flatMap((r) => r.items.slice(0, 8)), { max: vod ? 16 : 8, budgetMs: 2500 });
   return { rails, langs, lang, failed, hasMore, next: offset + maxRails, cats: catsList };
 }
 
 export async function loadRails(kind, maxRails, perRail, opts) {
   return (await loadRailsInfo(kind, maxRails, perRail, opts)).rails;
+}
+
+// El plan del Home: la lista ORDENADA de categorías a mostrar (sin pedir sus streams todavía), para cargarlas
+// una por una. Barato: solo la lista de categorías (cacheada). Misma lógica de idioma y orden que loadRailsInfo.
+export async function homeRailPlan(kind, max, wantLang) {
+  const cats = await mergedVod(kind);
+  const hasEs = cats.some((c) => c.lang === "es-419" || c.lang === "es-ES");
+  const extra = [...new Set(cats.map((c) => c.lang).filter((l) => /^x-/.test(l)))].sort((a, b) => langLabel(a)[0].localeCompare(langLabel(b)[0]));
+  const langs = [...LANG_ORDER.filter((l) => (l === "es" ? hasEs : cats.some((c) => c.lang === l))), ...extra];
+  const lang = wantLang && langs.includes(wantLang) ? wantLang : langs[0] || null;
+  let inLang = cats;
+  if (lang === "es") {
+    const seen = new Set();
+    inLang = cats.filter((c) => (c.lang === "es-419" || c.lang === "es-ES") && !seen.has(c.title.toLowerCase()) && seen.add(c.title.toLowerCase()));
+  } else if (lang) inLang = cats.filter((c) => c.lang === lang);
+  const ordered = homeOrder(inLang);
+  return { lang, langs, cats: ordered.slice(0, max).map((c) => ({ id: c.id, title: c.title })) };
+}
+
+// Una sola fila (categoría) del Home, sin bloquear con TMDB: la fila aparece de inmediato y los logos se rellenan después.
+// Una categoría vacía o que falla devuelve null (no lanza): esa fila simplemente no se muestra, las demás siguen.
+export async function oneRail(kind, catId, perRail, lang) {
+  try {
+    const info = await loadRailsInfo(kind, 1, perRail, { lang, only: catId, noEnrich: true });
+    return info.rails[0] || null;
+  } catch (_) { return null; }
 }
 
 // ---- home -----------------------------------------------------------------------
@@ -1302,6 +1331,7 @@ export function withFicha(item) {
   const e = extras({}, infoCache()[item.id]);
   const out = { ...item };
   if (!out.backdrop && e.backdrop) out.backdrop = e.backdrop;
+  if (!out.overview && e.overview) out.overview = e.overview;
   if (!out.ids && e.ids) out.ids = e.ids;
   if (!out.runtimeMinutes && e.runtimeMinutes) out.runtimeMinutes = e.runtimeMinutes;
   if (!out.genres && e.genres) out.genres = e.genres;
