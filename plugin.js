@@ -2832,6 +2832,20 @@ var say = (key, lang, vars) => {
 var BASE2 = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/main/home/";
 var LIVE_BASE = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/main/live/";
 var MAX_AGE_MS = 3 * 24 * 60 * 60 * 1e3;
+function openBox(text2) {
+  let box = null;
+  try {
+    box = JSON.parse(text2);
+  } catch (_) {
+    return null;
+  }
+  if (!box || typeof box !== "object" || box.v !== 1 || typeof box.iv !== "string" || typeof box.data !== "string") return null;
+  try {
+    return JSON.parse(kino.crypto.decrypt("aes-256-gcm", { key: kino.secret("feedKey"), iv: box.iv, ivEncoding: "base64", data: box.data }));
+  } catch (_) {
+    return null;
+  }
+}
 function tabOf(t) {
   if (!t || !Array.isArray(t.rows)) return null;
   const rows = t.rows.filter((r) => r && typeof r.id === "string" && typeof r.title === "string" && Array.isArray(r.items) && r.items.length);
@@ -2841,9 +2855,9 @@ function tabOf(t) {
 async function fetchHomeFeed(serverKey2) {
   if (!serverKey2) return null;
   try {
-    const r = await kino.fetch(`${BASE2}${encodeURIComponent(serverKey2)}.json?v=${Math.floor(Date.now() / 36e5)}`, { headers: { Accept: "application/json" } });
+    const r = await kino.fetch(`${BASE2}${encodeURIComponent(serverKey2)}.enc.json?v=${Math.floor(Date.now() / 36e5)}`, { headers: { Accept: "application/json" } });
     if (!r.ok) return null;
-    const d = r.json();
+    const d = openBox(r.text());
     if (!d || d.v !== 1 || d.serverKey !== serverKey2 || !Array.isArray(d.rows) || !d.rows.length) return null;
     if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) return null;
     const home2 = tabOf({ slides: d.slides, rows: d.rows });
@@ -2864,9 +2878,9 @@ async function fetchHomeFeed(serverKey2) {
 async function fetchLiveFeed(serverKey2) {
   if (!serverKey2) return null;
   try {
-    const r = await kino.fetch(`${LIVE_BASE}${encodeURIComponent(serverKey2)}.json?v=${Math.floor(Date.now() / 864e5)}`, { headers: { Accept: "application/json" } });
+    const r = await kino.fetch(`${LIVE_BASE}${encodeURIComponent(serverKey2)}.enc.json?v=${Math.floor(Date.now() / 864e5)}`, { headers: { Accept: "application/json" } });
     if (!r.ok) return null;
-    const d = r.json();
+    const d = openBox(r.text());
     if (!d || d.v !== 1 || d.serverKey !== serverKey2 || !Array.isArray(d.rails) || !d.rails.length) return null;
     if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) return null;
     const rails = d.rails.filter((r2) => r2 && typeof r2.id === "string" && typeof r2.title === "string" && Array.isArray(r2.items) && r2.items.length);
@@ -3281,7 +3295,7 @@ function firstPickView({ servers, failed = false, device } = {}) {
 }
 
 // src/screen.js
-var PLUGIN_VERSION = "0.7.0";
+var PLUGIN_VERSION = "0.8.0";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";

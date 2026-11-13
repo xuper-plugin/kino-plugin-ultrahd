@@ -11,7 +11,7 @@ import { LANG_ORDER, isLang } from "./names.js";
 import { fetchHomeFeed, fetchLiveFeed } from "./homeFeed.js";
 import { TAB_IDS, browseView, searchView, liveView, settingsView, verifyingView, firstPickView, cardOf, slidesOf } from "./screenView.js";
 
-const PLUGIN_VERSION = "0.7.0";
+const PLUGIN_VERSION = "0.8.0";
 const TAB_KEY = "browseTab";
 const LANG_KEY = "browseLang";
 const HIST_KEY = "searchHist:v1";

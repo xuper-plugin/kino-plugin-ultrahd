@@ -3,6 +3,7 @@
 // Reusa EXACTAMENTE las funciones del catálogo (mismo resultado que la carga en vivo), a través del kit.
 //   KINO_TMDB_KEY=... node scripts/gen-home.mjs [--servers N] [--out home]
 import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
@@ -124,9 +125,34 @@ async function buildLive() {
   return rails.length ? { v: 1, at: Date.now(), serverKey: cat.serverKey(), rails } : null;
 }
 
+// Clave AES-256 (hex) para sellar los feeds como Xuper (el plugin los abre con kino.secret("feedKey"); un fork no puede).
+// En el Action viene del secret FEED_KEY; si falta, se aborta (NO se publica nada en claro).
+const FEED_KEY = (process.env.FEED_KEY || "").trim();
+if (!/^[0-9a-fA-F]{64}$/.test(FEED_KEY)) { console.error("Falta FEED_KEY (64 hex). No se genera nada en claro."); process.exit(2); }
+const KEY = Buffer.from(FEED_KEY, "hex");
+// Sella un objeto -> sobre { v:1, iv:b64(12B), data:b64(ciphertext+tag16) } (mismo formato que seedBox.js).
+function seal(obj) {
+  const iv = randomBytes(12);
+  const c = createCipheriv("aes-256-gcm", KEY, iv);
+  const ct = Buffer.concat([c.update(JSON.stringify(obj), "utf8"), c.final()]);
+  return JSON.stringify({ v: 1, iv: iv.toString("base64"), data: Buffer.concat([ct, c.getAuthTag()]).toString("base64") });
+}
+// Abre un .enc.json (para la compuerta de edad de En vivo). null si no abre.
+function openEnc(text) {
+  try {
+    const box = JSON.parse(text);
+    const iv = Buffer.from(box.iv, "base64"), data = Buffer.from(box.data, "base64");
+    const d = createDecipheriv("aes-256-gcm", KEY, iv); d.setAuthTag(data.subarray(data.length - 16));
+    return JSON.parse(Buffer.concat([d.update(data.subarray(0, data.length - 16)), d.final()]).toString("utf8"));
+  } catch (_) { return null; }
+}
+
 // Rehornea En vivo solo si el archivo falta o tiene >= 20 h (así, con el Action cada 4 h, En vivo se actualiza ~1x/día).
 function liveIsFresh(key) {
-  try { const p = JSON.parse(readFileSync(join(LIVE_DIR, key + ".json"), "utf8")); return p && p.serverKey === key && Date.now() - (p.at || 0) < LIVE_TTL_MS; } catch (_) { return false; }
+  try {
+    const p = openEnc(readFileSync(join(LIVE_DIR, key + ".enc.json"), "utf8"));
+    return !!(p && p.serverKey === key && Date.now() - (p.at || 0) < LIVE_TTL_MS);
+  } catch (_) { return false; }
 }
 
 mkdirSync(OUT_DIR, { recursive: true });
@@ -148,17 +174,16 @@ for (let i = 0; i < total; i++) {
     builtKeys.add(key);
     const home = await buildServer();
     if (!home) { console.log(`#${i + 1} ${key} (${ms(t0)} ms): sin contenido`); empty++; continue; }
-    const file = join(OUT_DIR, key + ".json");
-    writeFileSync(file, JSON.stringify(home));
-    const bytes = JSON.stringify(home).length;
-    index.push({ serverKey: key, at: home.at, rows: home.rows.length, slides: home.slides.length, bytes });
-    console.log(`#${i + 1} ${key} (${ms(t0)} ms): ${home.rows.length} filas, ${home.slides.length} slides, ${Math.round(bytes / 1024)} KB -> ${key}.json`);
+    const enc = seal(home);
+    writeFileSync(join(OUT_DIR, key + ".enc.json"), enc);
+    index.push({ serverKey: key, at: home.at, rows: home.rows.length, slides: home.slides.length, bytes: enc.length });
+    console.log(`#${i + 1} ${key} (${ms(t0)} ms): ${home.rows.length} filas, ${home.slides.length} slides, ${Math.round(enc.length / 1024)} KB -> ${key}.enc.json`);
     ok++;
     // En vivo: ~1x/día. Si el archivo es reciente, se conserva (no se toca); si no, se rehornea.
     if (liveIsFresh(key)) { console.log(`   en vivo: reciente, se conserva`); }
     else {
       const live = await buildLive().catch(() => null);
-      if (live) { writeFileSync(join(LIVE_DIR, key + ".json"), JSON.stringify(live)); console.log(`   en vivo: ${live.rails.length} filas -> live/${key}.json`); }
+      if (live) { writeFileSync(join(LIVE_DIR, key + ".enc.json"), seal(live)); console.log(`   en vivo: ${live.rails.length} filas -> live/${key}.enc.json`); }
       else console.log(`   en vivo: sin canales`);
     }
   } catch (e) { console.log(`#${i + 1} (${ms(t0)} ms): error ${e && e.message}`); fail++; }

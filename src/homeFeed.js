@@ -1,8 +1,20 @@
 // Baja el Home pre-armado que el Action publica 2x/día en home/<serverKey>.json. Si existe y es reciente, el plugin pinta su
 // Home al instante (sin recorrer el servidor IPTV); si falta, está viejo o el fetch falla, se usa la carga en vivo progresiva.
+// Los feeds se publican SELLADOS (AES-256-GCM con el secreto feedKey, igual que Xuper): el plugin los abre con
+// kino.secret("feedKey") — solo dentro de Kino; un fork con el código copiado no puede.
 const BASE = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/main/home/";
 const LIVE_BASE = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/main/live/";
 const MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000; // tolera varias corridas perdidas; más viejo que esto -> se ignora y se carga en vivo
+
+// Abre el sobre sellado { v:1, iv:b64, data:b64 } con el secreto feedKey (AES-256-GCM). null si no abre. Nunca lanza.
+function openBox(text) {
+  let box = null;
+  try { box = JSON.parse(text); } catch (_) { return null; }
+  if (!box || typeof box !== "object" || box.v !== 1 || typeof box.iv !== "string" || typeof box.data !== "string") return null;
+  try {
+    return JSON.parse(kino.crypto.decrypt("aes-256-gcm", { key: kino.secret("feedKey"), iv: box.iv, ivEncoding: "base64", data: box.data }));
+  } catch (_) { return null; }
+}
 
 // Deja una pestaña `{slides, rows}` solo con filas válidas (id/title/items), o null si no sirve.
 function tabOf(t) {
@@ -21,9 +33,9 @@ export async function fetchHomeFeed(serverKey) {
   if (!serverKey) return null;
   try {
     // El `v` por hora evita una caché de CDN demasiado pegajosa sin pedir siempre de nuevo.
-    const r = await kino.fetch(`${BASE}${encodeURIComponent(serverKey)}.json?v=${Math.floor(Date.now() / 3600000)}`, { headers: { Accept: "application/json" } });
+    const r = await kino.fetch(`${BASE}${encodeURIComponent(serverKey)}.enc.json?v=${Math.floor(Date.now() / 3600000)}`, { headers: { Accept: "application/json" } });
     if (!r.ok) return null;
-    const d = r.json();
+    const d = openBox(r.text());
     if (!d || d.v !== 1 || d.serverKey !== serverKey || !Array.isArray(d.rows) || !d.rows.length) return null;
     if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) return null;
     const home = tabOf({ slides: d.slides, rows: d.rows }); // Inicio (compat v1: slides/rows están arriba)
@@ -47,9 +59,9 @@ export async function fetchLiveFeed(serverKey) {
   if (!serverKey) return null;
   try {
     // Cache-bust por día (el feed de En vivo se regenera 1x/día): basta con refrescar la CDN una vez al día.
-    const r = await kino.fetch(`${LIVE_BASE}${encodeURIComponent(serverKey)}.json?v=${Math.floor(Date.now() / 86400000)}`, { headers: { Accept: "application/json" } });
+    const r = await kino.fetch(`${LIVE_BASE}${encodeURIComponent(serverKey)}.enc.json?v=${Math.floor(Date.now() / 86400000)}`, { headers: { Accept: "application/json" } });
     if (!r.ok) return null;
-    const d = r.json();
+    const d = openBox(r.text());
     if (!d || d.v !== 1 || d.serverKey !== serverKey || !Array.isArray(d.rails) || !d.rails.length) return null;
     if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) return null;
     const rails = d.rails.filter((r2) => r2 && typeof r2.id === "string" && typeof r2.title === "string" && Array.isArray(r2.items) && r2.items.length);

@@ -28,16 +28,20 @@ jobs:
       - name: Generar el Home de cada servidor
         env:
           KINO_TMDB_KEY: ${{ secrets.KINO_TMDB_KEY }}
+          FEED_KEY: ${{ secrets.FEED_KEY }}
         run: node scripts/gen-home.mjs
 
       - name: Publicar si cambió algo
         run: |
-          git add home live
+          # quita los .json planos viejos por servidor (ahora se publica solo .enc.json); conserva index.json y los .enc.json
+          find home live -maxdepth 1 -name '*.json' ! -name '*.enc.json' ! -name 'index.json' -delete 2>/dev/null || true
+          git add -A home live
           if git diff --cached --quiet; then
             echo "sin cambios en home/ ni live/"
             exit 0
           fi
           git config user.name "xuper-plugin"
           git config user.email "335105665+xuper-plugin@users.noreply.github.com"
-          git commit -m "Home pre-armado: actualiza home/<serverKey>.json"
+          git commit -m "Home pre-armado: actualiza home/<serverKey>.enc.json"
+          git pull --rebase origin main
           git push origin HEAD:main
