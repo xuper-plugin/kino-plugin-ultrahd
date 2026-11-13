@@ -21,6 +21,9 @@ const arg = (name, def) => { const i = process.argv.indexOf("--" + name); return
 const MAX_SERVERS = parseInt(arg("servers", "99"), 10);
 const OUT_DIR = join(root, arg("out", "home"));
 const HOME_MOVIES = 7, HOME_SERIES = 4, RAIL_ITEMS = 20, FEATURED = 6;
+const TAB_RAILS = 12; // filas por pestaña (Películas / Series)
+// v:1 se mantiene (compatibilidad): los lectores viejos leen slides/rows (Inicio) e IGNORAN movies/series. Los nuevos (>=0.5.0)
+// usan movies/series para pintar esas pestañas al instante. Agregar campos no rompe al lector v1 (rechaza por `v !== 1`).
 const SCHEMA = 1;
 
 const tmp = mkdtempSync(join(tmpdir(), "uhd-gen-"));
@@ -35,41 +38,54 @@ const { enrichTmdb } = await import(pathToFileURL(join(root, "src", "tmdbLazy.js
 
 const ms = (t0) => Math.round(performance.now() - t0);
 
-// Un servidor: arma el Home (idioma por defecto) y devuelve el objeto a publicar, o null si no cargó nada.
-async function buildServer() {
-  const [mv, sr] = await Promise.all([
-    cat.homeRailPlan("vod", HOME_MOVIES, null).catch(() => ({ cats: [], lang: null, langs: [] })),
-    cat.homeRailPlan("series", HOME_SERIES, null).catch(() => ({ cats: [], lang: null, langs: [] })),
-  ]);
-  const lang = mv.lang || sr.lang;
-  const langs = mv.langs && mv.langs.length ? mv.langs : sr.langs || [];
-  const plan = [
-    ...mv.cats.map((c) => ({ kind: "vod", id: c.id, title: c.title })),
-    ...sr.cats.map((c) => ({ kind: "series", id: c.id, title: c.title })),
-  ];
-  const rows = [];
-  const fullRails = []; // con ítems completos, para armar el hero
-  for (const p of plan) {
-    const rail = await cat.oneRail(p.kind, p.id, RAIL_ITEMS, lang);
+// Carga las filas de una pestaña (primeras `maxRails` categorías), con ítems completos (para hero) ya con póster de TMDB.
+// `cats` es la lista COMPLETA de categorías del idioma (para el selector de categorías de la pestaña en el plugin).
+async function buildTab(kind, maxRails) {
+  const plan = await cat.homeRailPlan(kind, 999, null).catch(() => ({ cats: [], lang: null, langs: [] }));
+  const lang = plan.lang;
+  const rails = [];
+  for (const c of plan.cats.slice(0, maxRails)) {
+    const rail = await cat.oneRail(kind, c.id, RAIL_ITEMS, lang);
     if (!rail || !rail.items || !rail.items.length) continue;
     await enrichTmdb(rail.items, { max: 16, budgetMs: 8000 }).catch(() => {}); // pósters/ids de TMDB (sin prisa, es un build)
-    const full = { ...rail, items: rail.items.map(cat.withFicha) };
-    fullRails.push(full);
-    // Las tarjetas de las filas NO llevan sinopsis (solo los slides la necesitan): sin eso el archivo pesa mucho menos.
-    rows.push({ id: full.id, title: full.title, ref: full.ref, items: full.items.map(sv.cardOf).map(({ overview, ...c }) => c) });
+    rails.push({ ...rail, items: rail.items.map(cat.withFicha) });
   }
-  if (!rows.length) return null;
-  // Hero: backdrop+sinopsis de la ficha IPTV de unos candidatos (uno por fila), luego se arman los slides.
-  const oneEachVod = fullRails.filter((r) => r.id.startsWith("vod-")).map((r) => r.items[0]).filter(Boolean);
-  const oneEachSr = fullRails.filter((r) => r.id.startsWith("series-")).map((r) => r.items[0]).filter(Boolean);
-  if (oneEachVod.length) await cat.enrichFeatured("vod", oneEachVod, 10).catch(() => {});
-  if (oneEachSr.length) await cat.enrichFeatured("series", oneEachSr, 6).catch(() => {});
+  return { lang, langs: plan.langs || [], rails, cats: plan.cats };
+}
+
+// Las tarjetas de las filas NO llevan sinopsis (solo los slides la necesitan): sin eso el archivo pesa mucho menos.
+const toRows = (rails) => rails.map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items.map(sv.cardOf).map(({ overview, ...c }) => c) }));
+
+// Hero de una pestaña: backdrop+sinopsis de la ficha IPTV de unos candidatos (uno por fila), luego se arman los slides.
+async function heroFor(kind, rails) {
+  const cands = rails.map((r) => r.items[0]).filter(Boolean);
+  if (cands.length) await cat.enrichFeatured(kind, cands, 10).catch(() => {});
   const slides = [];
-  for (const r of fullRails) {
+  for (const r of rails) {
     const refreshed = { ...r, items: r.items.map(cat.withFicha) };
     for (const s of sv.slidesOf([refreshed])) if (slides.length < FEATURED && !slides.some((x) => x.id === s.id)) slides.push(s);
   }
-  return { v: SCHEMA, at: Date.now(), serverKey: cat.serverKey(), lang, langs, slides, rows };
+  return slides;
+}
+
+// Un servidor: arma las pestañas Películas y Series (12 filas c/u) y deriva Inicio (7 pelis + 4 series). null si nada cargó.
+async function buildServer() {
+  const mv = await buildTab("vod", TAB_RAILS);
+  const sr = await buildTab("series", TAB_RAILS);
+  if (!mv.rails.length && !sr.rails.length) return null;
+  const lang = mv.lang || sr.lang;
+  const langs = (mv.langs && mv.langs.length ? mv.langs : sr.langs) || [];
+
+  const movies = { slides: await heroFor("vod", mv.rails), rows: toRows(mv.rails), cats: mv.cats };
+  const series = { slides: await heroFor("series", sr.rails), rows: toRows(sr.rails), cats: sr.cats };
+
+  // Inicio = mezcla: primeras HOME_MOVIES pelis + primeras HOME_SERIES series (sus fichas ya vienen enriquecidas).
+  const homeRails = [...mv.rails.slice(0, HOME_MOVIES), ...sr.rails.slice(0, HOME_SERIES)];
+  const homeSlides = [];
+  for (const r of homeRails) for (const s of sv.slidesOf([{ ...r, items: r.items.map(cat.withFicha) }])) if (homeSlides.length < FEATURED && !homeSlides.some((x) => x.id === s.id)) homeSlides.push(s);
+
+  // `slides`/`rows` arriba = Inicio (compatibilidad con lectores v1); `movies`/`series` = las pestañas (v2).
+  return { v: SCHEMA, at: Date.now(), serverKey: cat.serverKey(), lang, langs, slides: homeSlides, rows: toRows(homeRails), movies, series };
 }
 
 mkdirSync(OUT_DIR, { recursive: true });

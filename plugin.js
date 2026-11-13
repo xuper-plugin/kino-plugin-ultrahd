@@ -2829,6 +2829,12 @@ var say = (key, lang, vars) => {
 // src/homeFeed.js
 var BASE2 = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/main/home/";
 var MAX_AGE_MS = 3 * 24 * 60 * 60 * 1e3;
+function tabOf(t) {
+  if (!t || !Array.isArray(t.rows)) return null;
+  const rows = t.rows.filter((r) => r && typeof r.id === "string" && typeof r.title === "string" && Array.isArray(r.items) && r.items.length);
+  if (!rows.length) return null;
+  return { slides: Array.isArray(t.slides) ? t.slides : [], rows, cats: Array.isArray(t.cats) ? t.cats : [] };
+}
 async function fetchHomeFeed(serverKey2) {
   if (!serverKey2) return null;
   try {
@@ -2837,9 +2843,17 @@ async function fetchHomeFeed(serverKey2) {
     const d = r.json();
     if (!d || d.v !== 1 || d.serverKey !== serverKey2 || !Array.isArray(d.rows) || !d.rows.length) return null;
     if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) return null;
-    const rows = d.rows.filter((r2) => r2 && typeof r2.id === "string" && typeof r2.title === "string" && Array.isArray(r2.items) && r2.items.length);
-    if (!rows.length) return null;
-    return { lang: typeof d.lang === "string" ? d.lang : null, langs: Array.isArray(d.langs) ? d.langs : [], slides: Array.isArray(d.slides) ? d.slides : [], rows };
+    const home2 = tabOf({ slides: d.slides, rows: d.rows });
+    if (!home2) return null;
+    return {
+      lang: typeof d.lang === "string" ? d.lang : null,
+      langs: Array.isArray(d.langs) ? d.langs : [],
+      slides: home2.slides,
+      rows: home2.rows,
+      movies: tabOf(d.movies),
+      // null en feeds v1
+      series: tabOf(d.series)
+    };
   } catch (_) {
     return null;
   }
@@ -3250,7 +3264,7 @@ function firstPickView({ servers, failed = false, device } = {}) {
 }
 
 // src/screen.js
-var PLUGIN_VERSION = "0.4.0";
+var PLUGIN_VERSION = "0.5.0";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
@@ -3410,7 +3424,7 @@ async function loadHomeFeed(lang) {
   }
   if (!feed || !feed.rows.length) return;
   const key = feed.lang && isLang(feed.lang) ? feed.lang : lang;
-  homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [] });
+  homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [], movies: feed.movies || null, series: feed.series || null });
   if (Array.isArray(feed.langs) && feed.langs.length) homeLangsList = feed.langs;
   try {
     for (let per = 12; per >= 6; per -= 3) {
@@ -3529,6 +3543,12 @@ async function loadRecent() {
   recentCards = out;
 }
 var countryOn = () => homeCountry() !== "none";
+function feedTabFor(tab, lang) {
+  const f = homeFeedData.get(lang);
+  if (!f) return null;
+  const t = tab === "movies" ? f.movies : tab === "series" ? f.series : null;
+  return t && Array.isArray(t.rows) && t.rows.length ? t : null;
+}
 function unitsFor(tab, lang) {
   if (!serverChosen()) return ["health", "pick"];
   if (tab === "home") {
@@ -3537,6 +3557,11 @@ function unitsFor(tab, lang) {
     const railUnits = plan.map((p) => `hrail:${p.kind}:${lang}:${p.id}`);
     const heroUnit = railUnits.length ? [`hhero:${lang}`] : [];
     return [`hfeed:${lang}`, "health", `hplan:${lang}`, ...railUnits, ...heroUnit, ...countryOn() ? ["country"] : [], "recent", "index"];
+  }
+  if (tab === "movies" || tab === "series") {
+    if (feedTabFor(tab, lang)) return [`hfeed:${lang}`, "health"];
+    if (!homeFeedTried.has(lang)) return [`hfeed:${lang}`, "health", `tab:${tab}:${lang}`];
+    return ["health", `tab:${tab}:${lang}`];
   }
   return ["health", tab === "live" ? "tab:live" : `tab:${tab}:${lang}`];
 }
@@ -3593,7 +3618,9 @@ async function runUnit(unit) {
 function tabData(tab, lang, state = {}) {
   if (tab === "live") return memo.get("live") || null;
   if (tab !== "home") {
-    const base = memo.get(`${tab}:${lang}`) || null;
+    const feedTab = feedTabFor(tab, lang);
+    const fromFeed = feedTab ? { slides: (feedTab.slides || []).slice(0, FEATURED), rails: feedTab.rows, cats: feedTab.cats || [], langs: homeLangsList, lang, partial: false, hasMore: false } : null;
+    const base = memo.get(`${tab}:${lang}`) || fromFeed;
     const one = base && state.cat ? onlyCat.get(`${tab}:${lang}:${state.cat}`) : null;
     return one ? { ...base, rails: one.rails, hasMore: false, catSel: state.cat } : base ? { ...base, catSel: "" } : null;
   }
@@ -3610,7 +3637,7 @@ function tabData(tab, lang, state = {}) {
   if (snap) return { slides: (snap.slides || []).slice(0, FEATURED), rails: snap.rails, langs: homeLangsList, lang, partial: false, stale: true };
   return null;
 }
-var tabOf = (state, route) => {
+var tabOf2 = (state, route) => {
   const a = route && route.args && typeof route.args === "object" ? route.args : {};
   return TAB_IDS.includes(state.tab) ? state.tab : TAB_IDS.includes(a.tab) ? a.tab : storedTab() || TAB_IDS[0];
 };
@@ -3620,7 +3647,7 @@ function mainView(ctx) {
     if (!healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
     return firstPickView({ servers: pickServers, failed: !!(state.failed && state.failed.pick), device: ctx.device });
   }
-  const tab = tabOf(state, ctx.route);
+  const tab = tabOf2(state, ctx.route);
   const lang = wantedLang(state);
   const data = tabData(tab, lang, state);
   if (!data && !healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
@@ -3632,8 +3659,8 @@ function mainView(ctx) {
     country: countryCards || [],
     loading: pendingUnit(state, tab, ctx.device) !== null,
     failed: !data && failed,
-    // Con el Home del feed a la vista, se re-baja cada 30 min por si el Action publicó uno nuevo durante la sesión.
-    refresh: tab === "home" && homeFeedData.has(lang),
+    // Con una pestaña del feed a la vista (Inicio/Películas/Series), se re-baja cada 30 min por si el Action publicó uno nuevo.
+    refresh: tab !== "live" && homeFeedData.has(lang),
     device: ctx.device
   });
 }
@@ -3703,7 +3730,7 @@ function serverSheet(servers) {
 var events = {
   open({ route, state }) {
     if (route && route.name && route.name !== "main") return null;
-    return { state: { tab: tabOf(state, route), lang: wantedLang(state), ...bump(state), failed: null } };
+    return { state: { tab: tabOf2(state, route), lang: wantedLang(state), ...bump(state), failed: null } };
   },
   tab({ value, arg, state }) {
     const tab = TAB_IDS.includes(value) ? value : TAB_IDS.includes(arg) ? arg : null;
@@ -3719,7 +3746,7 @@ var events = {
     return { state: { lang: value, cat: null, ...bump(state), failed: null } };
   },
   retry({ state }) {
-    const tab = tabOf(state);
+    const tab = tabOf2(state);
     const lang = wantedLang(state);
     for (const u of unitsFor(tab, lang)) {
       const key = memoKey(u);
@@ -3728,7 +3755,7 @@ var events = {
     return { state: { failed: null, ...bump(state) } };
   },
   async vcat({ value, state }) {
-    const tab = tabOf(state);
+    const tab = tabOf2(state);
     if (tab === "live" || tab === "home") return null;
     const id = typeof value === "string" ? value : "";
     if (id === "") return { state: { cat: null, ...bump(state) } };
@@ -3742,7 +3769,7 @@ var events = {
     return { state: { cat: id, ...bump(state) } };
   },
   async more({ state }) {
-    const tab = tabOf(state);
+    const tab = tabOf2(state);
     if (tab === "live" || tab === "home") return null;
     const lang = wantedLang(state);
     const m = memo.get(`${tab}:${lang}`);
@@ -3752,7 +3779,7 @@ var events = {
     return { state: { ...bump(state) } };
   },
   async tick({ state, device }) {
-    const tab = tabOf(state);
+    const tab = tabOf2(state);
     const unit = pendingUnit(state, tab, device);
     if (!unit) return null;
     const failed = { ...state.failed || {} };
@@ -3779,7 +3806,7 @@ var events = {
     const key = feed.lang && isLang(feed.lang) ? feed.lang : lang;
     const cur = homeFeedData.get(key);
     if (cur && cur.rows.length === feed.rows.length && JSON.stringify(cur.rows[0]) === JSON.stringify(feed.rows[0])) return null;
-    homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [] });
+    homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [], movies: feed.movies || null, series: feed.series || null });
     if (Array.isArray(feed.langs) && feed.langs.length) homeLangsList = feed.langs;
     try {
       for (let per = 12; per >= 6; per -= 3) {

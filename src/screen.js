@@ -11,7 +11,7 @@ import { LANG_ORDER, isLang } from "./names.js";
 import { fetchHomeFeed } from "./homeFeed.js";
 import { TAB_IDS, browseView, searchView, liveView, settingsView, verifyingView, firstPickView, cardOf, slidesOf } from "./screenView.js";
 
-const PLUGIN_VERSION = "0.4.0";
+const PLUGIN_VERSION = "0.5.0";
 const TAB_KEY = "browseTab";
 const LANG_KEY = "browseLang";
 const HIST_KEY = "searchHist:v1";
@@ -156,7 +156,7 @@ async function loadHomeFeed(lang) {
   if (!feed || !feed.rows.length) return;
   // El feed trae el idioma por defecto del servidor; se usa para ese idioma (los demás caen a vivo).
   const key = feed.lang && isLang(feed.lang) ? feed.lang : lang;
-  homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [] });
+  homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [], movies: feed.movies || null, series: feed.series || null });
   if (Array.isArray(feed.langs) && feed.langs.length) homeLangsList = feed.langs;
   // Snapshot local con la forma que lee readHomeSnap, para que la próxima apertura pinte al instante aun antes de bajar el feed.
   try {
@@ -272,6 +272,14 @@ async function loadRecent() {
 
 const countryOn = () => cat.homeCountry() !== "none";
 
+// La pestaña (movies/series) pre-armada del feed para este idioma, o null si el feed no la trae (p. ej. feed v1 o sin cargar).
+function feedTabFor(tab, lang) {
+  const f = homeFeedData.get(lang);
+  if (!f) return null;
+  const t = tab === "movies" ? f.movies : tab === "series" ? f.series : null;
+  return t && Array.isArray(t.rows) && t.rows.length ? t : null;
+}
+
 function unitsFor(tab, lang) {
   // Primera vez: solo salud y la lista para el selector; no se carga el Home hasta que la persona elija (no un servidor al azar).
   if (!serverChosen()) return ["health", "pick"];
@@ -286,6 +294,13 @@ function unitsFor(tab, lang) {
     const heroUnit = railUnits.length ? [`hhero:${lang}`] : [];
     // hfeed va primero (no necesita el chequeo): si está el feed, el Home sale sin esperar los ~3s de "Verificando…".
     return [`hfeed:${lang}`, "health", `hplan:${lang}`, ...railUnits, ...heroUnit, ...(countryOn() ? ["country"] : []), "recent", "index"];
+  }
+  // Películas/Series: el feed (v2) también trae estas pestañas pre-armadas. Si la de este idioma ya está, se pinta al instante
+  // y no se recorre el IPTV; si falta, se intenta el feed una vez (hfeed) y, si no llega o es v1, cae a la carga en vivo.
+  if (tab === "movies" || tab === "series") {
+    if (feedTabFor(tab, lang)) return [`hfeed:${lang}`, "health"];
+    if (!homeFeedTried.has(lang)) return [`hfeed:${lang}`, "health", `tab:${tab}:${lang}`];
+    return ["health", `tab:${tab}:${lang}`];
   }
   return ["health", tab === "live" ? "tab:live" : `tab:${tab}:${lang}`];
 }
@@ -348,7 +363,10 @@ async function runUnit(unit) {
 function tabData(tab, lang, state = {}) {
   if (tab === "live") return memo.get("live") || null;
   if (tab !== "home") {
-    const base = memo.get(`${tab}:${lang}`) || null;
+    // Feed (v2): la pestaña ya viene pre-armada → se pinta al instante, con su selector de categorías (cats) y sin paginación.
+    const feedTab = feedTabFor(tab, lang);
+    const fromFeed = feedTab ? { slides: (feedTab.slides || []).slice(0, FEATURED), rails: feedTab.rows, cats: feedTab.cats || [], langs: homeLangsList, lang, partial: false, hasMore: false } : null;
+    const base = memo.get(`${tab}:${lang}`) || fromFeed;
     const one = base && state.cat ? onlyCat.get(`${tab}:${lang}:${state.cat}`) : null;
     return one ? { ...base, rails: one.rails, hasMore: false, catSel: state.cat } : base ? { ...base, catSel: "" } : null;
   }
@@ -393,8 +411,8 @@ function mainView(ctx) {
   return browseView({
     tab, data, recent: recentCards || [], country: countryCards || [],
     loading: pendingUnit(state, tab, ctx.device) !== null, failed: !data && failed,
-    // Con el Home del feed a la vista, se re-baja cada 30 min por si el Action publicó uno nuevo durante la sesión.
-    refresh: tab === "home" && homeFeedData.has(lang),
+    // Con una pestaña del feed a la vista (Inicio/Películas/Series), se re-baja cada 30 min por si el Action publicó uno nuevo.
+    refresh: tab !== "live" && homeFeedData.has(lang),
     device: ctx.device,
   });
 }
@@ -531,7 +549,7 @@ const events = {
     const key = feed.lang && isLang(feed.lang) ? feed.lang : lang;
     const cur = homeFeedData.get(key);
     if (cur && cur.rows.length === feed.rows.length && JSON.stringify(cur.rows[0]) === JSON.stringify(feed.rows[0])) return null; // igual: sin re-render
-    homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [] });
+    homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [], movies: feed.movies || null, series: feed.series || null });
     if (Array.isArray(feed.langs) && feed.langs.length) homeLangsList = feed.langs;
     try {
       for (let per = 12; per >= 6; per -= 3) {
