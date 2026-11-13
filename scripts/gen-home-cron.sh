@@ -11,7 +11,8 @@ WORK="$HOME/.cache/kino-home-gen"
 
 # Llave de TMDB: la del build de la app Kino (para pósters). Si no está, el generador igual corre (pósters del IPTV).
 if [ -f "$HOME/kino-light/.env" ]; then
-  KINO_TMDB_KEY=$(grep -E '^API_KEY=' "$HOME/kino-light/.env" | head -1 | cut -d= -f2- | tr -d '"'"'"' | tr -d '\r\n')
+  RAW=$(grep -E '^API_KEY=' "$HOME/kino-light/.env" | head -1 | cut -d= -f2-)
+  KINO_TMDB_KEY=$(printf '%s' "$RAW" | tr -d '"' | tr -d "'" | tr -d '\r\n ')
   export KINO_TMDB_KEY
 fi
 
