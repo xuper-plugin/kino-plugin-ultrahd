@@ -8,10 +8,10 @@ import { put } from "./store.js";
 import { indexStep, indexNeeded, idxRefFor, findKey } from "./titleIndex.js";
 import { enrichTmdb, tmdbAvailable } from "./tmdbLazy.js";
 import { LANG_ORDER, isLang } from "./names.js";
-import { fetchHomeFeed } from "./homeFeed.js";
+import { fetchHomeFeed, fetchLiveFeed } from "./homeFeed.js";
 import { TAB_IDS, browseView, searchView, liveView, settingsView, verifyingView, firstPickView, cardOf, slidesOf } from "./screenView.js";
 
-const PLUGIN_VERSION = "0.5.1";
+const PLUGIN_VERSION = "0.6.0";
 const TAB_KEY = "browseTab";
 const LANG_KEY = "browseLang";
 const HIST_KEY = "searchHist:v1";
@@ -30,8 +30,10 @@ const homePlan = new Map();  // lang -> [{ kind:'movies'|'series', id, title }]
 const homeRails = new Map(); // lang -> Map(`${kind}:${id}` -> { rail, card } | null (cargada, sin resultados))
 const homeSlides = new Map(); // lang -> [slide,...] acumulados (tope FEATURED)
 const homeHeroDone = new Set(); // idiomas cuyo hero (slides enriquecidos) ya se armó
-const homeFeedData = new Map(); // lang -> { slides, rows, langs } del feed pre-armado (si se bajó): Home al instante
+const homeFeedData = new Map(); // lang -> { slides, rows, langs, movies, series } del feed pre-armado (si se bajó): Home al instante
 const homeFeedTried = new Set(); // idiomas en los que ya se intentó el feed (haya salido o no)
+let liveFeedData = null; // { slides, rails, ... } de la primera pantalla de En vivo pre-armada (1x/día); null = sin bajar
+let liveFeedTried = false; // ya se intentó el feed de En vivo (haya salido o no)
 let homeLangsList = null; // idiomas disponibles (para los chips Español/Latino/España/English); se llena con el plan
 let countryCards = null;
 let recentCards = null;
@@ -55,6 +57,8 @@ function resetCaches() {
   homeHeroDone.clear();
   homeFeedData.clear();
   homeFeedTried.clear();
+  liveFeedData = null;
+  liveFeedTried = false;
   homeLangsList = null;
   countryCards = null;
   recentCards = null;
@@ -66,33 +70,41 @@ function resetCaches() {
 // ---- snapshot del Home (pintado instantáneo al reabrir) ----
 // Guarda las filas ya cargadas del Home en kino.storage, por servidor + idioma. Al abrir, si todavía no hay filas frescas en
 // memoria, se pintan las del snapshot (marcadas como viejas); el `tick` recarga por detrás y las reemplaza por las frescas.
-const HOME_SNAP_PREFIX = "homeSnap:v2:";
-const HOME_SNAP_MAX = 20 * 1024; // cabe en el presupuesto de la clase homeSnap (24 KB) con holgura
+const HOME_SNAP_PREFIX = "homeSnap:";
+const SNAP_V = 3;
+const SNAP_MAX = 10 * 1024; // por pestaña; 4 pestañas caben en el presupuesto de la clase homeSnap (40 KB)
 const slimCard = (c) => ({ id: c.id, ref: c.ref, title: c.title, ...(c.kind ? { kind: c.kind } : {}), ...(c.poster ? { poster: c.poster } : {}) });
-const homeSnapKey = (lang) => HOME_SNAP_PREFIX + cat.serverKey() + ":" + lang;
-function writeHomeSnap(lang) {
+const snapKey = (tab, lang) => HOME_SNAP_PREFIX + "v" + SNAP_V + ":" + cat.serverKey() + ":" + tab + ":" + (lang || "-");
+const slimRail = (r, per) => ({ id: r.id, title: r.title, ref: r.ref, items: (r.items || []).slice(0, per).map(slimCard) });
+// Snapshot compacto de una pestaña (filas ya en forma de tarjeta) para pintar al instante al reabrir, aun antes de bajar el feed.
+function writeTabSnap(tab, lang, slides, rails) {
   try {
-    const m = homeRails.get(lang);
-    if (!m) return;
-    const plan = homePlan.get(lang) || [];
-    const rails = plan.map((p) => m.get(`${p.kind}:${p.id}`)).filter((e) => e && e.card).map((e) => e.card);
-    if (!rails.length) return;
+    if (!rails || !rails.length) return;
     // Se recorta hasta caber: menos ítems por fila y, si hace falta, menos filas. Tarjetas slim (lo que una fila necesita).
     for (const maxRails of [rails.length, 10, 8, 6]) {
-      for (let per = 12; per >= 6; per -= 3) {
-        const slim = { v: 2, at: Date.now(), slides: (homeSlides.get(lang) || []).slice(0, FEATURED).map(slimCard), rails: rails.slice(0, maxRails).map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items.slice(0, per).map(slimCard) })) };
+      for (let per = 10; per >= 5; per -= 2) {
+        const slim = { v: SNAP_V, at: Date.now(), slides: (slides || []).slice(0, FEATURED).map(slimCard), rails: rails.slice(0, maxRails).map((r) => slimRail(r, per)) };
         const text = JSON.stringify(slim);
-        if (text.length <= HOME_SNAP_MAX) { put(homeSnapKey(lang), text); return; }
+        if (text.length <= SNAP_MAX) { put(snapKey(tab, lang), text); return; }
       }
     }
   } catch (_) { /* almacenamiento lleno: sin snapshot */ }
 }
-function readHomeSnap(lang) {
+function readSnap(tab, lang) {
   try {
-    const o = JSON.parse(kino.storage.get(homeSnapKey(lang)) || "null");
-    return o && o.v === 2 && Array.isArray(o.rails) && o.rails.length ? o : null;
+    const o = JSON.parse(kino.storage.get(snapKey(tab, lang)) || "null");
+    return o && o.v === SNAP_V && Array.isArray(o.rails) && o.rails.length ? o : null;
   } catch (_) { return null; }
 }
+// Snapshot del Home en vivo progresivo: arma las filas desde lo ya cargado en memoria y lo guarda.
+function writeHomeSnap(lang) {
+  const m = homeRails.get(lang);
+  if (!m) return;
+  const plan = homePlan.get(lang) || [];
+  const rails = plan.map((p) => m.get(`${p.kind}:${p.id}`)).filter((e) => e && e.card).map((e) => e.card);
+  writeTabSnap("home", lang, homeSlides.get(lang) || [], rails);
+}
+const readHomeSnap = (lang) => readSnap("home", lang);
 
 function syncServer() {
   const key = cat.serverKey();
@@ -158,14 +170,21 @@ async function loadHomeFeed(lang) {
   const key = feed.lang && isLang(feed.lang) ? feed.lang : lang;
   homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [], movies: feed.movies || null, series: feed.series || null });
   if (Array.isArray(feed.langs) && feed.langs.length) homeLangsList = feed.langs;
-  // Snapshot local con la forma que lee readHomeSnap, para que la próxima apertura pinte al instante aun antes de bajar el feed.
-  try {
-    for (let per = 12; per >= 6; per -= 3) {
-      const slim = { v: 2, at: Date.now(), slides: (feed.slides || []).slice(0, FEATURED).map(slimCard), rails: feed.rows.map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items.slice(0, per).map(slimCard) })) };
-      const text = JSON.stringify(slim);
-      if (text.length <= HOME_SNAP_MAX) { put(homeSnapKey(key), text); break; }
-    }
-  } catch (_) { /* da igual */ }
+  // Snapshot local de cada pestaña, para que la próxima apertura pinte al instante aun antes de bajar el feed.
+  writeTabSnap("home", key, feed.slides, feed.rows);
+  if (feed.movies) writeTabSnap("movies", key, feed.movies.slides, feed.movies.rows);
+  if (feed.series) writeTabSnap("series", key, feed.series.slides, feed.series.rows);
+}
+
+// Intenta el feed pre-armado de En vivo (la primera pantalla: filas de canales por categoría, refrescado ~1x/día en el Action).
+// Si llega, la pestaña En vivo se pinta al instante (sin recorrer el IPTV) y se guarda snapshot local. Nunca lanza.
+async function loadLiveFeed() {
+  liveFeedTried = true;
+  let f = null;
+  try { f = await fetchLiveFeed(cat.serverKey()); } catch (_) { f = null; }
+  if (!f || !f.rails || !f.rails.length) return;
+  liveFeedData = { slides: [], rails: f.rails, langs: [], lang: null, partial: false };
+  writeTabSnap("live", "-", [], f.rails);
 }
 
 // El plan del Home: la lista ordenada de categorías (películas y series) a mostrar como filas, barato (solo listas cacheadas).
@@ -302,7 +321,13 @@ function unitsFor(tab, lang) {
     if (!homeFeedTried.has(lang)) return [`hfeed:${lang}`, "health", `tab:${tab}:${lang}`];
     return ["health", `tab:${tab}:${lang}`];
   }
-  return ["health", tab === "live" ? "tab:live" : `tab:${tab}:${lang}`];
+  // En vivo: primero el feed pre-armado (1x/día); si está, la primera pantalla sale al instante. Cambiar de categoría es en vivo.
+  if (tab === "live") {
+    if (liveFeedData) return ["lfeed", "health"];
+    if (!liveFeedTried) return ["lfeed", "health", "tab:live"];
+    return ["health", "tab:live"];
+  }
+  return ["health", `tab:${tab}:${lang}`];
 }
 
 function memoKey(unit) {
@@ -317,6 +342,7 @@ function isDone(unit) {
   if (unit === "index") return !indexNeeded();
   if (unit === "health") return cat.healthReady();
   if (unit === "pick") return pickServers !== null;
+  if (unit === "lfeed") return liveFeedTried;
   if (unit.startsWith("hfeed:")) return homeFeedTried.has(unit.slice("hfeed:".length));
   if (unit.startsWith("hplan:")) return homePlan.has(unit.slice("hplan:".length));
   if (unit.startsWith("hhero:")) return homeHeroDone.has(unit.slice("hhero:".length));
@@ -346,6 +372,7 @@ async function runUnit(unit) {
   }
   else if (unit === "health") await cat.healthCheck();
   else if (unit === "pick") pickServers = await cat.serverList();
+  else if (unit === "lfeed") await loadLiveFeed();
   else if (unit.startsWith("hfeed:")) await loadHomeFeed(unit.slice("hfeed:".length));
   else if (unit.startsWith("hplan:")) await loadHomePlan(unit.slice("hplan:".length));
   else if (unit.startsWith("hhero:")) { await loadHomeHero(unit.slice("hhero:".length)); homeHeroDone.add(unit.slice("hhero:".length)); }
@@ -361,12 +388,22 @@ async function runUnit(unit) {
 }
 
 function tabData(tab, lang, state = {}) {
-  if (tab === "live") return memo.get("live") || null;
+  if (tab === "live") {
+    // Feed pre-armado (1x/día) o, si todavía no llegó, el snapshot local (reapertura instantánea); si no, la carga en vivo.
+    if (liveFeedData) return liveFeedData;
+    const m = memo.get("live");
+    if (m) return m;
+    const snap = readSnap("live", "-");
+    return snap ? { slides: [], rails: snap.rails, langs: [], lang: null, partial: false, stale: true } : null;
+  }
   if (tab !== "home") {
-    // Feed (v2): la pestaña ya viene pre-armada → se pinta al instante, con su selector de categorías (cats) y sin paginación.
+    // Feed: la pestaña ya viene pre-armada → se pinta al instante, con su selector de categorías (cats) y sin paginación.
     const feedTab = feedTabFor(tab, lang);
     const fromFeed = feedTab ? { slides: (feedTab.slides || []).slice(0, FEATURED), rails: feedTab.rows, cats: feedTab.cats || [], langs: homeLangsList, lang, partial: false, hasMore: false } : null;
-    const base = memo.get(`${tab}:${lang}`) || fromFeed;
+    // Sin feed todavía: el snapshot local pinta al instante (marcado stale) hasta que baje el feed o la carga en vivo.
+    const snap = !memo.get(`${tab}:${lang}`) && !fromFeed ? readSnap(tab, lang) : null;
+    const fromSnap = snap ? { slides: (snap.slides || []).slice(0, FEATURED), rails: snap.rails, cats: [], langs: homeLangsList, lang, partial: false, hasMore: false, stale: true } : null;
+    const base = memo.get(`${tab}:${lang}`) || fromFeed || fromSnap;
     const one = base && state.cat ? onlyCat.get(`${tab}:${lang}:${state.cat}`) : null;
     return one ? { ...base, rails: one.rails, hasMore: false, catSel: state.cat } : base ? { ...base, catSel: "" } : null;
   }
@@ -572,13 +609,9 @@ const events = {
     if (cur && cur.rows.length === feed.rows.length && JSON.stringify(cur.rows[0]) === JSON.stringify(feed.rows[0])) return null; // igual: sin re-render
     homeFeedData.set(key, { slides: feed.slides || [], rows: feed.rows, langs: feed.langs || [], movies: feed.movies || null, series: feed.series || null });
     if (Array.isArray(feed.langs) && feed.langs.length) homeLangsList = feed.langs;
-    try {
-      for (let per = 12; per >= 6; per -= 3) {
-        const slim = { v: 2, at: Date.now(), slides: (feed.slides || []).slice(0, FEATURED).map(slimCard), rails: feed.rows.map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items.slice(0, per).map(slimCard) })) };
-        const text = JSON.stringify(slim);
-        if (text.length <= HOME_SNAP_MAX) { put(homeSnapKey(key), text); break; }
-      }
-    } catch (_) { /* da igual */ }
+    writeTabSnap("home", key, feed.slides, feed.rows);
+    if (feed.movies) writeTabSnap("movies", key, feed.movies.slides, feed.movies.rows);
+    if (feed.series) writeTabSnap("series", key, feed.series.slides, feed.series.rows);
     return { state: { ...bump(state) } };
   },
   openSearch() { return { route: { push: "search" }, state: { sq: "", sstate: null } }; },

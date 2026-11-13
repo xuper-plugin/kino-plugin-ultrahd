@@ -32,9 +32,9 @@ jobs:
 
       - name: Publicar si cambió algo
         run: |
-          git add home
+          git add home live
           if git diff --cached --quiet; then
-            echo "sin cambios en home/"
+            echo "sin cambios en home/ ni live/"
             exit 0
           fi
           git config user.name "xuper-plugin"

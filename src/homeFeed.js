@@ -1,6 +1,7 @@
 // Baja el Home pre-armado que el Action publica 2x/día en home/<serverKey>.json. Si existe y es reciente, el plugin pinta su
 // Home al instante (sin recorrer el servidor IPTV); si falta, está viejo o el fetch falla, se usa la carga en vivo progresiva.
 const BASE = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/main/home/";
+const LIVE_BASE = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/main/live/";
 const MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000; // tolera varias corridas perdidas; más viejo que esto -> se ignora y se carga en vivo
 
 // Deja una pestaña `{slides, rows}` solo con filas válidas (id/title/items), o null si no sirve.
@@ -35,5 +36,23 @@ export async function fetchHomeFeed(serverKey) {
       movies: tabOf(d.movies), // null en feeds v1
       series: tabOf(d.series),
     };
+  } catch (_) { return null; }
+}
+
+/**
+ * La primera pantalla de En vivo pre-armada del servidor (filas de canales por categoría), refrescada ~1x/día: `{ rails }`,
+ * o null (sin feed, viejo, no coincide, o falló). Cambiar de categoría en la app sigue haciendo la consulta en vivo normal.
+ */
+export async function fetchLiveFeed(serverKey) {
+  if (!serverKey) return null;
+  try {
+    // Cache-bust por día (el feed de En vivo se regenera 1x/día): basta con refrescar la CDN una vez al día.
+    const r = await kino.fetch(`${LIVE_BASE}${encodeURIComponent(serverKey)}.json?v=${Math.floor(Date.now() / 86400000)}`, { headers: { Accept: "application/json" } });
+    if (!r.ok) return null;
+    const d = r.json();
+    if (!d || d.v !== 1 || d.serverKey !== serverKey || !Array.isArray(d.rails) || !d.rails.length) return null;
+    if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) return null;
+    const rails = d.rails.filter((r2) => r2 && typeof r2.id === "string" && typeof r2.title === "string" && Array.isArray(r2.items) && r2.items.length);
+    return rails.length ? { rails } : null;
   } catch (_) { return null; }
 }

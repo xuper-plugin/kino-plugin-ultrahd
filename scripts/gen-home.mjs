@@ -2,7 +2,7 @@
 // Lo corre un Action dos veces al día; el plugin baja el JSON de su servidor y pinta el Home al instante.
 // Reusa EXACTAMENTE las funciones del catálogo (mismo resultado que la carga en vivo), a través del kit.
 //   KINO_TMDB_KEY=... node scripts/gen-home.mjs [--servers N] [--out home]
-import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
@@ -20,6 +20,9 @@ const checked = validateManifest(readFileSync(join(root, "kino-plugin.json"), "u
 const arg = (name, def) => { const i = process.argv.indexOf("--" + name); return i >= 0 ? process.argv[i + 1] : def; };
 const MAX_SERVERS = parseInt(arg("servers", "99"), 10);
 const OUT_DIR = join(root, arg("out", "home"));
+const LIVE_DIR = join(root, arg("live", "live"));
+const LIVE_TTL_MS = 20 * 60 * 60 * 1000; // En vivo se rehornea ~1x/día: si el archivo tiene < 20 h, se conserva (menos carga a los servidores)
+const LIVE_RAILS = 12;
 const HOME_MOVIES = 7, HOME_SERIES = 4, RAIL_ITEMS = 20, FEATURED = 6;
 const TAB_RAILS = 12; // filas por pestaña (Películas / Series)
 // v:1 se mantiene (compatibilidad): los lectores viejos leen slides/rows (Inicio) e IGNORAN movies/series. Los nuevos (>=0.5.0)
@@ -89,7 +92,31 @@ async function buildServer() {
   return { v: SCHEMA, at: Date.now(), serverKey: cat.serverKey(), lang, langs, slides: homeSlides, rows: toRows(homeRails), movies, series };
 }
 
+// La primera pantalla de En vivo: una fila de canales por categoría (hasta LIVE_RAILS). Devuelve el objeto a publicar o null.
+const channelCard = (i) => ({ id: i.id, ref: i.ref, title: i.title, kind: "live", ...(i.logo ? { poster: i.logo } : {}), ...(i.adult ? { adult: true } : {}) });
+async function buildLive() {
+  const cats = (await cat.liveCategories()).slice(0, LIVE_RAILS);
+  const rails = [];
+  for (let i = 0; i < cats.length; i += 3) {
+    const batch = await Promise.all(cats.slice(i, i + 3).map(async (c) => {
+      try { return { c, page: await cat.liveChannels({ categoryId: c.id }) }; } catch (_) { return null; }
+    }));
+    for (const r of batch) {
+      if (!r) continue;
+      const items = r.page.items.slice(0, RAIL_ITEMS).map(channelCard);
+      if (items.length) rails.push({ id: "lcat-" + r.c.id, title: r.c.title, ref: "lcat:" + r.c.id, items });
+    }
+  }
+  return rails.length ? { v: 1, at: Date.now(), serverKey: cat.serverKey(), rails } : null;
+}
+
+// Rehornea En vivo solo si el archivo falta o tiene >= 20 h (así, con el Action cada 4 h, En vivo se actualiza ~1x/día).
+function liveIsFresh(key) {
+  try { const p = JSON.parse(readFileSync(join(LIVE_DIR, key + ".json"), "utf8")); return p && p.serverKey === key && Date.now() - (p.at || 0) < LIVE_TTL_MS; } catch (_) { return false; }
+}
+
 mkdirSync(OUT_DIR, { recursive: true });
+mkdirSync(LIVE_DIR, { recursive: true });
 const list = await cat.serverList();
 const total = Math.min((list.items || []).length, MAX_SERVERS);
 console.log(`servidores a procesar: ${total} de ${(list.items || []).length}`);
@@ -113,6 +140,13 @@ for (let i = 0; i < total; i++) {
     index.push({ serverKey: key, at: home.at, rows: home.rows.length, slides: home.slides.length, bytes });
     console.log(`#${i + 1} ${key} (${ms(t0)} ms): ${home.rows.length} filas, ${home.slides.length} slides, ${Math.round(bytes / 1024)} KB -> ${key}.json`);
     ok++;
+    // En vivo: ~1x/día. Si el archivo es reciente, se conserva (no se toca); si no, se rehornea.
+    if (liveIsFresh(key)) { console.log(`   en vivo: reciente, se conserva`); }
+    else {
+      const live = await buildLive().catch(() => null);
+      if (live) { writeFileSync(join(LIVE_DIR, key + ".json"), JSON.stringify(live)); console.log(`   en vivo: ${live.rails.length} filas -> live/${key}.json`); }
+      else console.log(`   en vivo: sin canales`);
+    }
   } catch (e) { console.log(`#${i + 1} (${ms(t0)} ms): error ${e && e.message}`); fail++; }
 }
 writeFileSync(join(OUT_DIR, "index.json"), JSON.stringify({ v: SCHEMA, at: Date.now(), servers: index }));
