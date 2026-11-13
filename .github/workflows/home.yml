@@ -32,12 +32,12 @@ jobs:
 
       - name: Publicar si cambió algo
         run: |
-          if git diff --quiet home; then
+          git add home
+          if git diff --cached --quiet; then
             echo "sin cambios en home/"
             exit 0
           fi
           git config user.name "xuper-plugin"
           git config user.email "335105665+xuper-plugin@users.noreply.github.com"
-          git add home
           git commit -m "Home pre-armado: actualiza home/<serverKey>.json"
           git push origin HEAD:main
