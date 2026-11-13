@@ -29,11 +29,20 @@ function tabOf(t) {
  * Esquema v1: `slides`/`rows` = Inicio (lo que leen los lectores viejos). `movies`/`series` son campos extra (cada uno
  * `{slides, rows, cats}` o null) que los lectores viejos ignoran; aquí se usan para pintar esas pestañas al instante.
  */
-export async function fetchHomeFeed(serverKey) {
+export async function fetchHomeFeed(serverKey, lang) {
   if (!serverKey) return null;
+  // es-419 y es-ES tienen feed propio (<key>.<lang>.enc.json); el resto (y si ese archivo falta) usa el por defecto.
+  if (lang === "es-419" || lang === "es-ES") {
+    const own = await fetchFeedFile(serverKey, serverKey + "." + lang);
+    if (own && own.lang === lang) return own;
+  }
+  return fetchFeedFile(serverKey, serverKey);
+}
+
+async function fetchFeedFile(serverKey, name) {
   try {
     // El `v` por hora evita una caché de CDN demasiado pegajosa sin pedir siempre de nuevo.
-    const r = await kino.fetch(`${BASE}${encodeURIComponent(serverKey)}.enc.json?v=${Math.floor(Date.now() / 3600000)}`, { headers: { Accept: "application/json" } });
+    const r = await kino.fetch(`${BASE}${encodeURIComponent(name)}.enc.json?v=${Math.floor(Date.now() / 3600000)}`, { headers: { Accept: "application/json" } });
     if (!r.ok) { console.log("[dbg] homefeed: HTTP no ok status=" + r.status + " key=" + serverKey); return null; }
     const d = openBox(r.text());
     if (!d) { console.log("[dbg] homefeed: NO ABRE (descifrado fallido o sobre invalido) key=" + serverKey); return null; }

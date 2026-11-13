@@ -43,7 +43,7 @@ try {
   }
 } catch (_) { /* kino congelado: sin log de peticiones */ }
 
-const PLUGIN_VERSION = "0.8.1";
+const PLUGIN_VERSION = "0.8.2";
 const TAB_KEY = "browseTab";
 const LANG_KEY = "browseLang";
 const HIST_KEY = "searchHist:v1";
@@ -197,7 +197,7 @@ const HOME_SERIES = 4;
 async function loadHomeFeed(lang) {
   homeFeedTried.add(lang);
   let feed = null;
-  try { feed = await fetchHomeFeed(cat.serverKey()); } catch (_) { feed = null; }
+  try { feed = await fetchHomeFeed(cat.serverKey(), lang); } catch (_) { feed = null; }
   if (!feed || !feed.rows.length) return;
   // El feed trae el idioma por defecto del servidor; se usa para ese idioma (los demás caen a vivo).
   const key = feed.lang && isLang(feed.lang) ? feed.lang : lang;
@@ -358,7 +358,8 @@ function unitsFor(tab, lang) {
     // apenas carga; país, recientes e índice van al final. Hasta tener el plan, solo health + plan.
     // Primero el feed pre-armado (una sola descarga): si está, el Home se pinta entero al instante y NO se recorre el IPTV.
     // Si el feed falta/está viejo/falló, se cae a la carga en vivo progresiva (plan + una unidad por fila + hero).
-    if (homeFeedData.has(lang)) return [`hfeed:${lang}`, "health", ...(countryOn() ? ["country"] : []), "recent", "index"];
+    // Con el feed ya no se sondean los servidores (`health`): la pantalla está pintada y la verificación real ocurre antes de reproducir.
+    if (homeFeedData.has(lang)) return [`hfeed:${lang}`, ...(countryOn() ? ["country"] : []), "recent", "index"];
     const plan = homePlan.get(lang) || [];
     const railUnits = plan.map((p) => `hrail:${p.kind}:${lang}:${p.id}`);
     const heroUnit = railUnits.length ? [`hhero:${lang}`] : [];
@@ -368,7 +369,7 @@ function unitsFor(tab, lang) {
   // Películas/Series: el feed (v2) también trae estas pestañas pre-armadas. Si la de este idioma ya está, se pinta al instante
   // y no se recorre el IPTV; si falta, se intenta el feed una vez (hfeed) y, si no llega o es v1, cae a la carga en vivo.
   if (tab === "movies" || tab === "series") {
-    if (feedTabFor(tab, lang)) return [`hfeed:${lang}`, "health"];
+    if (feedTabFor(tab, lang)) return [`hfeed:${lang}`];
     if (!homeFeedTried.has(lang)) return [`hfeed:${lang}`, "health", `tab:${tab}:${lang}`];
     return ["health", `tab:${tab}:${lang}`];
   }
@@ -664,7 +665,7 @@ const events = {
     const lang = wantedLang(state);
     if (!homeFeedData.has(lang)) return null;
     let feed = null;
-    try { feed = await fetchHomeFeed(cat.serverKey()); } catch (_) { feed = null; }
+    try { feed = await fetchHomeFeed(cat.serverKey(), lang); } catch (_) { feed = null; }
     if (!feed || !feed.rows.length) return null;
     const key = feed.lang && isLang(feed.lang) ? feed.lang : lang;
     const cur = homeFeedData.get(key);

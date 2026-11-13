@@ -2,6 +2,7 @@
 // Las credenciales se obtienen automáticamente del servidor bootstrap,
 // igual que la app original. El usuario no configura nada.
 
+import { fetchHomeFeed } from "./homeFeed.js";
 import { noteRecent } from "./recent.js";
 import { put } from "./store.js";
 import { indexFitsServer, indexSearch, indexStep, indexReady, indexStale, resolveIdxRef, indexLabel, cleanTitle, findKey, parseIdxRef } from "./titleIndex.js";
@@ -755,7 +756,21 @@ export async function oneRail(kind, catId, perRail, lang) {
 
 export async function home() {
   const dbgT = Date.now();
-  console.log("[dbg] home() de Kino: inicio (fila de inicio, carga en vivo del IPTV) server=" + serverKey());
+  console.log("[dbg] home() de Kino: inicio server=" + serverKey());
+  // Feed pre-armado (el mismo del Inicio de la pantalla): la fila de inicio sale sin recorrer el IPTV. Si falta, está viejo o no
+  // abre, se cae a la carga en vivo de abajo. La fila de TV del país se intenta en vivo, con tope, para que nunca frene la carga.
+  try {
+    const feed = await fetchHomeFeed(serverKey(), null);
+    if (feed && feed.rows.length) {
+      const rows = feed.rows.map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items }));
+      const live = await Promise.race([countryRow().catch(() => null), kino.sleep(3000).then(() => null)]);
+      if (live) rows.push({ id: live.id, title: live.title, genre: "tv", items: live.items });
+      indexStep({ budgetMs: 1500 }).catch(() => {}); // el índice sigue poblándose en segundo plano, sin esperarlo
+      console.log("[dbg] home() de Kino: DESDE EL FEED rows=" + rows.length + " " + (Date.now() - dbgT) + "ms");
+      return rows;
+    }
+  } catch (_) { /* cae a la carga en vivo */ }
+  console.log("[dbg] home() de Kino: sin feed, carga EN VIVO del IPTV");
   // El índice de títulos se puebla/actualiza mientras carga el Home (un paso acotado en tiempo; nunca lanza).
   const indexing = indexStep({ budgetMs: 1500 }); // paso corto: el poblado sigue en los siguientes Homes (nunca frena la carga)
   const vod = await loadRailsInfo("vod", 7, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));

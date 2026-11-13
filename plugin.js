@@ -1,3 +1,90 @@
+// src/homeFeed.js
+var BASE = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/main/home/";
+var LIVE_BASE = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/main/live/";
+var MAX_AGE_MS = 3 * 24 * 60 * 60 * 1e3;
+function openBox(text2) {
+  let box = null;
+  try {
+    box = JSON.parse(text2);
+  } catch (_) {
+    return null;
+  }
+  if (!box || typeof box !== "object" || box.v !== 1 || typeof box.iv !== "string" || typeof box.data !== "string") return null;
+  try {
+    return JSON.parse(kino.crypto.decrypt("aes-256-gcm", { key: kino.secret("feedKey"), iv: box.iv, ivEncoding: "base64", data: box.data }));
+  } catch (_) {
+    return null;
+  }
+}
+function tabOf(t) {
+  if (!t || !Array.isArray(t.rows)) return null;
+  const rows = t.rows.filter((r) => r && typeof r.id === "string" && typeof r.title === "string" && Array.isArray(r.items) && r.items.length);
+  if (!rows.length) return null;
+  return { slides: Array.isArray(t.slides) ? t.slides : [], rows, cats: Array.isArray(t.cats) ? t.cats : [] };
+}
+async function fetchHomeFeed(serverKey2, lang) {
+  if (!serverKey2) return null;
+  if (lang === "es-419" || lang === "es-ES") {
+    const own = await fetchFeedFile(serverKey2, serverKey2 + "." + lang);
+    if (own && own.lang === lang) return own;
+  }
+  return fetchFeedFile(serverKey2, serverKey2);
+}
+async function fetchFeedFile(serverKey2, name) {
+  try {
+    const r = await kino.fetch(`${BASE}${encodeURIComponent(name)}.enc.json?v=${Math.floor(Date.now() / 36e5)}`, { headers: { Accept: "application/json" } });
+    if (!r.ok) {
+      console.log("[dbg] homefeed: HTTP no ok status=" + r.status + " key=" + serverKey2);
+      return null;
+    }
+    const d = openBox(r.text());
+    if (!d) {
+      console.log("[dbg] homefeed: NO ABRE (descifrado fallido o sobre invalido) key=" + serverKey2);
+      return null;
+    }
+    if (d.v !== 1 || d.serverKey !== serverKey2 || !Array.isArray(d.rows) || !d.rows.length) {
+      console.log("[dbg] homefeed: contenido no valido v=" + d.v + " serverKey=" + d.serverKey + " esperado=" + serverKey2 + " rows=" + (Array.isArray(d.rows) ? d.rows.length : "n/a"));
+      return null;
+    }
+    if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) {
+      console.log("[dbg] homefeed: VIEJO " + Math.round((Date.now() - d.at) / 36e5) + " h");
+      return null;
+    }
+    const home2 = tabOf({ slides: d.slides, rows: d.rows });
+    if (!home2) {
+      console.log("[dbg] homefeed: tabOf(home) vacio");
+      return null;
+    }
+    console.log("[dbg] homefeed: OK key=" + serverKey2 + " lang=" + d.lang + " home=" + home2.rows.length + " movies=" + (d.movies && d.movies.rows ? d.movies.rows.length : 0) + " series=" + (d.series && d.series.rows ? d.series.rows.length : 0) + " " + Math.round(r.text().length / 1024) + "KB");
+    return {
+      lang: typeof d.lang === "string" ? d.lang : null,
+      langs: Array.isArray(d.langs) ? d.langs : [],
+      slides: home2.slides,
+      rows: home2.rows,
+      movies: tabOf(d.movies),
+      // null en feeds v1
+      series: tabOf(d.series)
+    };
+  } catch (e) {
+    console.log("[dbg] homefeed: EXCEPCION " + (e && e.message));
+    return null;
+  }
+}
+async function fetchLiveFeed(serverKey2) {
+  if (!serverKey2) return null;
+  try {
+    const r = await kino.fetch(`${LIVE_BASE}${encodeURIComponent(serverKey2)}.enc.json?v=${Math.floor(Date.now() / 864e5)}`, { headers: { Accept: "application/json" } });
+    if (!r.ok) return null;
+    const d = openBox(r.text());
+    if (!d || d.v !== 1 || d.serverKey !== serverKey2 || !Array.isArray(d.rails) || !d.rails.length) return null;
+    if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) return null;
+    const rails = d.rails.filter((r2) => r2 && typeof r2.id === "string" && typeof r2.title === "string" && Array.isArray(r2.items) && r2.items.length);
+    return rails.length ? { rails } : null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // src/store.js
 var SOFT_CAP = 200 * 1024;
 var CLASSES = {
@@ -295,7 +382,7 @@ var LANG_LABELS = {
 };
 
 // src/titleIndex.js
-var BASE = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd-data/data/";
+var BASE2 = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd-data/data/";
 var FORMAT = 1;
 var STATE_KEY = "idx:state";
 var DAY_MS = 24 * 3600 * 1e3;
@@ -322,7 +409,7 @@ var MAX_TITLE = 300;
 var REV = /^\d{8}T\d{6}Z$/;
 var RETRY_FIRST_MS = 60 * 1e3;
 var RETRY_LATER_MS = 10 * 60 * 1e3;
-var fetchBase = BASE;
+var fetchBase = BASE2;
 function cleanTitle(raw, yearField) {
   let name = String(raw || "").replace(/[\r\n\t]+/g, " ");
   let year = 0;
@@ -2205,7 +2292,21 @@ async function oneRail(kind, catId, perRail, lang) {
 }
 async function home() {
   const dbgT = Date.now();
-  console.log("[dbg] home() de Kino: inicio (fila de inicio, carga en vivo del IPTV) server=" + serverKey());
+  console.log("[dbg] home() de Kino: inicio server=" + serverKey());
+  try {
+    const feed = await fetchHomeFeed(serverKey(), null);
+    if (feed && feed.rows.length) {
+      const rows2 = feed.rows.map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items }));
+      const live2 = await Promise.race([countryRow().catch(() => null), kino.sleep(3e3).then(() => null)]);
+      if (live2) rows2.push({ id: live2.id, title: live2.title, genre: "tv", items: live2.items });
+      indexStep({ budgetMs: 1500 }).catch(() => {
+      });
+      console.log("[dbg] home() de Kino: DESDE EL FEED rows=" + rows2.length + " " + (Date.now() - dbgT) + "ms");
+      return rows2;
+    }
+  } catch (_) {
+  }
+  console.log("[dbg] home() de Kino: sin feed, carga EN VIVO del IPTV");
   const indexing = indexStep({ budgetMs: 1500 });
   const vod = await loadRailsInfo("vod", 7, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
   const series = await loadRailsInfo("series", 4, HOME_PREVIEW, { home: true }).catch(() => ({ rails: [] }));
@@ -2831,86 +2932,6 @@ var say = (key, lang, vars) => {
   return fill(lang === "en" ? en : es, vars);
 };
 
-// src/homeFeed.js
-var BASE2 = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/main/home/";
-var LIVE_BASE = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/main/live/";
-var MAX_AGE_MS = 3 * 24 * 60 * 60 * 1e3;
-function openBox(text2) {
-  let box = null;
-  try {
-    box = JSON.parse(text2);
-  } catch (_) {
-    return null;
-  }
-  if (!box || typeof box !== "object" || box.v !== 1 || typeof box.iv !== "string" || typeof box.data !== "string") return null;
-  try {
-    return JSON.parse(kino.crypto.decrypt("aes-256-gcm", { key: kino.secret("feedKey"), iv: box.iv, ivEncoding: "base64", data: box.data }));
-  } catch (_) {
-    return null;
-  }
-}
-function tabOf(t) {
-  if (!t || !Array.isArray(t.rows)) return null;
-  const rows = t.rows.filter((r) => r && typeof r.id === "string" && typeof r.title === "string" && Array.isArray(r.items) && r.items.length);
-  if (!rows.length) return null;
-  return { slides: Array.isArray(t.slides) ? t.slides : [], rows, cats: Array.isArray(t.cats) ? t.cats : [] };
-}
-async function fetchHomeFeed(serverKey2) {
-  if (!serverKey2) return null;
-  try {
-    const r = await kino.fetch(`${BASE2}${encodeURIComponent(serverKey2)}.enc.json?v=${Math.floor(Date.now() / 36e5)}`, { headers: { Accept: "application/json" } });
-    if (!r.ok) {
-      console.log("[dbg] homefeed: HTTP no ok status=" + r.status + " key=" + serverKey2);
-      return null;
-    }
-    const d = openBox(r.text());
-    if (!d) {
-      console.log("[dbg] homefeed: NO ABRE (descifrado fallido o sobre invalido) key=" + serverKey2);
-      return null;
-    }
-    if (d.v !== 1 || d.serverKey !== serverKey2 || !Array.isArray(d.rows) || !d.rows.length) {
-      console.log("[dbg] homefeed: contenido no valido v=" + d.v + " serverKey=" + d.serverKey + " esperado=" + serverKey2 + " rows=" + (Array.isArray(d.rows) ? d.rows.length : "n/a"));
-      return null;
-    }
-    if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) {
-      console.log("[dbg] homefeed: VIEJO " + Math.round((Date.now() - d.at) / 36e5) + " h");
-      return null;
-    }
-    const home2 = tabOf({ slides: d.slides, rows: d.rows });
-    if (!home2) {
-      console.log("[dbg] homefeed: tabOf(home) vacio");
-      return null;
-    }
-    console.log("[dbg] homefeed: OK key=" + serverKey2 + " lang=" + d.lang + " home=" + home2.rows.length + " movies=" + (d.movies && d.movies.rows ? d.movies.rows.length : 0) + " series=" + (d.series && d.series.rows ? d.series.rows.length : 0) + " " + Math.round(r.text().length / 1024) + "KB");
-    return {
-      lang: typeof d.lang === "string" ? d.lang : null,
-      langs: Array.isArray(d.langs) ? d.langs : [],
-      slides: home2.slides,
-      rows: home2.rows,
-      movies: tabOf(d.movies),
-      // null en feeds v1
-      series: tabOf(d.series)
-    };
-  } catch (e) {
-    console.log("[dbg] homefeed: EXCEPCION " + (e && e.message));
-    return null;
-  }
-}
-async function fetchLiveFeed(serverKey2) {
-  if (!serverKey2) return null;
-  try {
-    const r = await kino.fetch(`${LIVE_BASE}${encodeURIComponent(serverKey2)}.enc.json?v=${Math.floor(Date.now() / 864e5)}`, { headers: { Accept: "application/json" } });
-    if (!r.ok) return null;
-    const d = openBox(r.text());
-    if (!d || d.v !== 1 || d.serverKey !== serverKey2 || !Array.isArray(d.rails) || !d.rails.length) return null;
-    if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) return null;
-    const rails = d.rails.filter((r2) => r2 && typeof r2.id === "string" && typeof r2.title === "string" && Array.isArray(r2.items) && r2.items.length);
-    return rails.length ? { rails } : null;
-  } catch (_) {
-    return null;
-  }
-}
-
 // src/logo.js
 var LOGO_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAIAAABt+uBvAAABV0lEQVR4nO3dQZKCMBgFYddzBK/o/dczaxGTAdFuyv7rbQRJvXwHSC7XXfN7u5wu+3b638/w7VFek//h28ClRq/x6gaj9Xd4Yw/TylO8qMpo+QiviGcEhJeTJKBdQHgtVZZAeCFhAgroKCC8ijYBBRRQQDQQXkIevoE8fAN5+Aby8A3k4RvIwzeQh28gD99AHr6BPHwDefgG8ix//9zPprXG335s5U0TUEABBRTQaVcOKKCAAgpIvHJAAQUU0LcCvTIBBRRQQAG9GegUKwcUUEABBSReOaCAAgpIBjT+fjwvVjkK6MDOAQUUUEBuoMI3kIdvIA/fQB6+gTx8A3n4BvLwDeThG8jDN5CHbyAP30AevoE8HW4ySqe/BBRQQAKgjJ7pBBTQUUAZrep0XPJEJ6CNQBlNjmzP6FGjayNGOl08MqKZA32J0Vigy48ms/NSKXx77xNZzB/7TgYOhL71YQAAAABJRU5ErkJggg==";
 
@@ -3348,7 +3369,7 @@ try {
   }
 } catch (_) {
 }
-var PLUGIN_VERSION = "0.8.1";
+var PLUGIN_VERSION = "0.8.2";
 var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
@@ -3513,7 +3534,7 @@ async function loadHomeFeed(lang) {
   homeFeedTried.add(lang);
   let feed = null;
   try {
-    feed = await fetchHomeFeed(serverKey());
+    feed = await fetchHomeFeed(serverKey(), lang);
   } catch (_) {
     feed = null;
   }
@@ -3670,14 +3691,14 @@ async function autoPick() {
 function unitsFor(tab, lang) {
   if (!serverChosen()) return autoPickTried ? ["health", "pick"] : ["autopick"];
   if (tab === "home") {
-    if (homeFeedData.has(lang)) return [`hfeed:${lang}`, "health", ...countryOn() ? ["country"] : [], "recent", "index"];
+    if (homeFeedData.has(lang)) return [`hfeed:${lang}`, ...countryOn() ? ["country"] : [], "recent", "index"];
     const plan = homePlan.get(lang) || [];
     const railUnits = plan.map((p) => `hrail:${p.kind}:${lang}:${p.id}`);
     const heroUnit = railUnits.length ? [`hhero:${lang}`] : [];
     return [`hfeed:${lang}`, "health", `hplan:${lang}`, ...railUnits, ...heroUnit, ...countryOn() ? ["country"] : [], "recent", "index"];
   }
   if (tab === "movies" || tab === "series") {
-    if (feedTabFor(tab, lang)) return [`hfeed:${lang}`, "health"];
+    if (feedTabFor(tab, lang)) return [`hfeed:${lang}`];
     if (!homeFeedTried.has(lang)) return [`hfeed:${lang}`, "health", `tab:${tab}:${lang}`];
     return ["health", `tab:${tab}:${lang}`];
   }
@@ -3977,7 +3998,7 @@ var events = {
     if (!homeFeedData.has(lang)) return null;
     let feed = null;
     try {
-      feed = await fetchHomeFeed(serverKey());
+      feed = await fetchHomeFeed(serverKey(), lang);
     } catch (_) {
       feed = null;
     }

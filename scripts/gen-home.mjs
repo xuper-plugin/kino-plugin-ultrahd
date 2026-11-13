@@ -29,6 +29,7 @@ const TAB_RAILS = 12; // filas por pestaña (Películas / Series)
 // v:1 se mantiene (compatibilidad): los lectores viejos leen slides/rows (Inicio) e IGNORAN movies/series. Los nuevos (>=0.5.0)
 // usan movies/series para pintar esas pestañas al instante. Agregar campos no rompe al lector v1 (rechaza por `v !== 1`).
 const SCHEMA = 1;
+const PER_LANG = ["es-419", "es-ES"]; // variantes de español con feed propio (además del por defecto)
 
 const tmp = mkdtempSync(join(tmpdir(), "uhd-gen-"));
 // Mismo storage para todas las instancias (comparte servidores/categorías, sin re-bootstrap); kino nuevo por servidor para
@@ -44,8 +45,8 @@ const ms = (t0) => Math.round(performance.now() - t0);
 
 // Carga las filas de una pestaña (primeras `maxRails` categorías), con ítems completos (para hero) ya con póster de TMDB.
 // `cats` es la lista COMPLETA de categorías del idioma (para el selector de categorías de la pestaña en el plugin).
-async function buildTab(kind, maxRails) {
-  const plan = await cat.homeRailPlan(kind, 999, null).catch(() => ({ cats: [], lang: null, langs: [] }));
+async function buildTab(kind, maxRails, wantLang = null) {
+  const plan = await cat.homeRailPlan(kind, 999, wantLang).catch(() => ({ cats: [], lang: null, langs: [] }));
   const lang = plan.lang;
   const rails = [];
   for (const c of plan.cats.slice(0, maxRails)) {
@@ -74,9 +75,9 @@ async function heroFor(kind, rails) {
 }
 
 // Un servidor: arma las pestañas Películas y Series (12 filas c/u) y deriva Inicio (7 pelis + 4 series). null si nada cargó.
-async function buildServer() {
-  const mv = await buildTab("vod", TAB_RAILS);
-  const sr = await buildTab("series", TAB_RAILS);
+async function buildServer(wantLang = null) {
+  const mv = await buildTab("vod", TAB_RAILS, wantLang);
+  const sr = await buildTab("series", TAB_RAILS, wantLang);
   if (!mv.rails.length && !sr.rails.length) return null;
   const lang = mv.lang || sr.lang;
   const langs = (mv.langs && mv.langs.length ? mv.langs : sr.langs) || [];
@@ -176,6 +177,19 @@ for (let i = 0; i < total; i++) {
     if (!home) { console.log(`#${i + 1} ${key} (${ms(t0)} ms): sin contenido`); empty++; continue; }
     const enc = seal(home);
     writeFileSync(join(OUT_DIR, key + ".enc.json"), enc);
+    // Un feed por variante de español: es-419 (Latino) y es-ES (España) tienen su propio catálogo; el feed por defecto es "es"
+    // (unión de ambos). El plugin pide <key>.<lang>.enc.json según el idioma elegido y cae al por defecto si no existe.
+    for (const L of PER_LANG) {
+      if (L === home.lang || !(home.langs || []).includes(L)) continue;
+      try {
+        const h = await buildServer(L);
+        if (h && h.lang === L && h.rows.length) {
+          const e = seal(h);
+          writeFileSync(join(OUT_DIR, key + "." + L + ".enc.json"), e);
+          console.log(`   ${L}: ${h.rows.length} filas, ${Math.round(e.length / 1024)} KB -> ${key}.${L}.enc.json`);
+        } else console.log(`   ${L}: sin contenido propio`);
+      } catch (e) { console.log(`   ${L}: error ${e && e.message}`); }
+    }
     index.push({ serverKey: key, at: home.at, rows: home.rows.length, slides: home.slides.length, bytes: enc.length });
     console.log(`#${i + 1} ${key} (${ms(t0)} ms): ${home.rows.length} filas, ${home.slides.length} slides, ${Math.round(enc.length / 1024)} KB -> ${key}.enc.json`);
     ok++;
