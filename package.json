@@ -17,5 +17,5 @@
     "esbuild": "^0.21.0",
     "quickjs-emscripten": "^0.31.0"
   },
-  "version": "0.8.6"
+  "version": "0.8.7"
 }
