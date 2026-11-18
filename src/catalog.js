@@ -470,10 +470,10 @@ function srvPriority(x) {
 const flagOf = (srv) => { const fi = flagInfo(labelOf(srv)); return fi ? fi.code : ""; };
 const priorityOf = (srv) => srvPriority({ flag: flagOf(srv), label: niceLabel(srv) });
 
-// Items del selector con bandera y estado online; con un chequeo fresco, solo los que responden. Hispanohablantes primero.
-// Dead (auth 0) and blocked accounts are never offered: the first-run auto-pick and the picker skip them.
+// Items del selector con bandera y estado online; con un chequeo reciente (onlineNow), solo los que responden. Hispanohablantes
+// primero. Dead (auth 0) and blocked accounts are never offered: the first-run auto-pick and the picker skip them.
 function itemsWithHealth(st) {
-  const h = healthFresh();
+  const h = onlineNow();
   const online = h ? new Set(h.online) : null;
   let items = (st.list || []).map((s, i) => ({ s, i })).filter(({ s }) => usable(s)).map(({ s, i }) => {
     const fi = flagInfo(labelOf(s));
@@ -691,11 +691,18 @@ let healthRunning = false;
 function readHealth() {
   try { const o = JSON.parse(kino.storage.get(HEALTH_KEY) || "null"); return o && Array.isArray(o.online) && typeof o.ts === "number" ? o : null; } catch (_) { return null; }
 }
-// A check that nothing answered (no network) is good for 30 min only: an empty online list would hide every other server's
-// sources in the player for the whole HEALTH_TTL_MS.
+// Check [h] when it is less than [ms] old, else null.
+const within = (h, ms) => (h && Date.now() - h.ts >= 0 && Date.now() - h.ts < ms ? h : null);
+// A check that nothing answered (no network) is good for 30 min only: the screen checks again then, not 6 h later.
 const HEALTH_EMPTY_TTL_MS = 30 * 60 * 1000;
-const healthFresh = () => { const h = readHealth(); return h && Date.now() - h.ts < (h.online.length ? HEALTH_TTL_MS : HEALTH_EMPTY_TTL_MS) ? h : null; };
+const healthFresh = () => { const h = readHealth(); return within(h, h && h.online.length ? HEALTH_TTL_MS : HEALTH_EMPTY_TTL_MS); };
 export const healthReady = () => !!healthFresh();
+// What the picker, the player's "Servidor" menu, the index's lookups and the live failover (its ranking and its server menu)
+// take as the accounts online: a check at most ONLINE_TRUST_MS old. Only the screen's check moved to every HEALTH_TTL_MS: an
+// account that missed one 3 s login answer (or a round with no network, which finds nothing online) must not leave those
+// lists for hours. Past this age they offer every usable account, as they did when the check ran every 30 min.
+const ONLINE_TRUST_MS = 30 * 60 * 1000;
+const onlineNow = () => within(readHealth(), ONLINE_TRUST_MS);
 // A full check that no account answered (no network, every panel unreachable) leaves the panel map as it was: written, it
 // would count as fresh for PANELS_STALE_MS with no account confirmed, and the live failover only moves a channel to accounts
 // its map confirmed within 24 h (the full check runs once a day now, so no later check would fix it that day). The screen
@@ -801,7 +808,7 @@ async function carriesIndexCats(srv, p) {
 function indexHomeIdx(st, map) {
   const i = st.list.findIndex((s) => indexFitsServer(s.url));
   if (!indexSource()) return i; // an index without its server's tag: as before
-  const h = healthFresh();
+  const h = onlineNow();
   const up = (s) => usable(s) && (!h || h.online.includes(s.url));
   if (i >= 0 && up(st.list[i])) return i;
   const ix = ixOf(map);
@@ -1832,7 +1839,7 @@ function buildAlternatives(availId, activeKey, makeRef) {
   if (!availId) return [];
   const st = readSrvs();
   if (!st || !Array.isArray(st.list)) return [];
-  const h = healthFresh();
+  const h = onlineNow();
   const online = h ? new Set(h.online) : null;
   const known = [], unknown = [];
   const countBy = {}; // cuántos servidores por país: para desambiguar los repetidos con el host
@@ -1840,7 +1847,7 @@ function buildAlternatives(availId, activeKey, makeRef) {
     const k = keyOf(srv);
     if (!k || k === activeKey) continue;
     if (!usable(srv)) continue; // dead (auth 0) or blocked: never offered
-    if (online && !online.has(srv.url)) continue; // solo online, si hay chequeo fresco
+    if (online && !online.has(srv.url)) continue; // solo online, si hay chequeo reciente (onlineNow)
     const av = availFor(availId, k);
     if (av && !av.has) continue; // ya sabemos que no lo tiene: se omite
     const base = niceLabel(srv);
@@ -1979,7 +1986,7 @@ const failover = createLiveFailover({
   playUrl: (srv, id, format) => `${srv.url}/live/${srv.username}/${srv.password}/${id}.${format || liveFormat()}`,
   label: niceLabel,
   host: hostOf,
-  online: () => { const h = healthFresh(); return h ? new Set(h.online) : null; },
+  online: () => { const h = onlineNow(); return h ? new Set(h.online) : null; },
   flag: flagOf,
   priority: priorityOf,
   seed: installSeed,

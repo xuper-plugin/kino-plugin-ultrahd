@@ -365,6 +365,41 @@ test("movies and episodes: the same paths, minus dead accounts in the 'Servidor'
   assert.ok(ep.url.startsWith(SRV.a1.url + "/series/") && ep.url.endsWith("/456.mkv"));
 });
 
+test("the picker and both 'Servidor' menus (the live one is the failover's view) trust a check 30 min, not 6 h", async () => {
+  const w = world();
+  const cat = await fresh("catalog.js");
+  await cat.healthCheck(); // the full check: a1 and a2 one panel, both confirmed
+  // Then the screen's live round, which a2 missed (one 3 s login answer): online is everyone else that answered.
+  const h = JSON.parse(w.store.get("health:v1"));
+  w.store.set("health:v1", JSON.stringify({ ts: T, online: h.online.filter((u) => u !== SRV.a2.url) }));
+  setActive(w, "a1", { chosen: keyOf(srvOf("a1")) });
+  const a2 = keyOf(srvOf("a2"));
+  const offered = async () => {
+    const picker = (await cat.serverList()).items.map((x) => srvs(w).list[x.i].url);
+    const vod = ((await cat.resolve("vod:123:mp4~matrix")).alternatives || []).map((a) => a.ref);
+    const live = ((await cat.resolve("live:201583~2956~es.dazn~es.hd.dazn.1")).alternatives || []).map((a) => a.ref);
+    return { picker: picker.includes(SRV.a2.url), vod: vod.some((r) => r.startsWith("at:" + a2 + "~")), live: live.some((r) => r.startsWith("at:" + a2 + "~")) };
+  };
+  assert.deepEqual(await offered(), { picker: false, vod: false, live: false }, "a fresh check: a2 (a1's panel) left out everywhere");
+  advance(31 * 60000);
+  assert.ok(cat.healthReady(), "the screen still checks again only after 6 h");
+  assert.deepEqual(await offered(), { picker: true, vod: true, live: true }, "past 30 min a2 is offered again (it was 6 h)");
+});
+
+test("index results: the index panel's account that missed one check is looked up again after 30 min, not 6 h", async () => {
+  const w = world();
+  const cat = await fresh("catalog.js");
+  await cat.healthCheck();
+  assert.equal(readPanels().ix.home, keyOf(srvOf("n")), "the index's server is dead: n, of its panel, answers index results");
+  const h = JSON.parse(w.store.get("health:v1"));
+  w.store.set("health:v1", JSON.stringify({ ts: T, online: h.online.filter((u) => u !== SRV.n.url) })); // n missed the live round
+  setActive(w, "a1", { chosen: keyOf(srvOf("a1")) });
+  const onN = async () => { const out = await cat.resolve("idx:m:matrix|1999|1055").catch(() => null); return !!out && new URL(out.url).hostname === "n.example"; };
+  assert.equal(await onN(), false, "a fresh check: n is left out");
+  advance(31 * 60000);
+  assert.equal(await onN(), true, "past 30 min n answers index results again");
+});
+
 test("first run: the auto-pick races the Spanish accounts before any health check and never picks a dead one; a lost flag heals", async () => {
   const w = world();
   const screen = await fresh("screen.js");

@@ -3437,7 +3437,7 @@ var flagOf = (srv) => {
 };
 var priorityOf = (srv) => srvPriority({ flag: flagOf(srv), label: niceLabel(srv) });
 function itemsWithHealth(st) {
-  const h = healthFresh();
+  const h = onlineNow();
   const online = h ? new Set(h.online) : null;
   let items = (st.list || []).map((s, i) => ({ s, i })).filter(({ s }) => usable(s)).map(({ s, i }) => {
     const fi = flagInfo(labelOf2(s));
@@ -3612,12 +3612,15 @@ function readHealth() {
     return null;
   }
 }
+var within = (h, ms) => h && Date.now() - h.ts >= 0 && Date.now() - h.ts < ms ? h : null;
 var HEALTH_EMPTY_TTL_MS = 30 * 60 * 1e3;
 var healthFresh = () => {
   const h = readHealth();
-  return h && Date.now() - h.ts < (h.online.length ? HEALTH_TTL_MS : HEALTH_EMPTY_TTL_MS) ? h : null;
+  return within(h, h && h.online.length ? HEALTH_TTL_MS : HEALTH_EMPTY_TTL_MS);
 };
 var healthReady = () => !!healthFresh();
+var ONLINE_TRUST_MS = 30 * 60 * 1e3;
+var onlineNow = () => within(readHealth(), ONLINE_TRUST_MS);
 var PANELS_RETRY_MS = 30 * 60 * 1e3;
 var panelsRetryAt = 0;
 var panelsStale = () => {
@@ -3701,7 +3704,7 @@ async function carriesIndexCats(srv, p) {
 function indexHomeIdx(st, map) {
   const i = st.list.findIndex((s) => indexFitsServer(s.url));
   if (!indexSource()) return i;
-  const h = healthFresh();
+  const h = onlineNow();
   const up = (s) => usable(s) && (!h || h.online.includes(s.url));
   if (i >= 0 && up(st.list[i])) return i;
   const ix = ixOf(map);
@@ -4601,7 +4604,7 @@ function buildAlternatives(availId, activeKey, makeRef) {
   if (!availId) return [];
   const st = readSrvs();
   if (!st || !Array.isArray(st.list)) return [];
-  const h = healthFresh();
+  const h = onlineNow();
   const online = h ? new Set(h.online) : null;
   const known = [], unknown = [];
   const countBy = {};
@@ -4762,7 +4765,7 @@ var failover = createLiveFailover({
   label: niceLabel,
   host: hostOf,
   online: () => {
-    const h = healthFresh();
+    const h = onlineNow();
     return h ? new Set(h.online) : null;
   },
   flag: flagOf,
