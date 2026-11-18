@@ -532,8 +532,9 @@ function keptPick(st) {
  * group. Up to RACE_PARALLEL probes run at once, at most one per host, each with a 4 s timeout clipped to the race's
  * deadline (RACE_WINDOW_MS from its start, keeping RACE_RESERVE_MS of opts.until for the feed); as soon as one fails the next
  * candidate starts. A host that gave no answer at all is skipped for the rest of the race.
- * The first good answer wins, except that an account in another language never wins while a Spanish one is still in flight:
- * it waits for that one (at most its timeout). A dead account cannot win: its answer throws in callServer, which remembers it
+ * The first good answer wins, except that an account in another language never wins while a Spanish one is in flight or
+ * can still start (Spanish accounts on fewer hosts than RACE_PARALLEL leave a free slot to the next language): those race on,
+ * each within its timeout and the race's deadline. A dead account cannot win: its answer throws in callServer, which remembers it
  * dead for a day, exactly as everywhere else. Once the race is over a late answer only records what it learned; it never
  * moves the pick. A chosen server is never raced: it is kept, with no request. Never throws.
  * `{ ok: true, host, label, index, total }`, `{ ok: false }`, or `{ ok: false, late: true }` when opts.until left no time
@@ -558,14 +559,19 @@ export async function raceFirstServer(opts = {}) {
     let over = false;
     let spent = false; // Kino refused more requests in this call
     const finish = (out) => { over = true; done(out); };
+    const esFlying = () => [...flying.values()].some((x) => x.es);
     const step = () => {
       if (over) return;
-      if (best && (best.it.es || ![...flying.values()].some((x) => x.es))) return finish(takePick(st, best.it, best.data));
-      while (!best && !spent && flying.size < RACE_PARALLEL && sent < RACE_MAX_PROBES && end - Date.now() >= RACE_MIN_MS) {
-        const k = queue.findIndex((x) => !flying.has(hostname(x)) && !silent.has(hostname(x)));
+      if (best && best.it.es) return finish(takePick(st, best.it, best.data));
+      // Once only an account in another language answered well, just the Spanish accounts left still start (a free slot takes
+      // one in another language only while every Spanish one left waits for its host): it wins when none of them is in flight
+      // any more, or the race's time or requests ran out.
+      while (!spent && flying.size < RACE_PARALLEL && sent < RACE_MAX_PROBES && end - Date.now() >= RACE_MIN_MS) {
+        const k = queue.findIndex((x) => (!best || x.es) && !flying.has(hostname(x)) && !silent.has(hostname(x)));
         if (k < 0) break;
         start(queue.splice(k, 1)[0]);
       }
+      if (best && !esFlying()) return finish(takePick(st, best.it, best.data));
       if (!flying.size) finish({ ok: false });
     };
     const start = (it) => {

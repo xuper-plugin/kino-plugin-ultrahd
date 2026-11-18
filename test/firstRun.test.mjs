@@ -3,7 +3,7 @@
 // The race: the accounts of the picker's order (Spanish first), 3 probes in flight, at most one per host, a failed one
 // replaced at once by the next, each with 4 s clipped to the race's 9 s; the first good answer is chosen and its feed paints
 // in the same tick; the full health check runs only after the first content. A dead account never wins, a late answer never
-// moves the pick, an account in another language never wins while a Spanish one is in flight. When the race finds none, the
+// moves the pick, an account in another language never wins while a Spanish one is in flight or left to race. When the race finds none, the
 // health check and the automatic pick over the accounts that answered it, in one tick when it fits; the manual picker only
 // when that finds none either.
 import test from "node:test";
@@ -172,6 +172,27 @@ test("D1: two dead accounts and a silent host first; the race replaces them at o
   assert.ok(held <= BOOT + 4000 + 50, `the call as Kino holds it: ${held} ms`);
   const v = await s.view();
   assert.ok(v.includes("Estrenos del feed") && !v.includes('"verifying"') && !v.includes('"fpPage"'), "content after the first tick, never the picker");
+
+  // The same list in the service's real order and with the answer times the device measured (hosts renamed): the two dead
+  // accounts, two in another language (one silent), the silent Spanish one, then fv, tre and nex. xiq's auth 0 starts fv,
+  // which answers 739 ms later.
+  const real = world([
+    { id: "cap", host: "cap.example", flag: "🇲🇽", does: "dead", ms: 1053 },
+    { id: "xiq", host: "xiq.example", flag: "🇲🇽", does: "dead", ms: 883 },
+    { id: "znn", host: "znn.example", flag: "🌐", does: "ok", ms: 483 },
+    { id: "zee", host: "zee.example", flag: "🌐", does: "hang" },
+    { id: "kri", host: "kri.example", flag: "🇪🇸", does: "hang" },
+    { id: "fv", host: "fv.example", flag: "🇪🇸", does: "ok", ms: 739 },
+    { id: "tre", host: "tre.example", flag: "🇪🇸", does: "ok", ms: 636 },
+    { id: "nex", host: "nex.example", flag: "🇲🇽", does: "ok", ms: 563 },
+  ]);
+  const sr = await screenOf(real);
+  const heldReal = await sr.tick();
+  assert.equal(real.chosenId(), "fv");
+  assert.equal(real.srvs().okAt - sr.last.t0, BOOT + 883 + 739, "picked 2.2 s into the tick");
+  assert.deepEqual(real.probes().map((e) => e.n), ["cap", "xiq", "kri", "fv", "tre"], "Spanish first; nothing in another language");
+  assert.ok(heldReal <= BOOT + 4000 + 50, `the call as Kino holds it: ${heldReal} ms`);
+  assert.ok((await sr.view()).includes("Estrenos del feed"));
 });
 
 test("hanging accounts: each probe ends by its own 4 s and none outlives the race's 9 s; the 6th account still wins", async () => {
@@ -296,8 +317,27 @@ test("one probe per host at a time: the next account of a busy host waits; a hos
   const s2 = await screenOf(one);
   await s2.tick();
   const race = one.probes().filter((e) => e.t - s2.last.t0 < BOOT + 4000);
-  assert.deepEqual(race.map((e) => e.n), ["s1", "t1"], "s2 waited for its host, then the host was skipped");
+  assert.deepEqual(race.map((e) => e.n), ["s1", "t1"], "s2 waited for its host");
+  // Had the race not skipped the host, s2 would have started there when s1 timed out (with the race's 4 s) and won it.
+  const s2probes = one.probes().filter((e) => e.n === "s2");
+  assert.equal(s2probes.length, 1);
+  assert.ok(s2probes[0].timeoutMs > 4000, `s2's only probe is the health check's (${s2probes[0].timeoutMs} ms), not the race's`);
+  assert.ok(one.store.get("health:v1"), "the health check ran in the same tick");
   assert.equal(one.chosenId(), "s2", "found by the health check, picked automatically");
+});
+
+test("a probe that starts late in the race gets only what is left of its 9 s; the race never outlives it", async () => {
+  const dead = (id) => ({ id, host: `${id}.example`, flag: "🇪🇸", does: "dead", ms: 2000 });
+  const hang = (id) => ({ id, host: `${id}.example`, flag: "🇪🇸", does: "hang" });
+  const w = world([dead("d1"), hang("h1"), hang("h2"), dead("d2"), dead("d3"), hang("h3"), hang("h4"), hang("h5")]);
+  const s = await screenOf(w);
+  const held = await s.tick();
+  // d1, d2, d3 free one slot every 2 s; h5 starts at 600 + 6000, with 3 s left of the race (600 + 9000).
+  assert.equal(w.probe("h5").t - s.last.t0, BOOT + 6000);
+  assert.equal(w.probe("h5").timeoutMs, 3000, "clipped to the race's deadline");
+  for (const e of w.probes()) assert.ok(e.end - s.last.t0 <= BOOT + 9000, `${e.n} ended at ${e.end - s.last.t0} ms`);
+  assert.ok(held <= BOOT + 9000, `the race's tick: ${held} ms`);
+  assert.equal(w.chosenId(), null);
 });
 
 test("a dead account answering first is remembered dead and never chosen; a late good answer never moves the pick", async () => {
@@ -325,6 +365,22 @@ test("an account in another language never wins while a Spanish one is in flight
   await s.tick();
   assert.deepEqual(w.probes().map((e) => e.n).sort(), ["m1", "u1"], "a free slot takes the next account in the order");
   assert.equal(w.chosenId(), "m1", "u1 answered first but waited for m1");
+
+  // The Spanish accounts sit on two hosts, so the third slot takes the account in another language, which answers first. The
+  // Spanish accounts left still race as their hosts free up, and the one that answers well wins.
+  const w3 = world([
+    { id: "a1", host: "a.example", flag: "🇪🇸", does: "dead", ms: 1000 },
+    { id: "b1", host: "b.example", flag: "🇪🇸", does: "dead", ms: 1000 },
+    { id: "a2", host: "a.example", flag: "🇪🇸", does: "dead", ms: 1000 },
+    { id: "b2", host: "b.example", flag: "🇪🇸", does: "dead", ms: 1000 },
+    { id: "a3", host: "a.example", flag: "🇪🇸", does: "ok", ms: 800 },
+    { id: "n1", host: "n.example", flag: "🇺🇸", does: "ok", ms: 300 },
+  ]);
+  const s3 = await screenOf(w3);
+  await s3.tick();
+  assert.deepEqual(w3.probes().map((e) => e.n), ["a1", "b1", "n1", "a2", "b2", "a3"], "no other account in another language started");
+  assert.equal(w3.chosenId(), "a3", "a Spanish account left untried never loses to one in another language");
+  assert.equal(Math.max(...w3.peak.values()), 1);
 
   const w2 = world([
     { id: "m1", host: "m1.example", flag: "🇲🇽", does: "dead", ms: 1500 },

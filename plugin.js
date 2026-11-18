@@ -3421,14 +3421,16 @@ async function raceFirstServer(opts = {}) {
       over = true;
       done(out);
     };
+    const esFlying = () => [...flying.values()].some((x) => x.es);
     const step2 = () => {
       if (over) return;
-      if (best && (best.it.es || ![...flying.values()].some((x) => x.es))) return finish(takePick(st, best.it, best.data));
-      while (!best && !spent && flying.size < RACE_PARALLEL && sent < RACE_MAX_PROBES && end - Date.now() >= RACE_MIN_MS) {
-        const k = queue.findIndex((x) => !flying.has(hostname(x)) && !silent.has(hostname(x)));
+      if (best && best.it.es) return finish(takePick(st, best.it, best.data));
+      while (!spent && flying.size < RACE_PARALLEL && sent < RACE_MAX_PROBES && end - Date.now() >= RACE_MIN_MS) {
+        const k = queue.findIndex((x) => (!best || x.es) && !flying.has(hostname(x)) && !silent.has(hostname(x)));
         if (k < 0) break;
         start(queue.splice(k, 1)[0]);
       }
+      if (best && !esFlying()) return finish(takePick(st, best.it, best.data));
       if (!flying.size) finish({ ok: false });
     };
     const start = (it) => {
