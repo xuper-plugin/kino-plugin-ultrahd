@@ -13,7 +13,7 @@ import * as sharedCat from "../src/catalog.js";
 const H = 3600000;
 const realNow = Date.now;
 test.afterEach(() => { Date.now = realNow; });
-const { seal, withCrypto } = sealer();
+const { sealV2: seal, withCrypto } = sealer();
 
 // hosts: [{ id, does: "ok" | "hang" | "dead", ms }]; each its own host. feeds: serve the account's home and live feeds.
 // The screen's catalog module is shared by every test of this file (its memory of who answered lately too): each test
@@ -31,7 +31,7 @@ function world(hosts, { storage = {}, feeds = false, active = 0 } = {}) {
     if (u.hostname === "raw.githubusercontent.com") {
       const e = { n: "github", path: u.pathname, t: net.now() };
       log.push(e);
-      const m = /\/(home|live)\/([^/.]+)\.enc\.json$/.exec(u.pathname);
+      const m = /\/data\/(home|live)\/([^/.]+)\.v2\.enc\.json$/.exec(u.pathname);
       const key = m && m[2];
       if (feeds && m && m[1] === "home") return track(e, net.request(250).then(() => res(200, seal({ v: 1, serverKey: key, at: net.now() - H, lang: "es", langs: ["es"], slides: [], rows: [{ id: "r1", title: "Del feed", items: [{ id: "m1", ref: "vod:1", title: "Uno" }] }] }))));
       if (feeds && m && m[1] === "live") return track(e, net.request(250).then(() => res(200, seal({ v: 1, serverKey: key, at: net.now() - H, rails: [{ id: "lcat-1", title: "Deportes", items: [{ id: "live-1", ref: "live:1", title: "Canal" }] }] }))));

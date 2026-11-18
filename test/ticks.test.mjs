@@ -13,7 +13,7 @@ const H = 3600000;
 const RENDER_MS = 80;
 const realNow = Date.now;
 test.afterEach(() => { Date.now = realNow; });
-const { seal, withCrypto } = sealer();
+const { sealV2, withCrypto } = sealer();
 
 const R1 = "20261110T153911Z";
 const R2 = "20261117T153911Z";
@@ -40,8 +40,8 @@ function world({ prefix, feed = true, delta = 0, healthAge = H, recent = [] }) {
         if (u.pathname.includes("delta-")) return track(e, net.request(300).then(() => res(200, deltaFile)));
         return track(e, net.request(150).then(() => res(404, "")));
       }
-      const m = /\/home\/([^/.]+)\.enc\.json$/.exec(u.pathname);
-      if (feed && m && m[1] === KEY) return track(e, net.request(250).then(() => res(200, seal({ v: 1, serverKey: KEY, at: net.now() - 2 * H, lang: "es", langs: ["es"], slides: [], rows: [{ id: "r1", title: "Fila del feed", items: [{ id: "m1", ref: "vod:1", title: "Uno" }] }] }))));
+      const m = /\/data\/home\/([^/.]+)\.v2\.enc\.json$/.exec(u.pathname);
+      if (feed && m && m[1] === KEY) return track(e, net.request(250).then(() => res(200, sealV2({ v: 1, serverKey: KEY, at: net.now() - 2 * H, lang: "es", langs: ["es"], slides: [], rows: [{ id: "r1", title: "Fila del feed", items: [{ id: "m1", ref: "vod:1", title: "Uno" }] }] }))));
       return track(e, net.request(150).then(() => res(404, "404: Not Found")));
     }
     const a = e.action;

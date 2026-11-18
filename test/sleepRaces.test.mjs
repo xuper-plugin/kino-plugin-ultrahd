@@ -11,7 +11,7 @@ import { keyOf } from "../src/panels.js";
 const H = 3600000;
 const realNow = Date.now;
 test.afterEach(() => { Date.now = realNow; });
-const { seal, withCrypto } = sealer();
+const { sealV2: seal, withCrypto } = sealer();
 
 function world({ prefix, config = {}, panelHangs = false } = {}) {
   const net = virtualNet({ start: Date.UTC(2026, 10, 18, 0) });
@@ -27,7 +27,7 @@ function world({ prefix, config = {}, panelHangs = false } = {}) {
     const e = { host: u.hostname, path: u.pathname, action: param(url, "action"), timeoutMs: init && init.timeoutMs, t: net.now() };
     log.push(e);
     if (u.hostname === "raw.githubusercontent.com") {
-      if (u.pathname.includes(`/home/${KEY}.`)) return hold(net.request(250).then(() => res(200, seal({ v: 1, serverKey: KEY, at: net.now() - H, lang: "es", langs: ["es"], slides: [], rows: [{ id: "r1", title: "Del feed", items: [{ id: "m1", ref: "vod:1", title: "Uno" }] }] }))));
+      if (u.pathname.endsWith(`/data/home/${KEY}.v2.enc.json`)) return hold(net.request(250).then(() => res(200, seal({ v: 1, serverKey: KEY, at: net.now() - H, lang: "es", langs: ["es"], slides: [], rows: [{ id: "r1", title: "Del feed", items: [{ id: "m1", ref: "vod:1", title: "Uno" }] }] }))));
       return hold(net.request(150).then(() => res(404, "")));
     }
     if (panelHangs) return hold(net.request((init && init.timeoutMs) || 15000).then(() => kinoError("timeout", "the request took too long")));

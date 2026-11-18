@@ -18,7 +18,7 @@ const H = 3600000;
 const BOOT = 600; // the bootstrap's answer time in these worlds: the race starts then
 const realNow = Date.now;
 test.afterEach(() => { Date.now = realNow; });
-const { seal, withCrypto } = sealer();
+const { sealV2, withCrypto } = sealer();
 
 const feedOf = (key, at) => ({ v: 1, serverKey: key, at: at - 2 * H, lang: "es", langs: ["es"], slides: [], rows: [{ id: "vod-1", title: "Estrenos del feed", items: [{ id: "m1", ref: "vod:1", title: "Uno" }] }] });
 
@@ -53,10 +53,10 @@ function world(accounts, { storage = {}, feeds = true, bootHangs = false } = {})
       return track(e, net.request(BOOT).then(() => res(200, { ok: true, servers_text: text })));
     }
     if (u.hostname === "raw.githubusercontent.com") {
-      const m = /\/kino-plugin-ultrahd\/data\/home\/([^/.]+)\.enc\.json$/.exec(u.pathname);
+      const m = /\/kino-plugin-ultrahd\/data\/home\/([^/.]+)\.v2\.enc\.json$/.exec(u.pathname);
       const e = { n: "github", feed: m ? m[1] : null, t, timeoutMs: init && init.timeoutMs };
       log.push(e);
-      if (m && feeds) return track(e, net.request(250).then(() => res(200, seal(feedOf(m[1], net.now())))));
+      if (m && feeds) return track(e, net.request(250).then(() => res(200, sealV2(feedOf(m[1], net.now())))));
       if (u.pathname.endsWith("/categories.json")) return track(e, net.request(300).then(() => res(200, INDEX)));
       return track(e, net.request(150).then(() => res(404, "404: Not Found")));
     }

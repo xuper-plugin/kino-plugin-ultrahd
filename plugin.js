@@ -229,6 +229,13 @@ function noteDataMissing() {
   dataMissAt = Date.now();
   put(DATA_MISS_KEY, JSON.stringify({ at: dataMissAt }));
 }
+var canGunzip = () => {
+  try {
+    return typeof kino.crypto.gunzip === "function";
+  } catch (_) {
+    return false;
+  }
+};
 function openBox(text2) {
   let box = null;
   try {
@@ -236,44 +243,49 @@ function openBox(text2) {
   } catch (_) {
     return null;
   }
-  if (!box || typeof box !== "object" || box.v !== 1 || typeof box.iv !== "string" || typeof box.data !== "string") return null;
+  if (!box || typeof box !== "object" || box.v !== 1 && box.v !== 2 || typeof box.iv !== "string" || typeof box.data !== "string") return null;
   try {
-    return JSON.parse(kino.crypto.decrypt("aes-256-gcm", { key: kino.secret("feedKey"), iv: box.iv, ivEncoding: "base64", data: box.data }));
+    const opts = { key: kino.secret("feedKey"), iv: box.iv, ivEncoding: "base64", data: box.data };
+    if (box.v === 1) return JSON.parse(kino.crypto.decrypt("aes-256-gcm", opts));
+    if (!canGunzip()) return null;
+    return JSON.parse(kino.crypto.gunzip(kino.crypto.decrypt("aes-256-gcm", { ...opts, outputEncoding: "base64" })));
   } catch (_) {
     return null;
   }
 }
+var v2Path = (path) => path.replace(/\.enc\.json$/, ".v2.enc.json");
 async function fetchSealed(path, v, accept, until) {
-  const one = async (branch) => {
+  const dataPath = canGunzip() ? v2Path(path) : path;
+  const one = async (branch, file) => {
     const init = { headers: { Accept: "application/json" } };
     if (until) {
       const left = until - Date.now();
       if (left < MIN_REQUEST_MS) return { late: true };
       init.timeoutMs = left;
     }
-    const r = await kino.fetch(`${REPO}${branch}/${path}?v=${v}`, init);
+    const r = await kino.fetch(`${REPO}${branch}/${file}?v=${v}`, init);
     if (!r.ok) {
-      console.log("[dbg] feed: HTTP " + r.status + " " + branch + "/" + path.split("/")[0]);
+      console.log("[dbg] feed: HTTP " + r.status + " " + branch + "/" + file.split("/")[0]);
       return { status: r.status };
     }
     const text2 = r.text();
     const d = openBox(text2);
     if (!d) {
-      console.log("[dbg] feed: NO ABRE " + branch + "/" + path.split("/")[0]);
+      console.log("[dbg] feed: NO ABRE " + branch + "/" + file.split("/")[0]);
       return { status: r.status };
     }
     return { d, kb: Math.round(text2.length / 1024) };
   };
   if (!dataMissing()) {
-    const a = await one(DATA_BRANCH);
+    const a = await one(DATA_BRANCH, dataPath);
     if (a.d) return accept(a.d, a.kb);
     if (a.late) return null;
-    const b2 = await one(MAIN_BRANCH);
+    const b2 = await one(MAIN_BRANCH, path);
     const out = b2.d ? accept(b2.d, b2.kb) : null;
     if (out && a.status === 404) noteDataMissing();
     return out;
   }
-  const b = await one(MAIN_BRANCH);
+  const b = await one(MAIN_BRANCH, path);
   return b.d ? accept(b.d, b.kb) : null;
 }
 function tabOf(t) {

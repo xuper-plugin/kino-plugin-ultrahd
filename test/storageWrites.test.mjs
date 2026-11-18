@@ -14,7 +14,7 @@ let T = Date.UTC(2026, 10, 18, 0);
 const realNow = Date.now;
 test.beforeEach(() => { Date.now = () => T; });
 test.afterEach(() => { Date.now = realNow; });
-const { seal, withCrypto } = sealer();
+const { sealV2: seal, withCrypto } = sealer();
 
 // The store file as Kino writes it: Android's org.json escapes "/" too.
 const kinoFile = (store) => Buffer.byteLength(JSON.stringify(Object.fromEntries(store)).replace(/\//g, "\\/"));
@@ -85,7 +85,7 @@ function world({ prefix }) {
   const feed = seal({ v: 1, serverKey: KEY, at: T - H, lang: "es", langs: ["es"], slides: [], rows: [{ id: "r1", title: "Del feed", items: [{ id: "m1", ref: "vod:1", title: "Uno", poster: "https://image.tmdb.org/t/p/w342/u.jpg" }] }], movies: { slides: [], rows: [{ id: "r2", title: "Pelis", items: [{ id: "m2", ref: "vod:2", title: "Dos" }] }] } });
   const routes = [(url) => {
     const u = new URL(url);
-    if (u.hostname === "raw.githubusercontent.com") return u.pathname.includes(`/home/${KEY}.`) ? res(200, feed) : res(404, "");
+    if (u.hostname === "raw.githubusercontent.com") return u.pathname.endsWith(`/data/home/${KEY}.v2.enc.json`) ? res(200, feed) : res(404, "");
     const a = param(url, "action");
     if (a === "get_vod_categories") return res(200, [{ category_id: "1", category_name: "ACCION" }]);
     if (a === "get_vod_streams") return res(200, [{ stream_id: 5, name: "Cinco", container_extension: "mp4" }]);

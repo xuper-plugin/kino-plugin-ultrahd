@@ -4,9 +4,13 @@
 // kino.secret("feedKey") — solo dentro de Kino; un fork con el código copiado no puede.
 import { put } from "./store.js";
 
-// Where the feeds live. The producers publish the same paths (home/<serverKey>[.<lang>].enc.json, live/<serverKey>.enc.json,
-// same sealed format) to the orphan branch `data`, force-pushed every run with the complete current set and no history, and,
-// while installs older than this reader exist, to `main` too. `data` is read first; `main` only for a file `data` lacks.
+// Where the feeds live. The producers publish the feeds (home/<serverKey>[.<lang>].enc.json, live/<serverKey>.enc.json) to the
+// orphan branch `data`, force-pushed every run with the complete current set and no history, and, while installs older than
+// this reader exist, to `main` too. Feed v2 (this reader): beside each `data` file the producers publish a compressed copy at
+// the same path ending in `.v2.enc.json` instead of `.enc.json`: the same envelope with "v": 2, whose AES-256-GCM plaintext
+// is gzip (mtime 0) of the same UTF-8 JSON (a 223 KB feed is about a third of that). This reader asks `data`'s v2 copy first
+// and `main`'s v1 file only for a feed `data` lacks; a Kino without kino.crypto.gunzip reads as 0.8.6 did (`data` v1, then
+// `main` v1). v1 files are never changed: 0.8.5/0.4.0 read `main` v1, 0.8.6/0.4.1 `data` v1 then `main` v1.
 const REPO = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/";
 const DATA_BRANCH = "data";
 const MAIN_BRANCH = "main";
@@ -35,48 +39,58 @@ function noteDataMissing() {
   put(DATA_MISS_KEY, JSON.stringify({ at: dataMissAt }));
 }
 
+const canGunzip = () => { try { return typeof kino.crypto.gunzip === "function"; } catch (_) { return false; } };
+
 // Abre el sobre sellado { v:1, iv:b64, data:b64 } con el secreto feedKey (AES-256-GCM). null si no abre. Nunca lanza.
+// { v:2, ... }: the plaintext is gzip, opened as bytes (base64) and inflated natively (kino.crypto.gunzip, apiVersion 13).
 function openBox(text) {
   let box = null;
   try { box = JSON.parse(text); } catch (_) { return null; }
-  if (!box || typeof box !== "object" || box.v !== 1 || typeof box.iv !== "string" || typeof box.data !== "string") return null;
+  if (!box || typeof box !== "object" || (box.v !== 1 && box.v !== 2) || typeof box.iv !== "string" || typeof box.data !== "string") return null;
   try {
-    return JSON.parse(kino.crypto.decrypt("aes-256-gcm", { key: kino.secret("feedKey"), iv: box.iv, ivEncoding: "base64", data: box.data }));
+    const opts = { key: kino.secret("feedKey"), iv: box.iv, ivEncoding: "base64", data: box.data };
+    if (box.v === 1) return JSON.parse(kino.crypto.decrypt("aes-256-gcm", opts));
+    if (!canGunzip()) return null;
+    return JSON.parse(kino.crypto.gunzip(kino.crypto.decrypt("aes-256-gcm", { ...opts, outputEncoding: "base64" })));
   } catch (_) { return null; }
 }
 
+// The v2 copy's path beside a v1 file's.
+const v2Path = (path) => path.replace(/\.enc\.json$/, ".v2.enc.json");
+
 /**
- * One sealed feed file at [path], `data` first. [accept] turns the opened content into the result, or null when it does not
- * serve (stale, another server, empty). Only a file `data` lacks (a non-2xx answer, or a body that does not open) is asked
- * from `main`; a network error is not (main sits behind the same host), and content that opened but does not serve is not
- * either (main's copy is never newer). [until]: a deadline in ms since the epoch, or 0 for none.
- * The result, or null. A network error throws.
+ * One sealed feed file at [path] (its v1 path), `data` first: its v2 copy when Kino can inflate it, else its v1 file.
+ * [accept] turns the opened content into the result, or null when it does not serve (stale, another server, empty). Only a
+ * file `data` lacks (a non-2xx answer, or a body that does not open) is asked from `main` (v1); a network error is not (main
+ * sits behind the same host), and content that opened but does not serve is not either (main's copy is never newer).
+ * [until]: a deadline in ms since the epoch, or 0 for none. The result, or null. A network error throws.
  */
 async function fetchSealed(path, v, accept, until) {
-  const one = async (branch) => {
+  const dataPath = canGunzip() ? v2Path(path) : path;
+  const one = async (branch, file) => {
     const init = { headers: { Accept: "application/json" } };
     if (until) {
       const left = until - Date.now();
       if (left < MIN_REQUEST_MS) return { late: true };
       init.timeoutMs = left;
     }
-    const r = await kino.fetch(`${REPO}${branch}/${path}?v=${v}`, init);
-    if (!r.ok) { console.log("[dbg] feed: HTTP " + r.status + " " + branch + "/" + path.split("/")[0]); return { status: r.status }; }
+    const r = await kino.fetch(`${REPO}${branch}/${file}?v=${v}`, init);
+    if (!r.ok) { console.log("[dbg] feed: HTTP " + r.status + " " + branch + "/" + file.split("/")[0]); return { status: r.status }; }
     const text = r.text();
     const d = openBox(text);
-    if (!d) { console.log("[dbg] feed: NO ABRE " + branch + "/" + path.split("/")[0]); return { status: r.status }; }
+    if (!d) { console.log("[dbg] feed: NO ABRE " + branch + "/" + file.split("/")[0]); return { status: r.status }; }
     return { d, kb: Math.round(text.length / 1024) };
   };
   if (!dataMissing()) {
-    const a = await one(DATA_BRANCH);
+    const a = await one(DATA_BRANCH, dataPath);
     if (a.d) return accept(a.d, a.kb);
     if (a.late) return null;
-    const b = await one(MAIN_BRANCH);
+    const b = await one(MAIN_BRANCH, path);
     const out = b.d ? accept(b.d, b.kb) : null;
     if (out && a.status === 404) noteDataMissing();
     return out;
   }
-  const b = await one(MAIN_BRANCH);
+  const b = await one(MAIN_BRANCH, path);
   return b.d ? accept(b.d, b.kb) : null;
 }
 
