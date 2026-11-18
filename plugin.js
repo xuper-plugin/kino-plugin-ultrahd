@@ -1730,7 +1730,7 @@ var say = (key, lang, vars) => {
 };
 
 // src/version.js
-var PLUGIN_VERSION = "0.8.5";
+var PLUGIN_VERSION = "0.8.6";
 
 // src/panels.js
 var PANELS_KEY = "panels:v1";
