@@ -36,6 +36,7 @@ jobs:
 
       - name: Fetch the previous set (data branch)
         run: |
+          set -o pipefail # a failed `git archive` must stop the run, never leave an empty previous set
           set +e
           git ls-remote --exit-code --heads origin "$DATA_BRANCH" > /dev/null 2>&1
           rc=$?
@@ -58,7 +59,10 @@ jobs:
           FEED_KEY: ${{ secrets.FEED_KEY }}
         run: node scripts/gen-home.mjs --out "$RUNNER_TEMP/feeds" --prev "$PREV" --main . --main-plan "$RUNNER_TEMP/main-plan.txt"
 
+      # Only a run of main's own workflow publishes. A run dispatched on another branch is a dry run: its rebase-and-push to
+      # main below would otherwise land that branch's unreleased commits on main.
       - name: Publish the complete set on the data branch
+        if: github.ref == 'refs/heads/main'
         env:
           TOKEN: ${{ github.token }}
         run: |
@@ -81,6 +85,7 @@ jobs:
       # Runs only after `data` was published, so `main` never holds a copy newer than `data`'s (the plugin asks `main` only
       # for a file `data` lacks, never for a newer one).
       - name: Keep main's copy for installed versions that read only main
+        if: github.ref == 'refs/heads/main'
         run: |
           while read -r op path; do
             case "$path" in

@@ -220,7 +220,13 @@ let ok = 0, empty = 0, fail = 0;
 const builtKeys = new Set();
 const written = new Map(); // relative path -> the `at` sealed in it, for each feed this run wrote
 const superseded = new Set(); // paths that no longer apply: a Spanish variant the account does not have (or that is its default)
+// api() fails over to another account when one request fails, so a phase can end on another account than the one it began
+// on: what it built then carries that account's serverKey, and the readers reject it under this key's name. Such a result is
+// never published (the previous set's copy is carried forward instead) and the account's later phases are skipped, since
+// they would build for the other account.
+const moved = (key) => cat.serverKey() !== key;
 const put = (path, obj) => {
+  if (!obj || obj.serverKey !== feedSet.keyOfPath(path)) throw new Error("not published: " + path + " was built for another account");
   const enc = seal(obj);
   writeFileSync(join(OUT, path), enc);
   written.set(path, obj.at);
@@ -239,31 +245,37 @@ for (const i of order) {
     let spent = phase();
     const home = await buildServer();
     if (!home) { console.log(`#${i + 1} ${key} (${ms(t0)} ms): sin contenido (${spent()})`); empty++; continue; }
+    if (moved(key) || home.serverKey !== key) { console.log(`#${i + 1} ${key} (${ms(t0)} ms): the build moved to another account midway; not published, the previous copy stays (${spent()})`); fail++; continue; }
     const enc = put(`home/${key}.enc.json`, home);
     const homeSpent = spent();
+    let away = false; // a later phase moved to another account: the rest of this account is skipped
     // Un feed por variante de español: es-419 (Latino) y es-ES (España) tienen su propio catálogo; el feed por defecto es "es"
     // (unión de ambos). El plugin pide <key>.<lang>.enc.json según el idioma elegido y cae al por defecto si no existe.
     for (const L of PER_LANG) {
       const variant = `home/${key}.${L}.enc.json`;
       if (L === home.lang || !(home.langs || []).includes(L)) { superseded.add(variant); continue; }
+      if (away) continue;
       spent = phase();
       try {
         const h = await buildServer(L);
-        if (h && h.lang === L && h.rows.length) {
+        if (moved(key)) { away = true; console.log(`   ${L}: moved to another account midway; not published (${spent()})`); }
+        else if (h && h.lang === L && h.rows.length) {
           const e = put(variant, h);
           console.log(`   ${L}: ${h.rows.length} filas, ${Math.round(e.length / 1024)} KB -> ${key}.${L}.enc.json (${spent()})`);
         } else console.log(`   ${L}: sin contenido propio (${spent()})`);
-      } catch (e) { console.log(`   ${L}: error ${feedSet.cleanError(e)} (${spent()})`); }
+      } catch (e) { away = moved(key); console.log(`   ${L}: error ${feedSet.cleanError(e)} (${spent()})`); }
     }
     console.log(`#${i + 1} ${key} (${ms(t0)} ms): ${home.rows.length} filas, ${home.slides.length} slides, ${Math.round(enc.length / 1024)} KB -> ${key}.enc.json (${homeSpent})`);
     ok++;
     // En vivo: ~1x/día. Si el archivo es reciente, se conserva (pasa tal cual al conjunto nuevo); si no, se rehornea.
-    if (liveIsFresh(key)) { console.log(`   en vivo: reciente, se conserva`); }
+    if (away) console.log(`   en vivo: skipped (the build moved to another account)`);
+    else if (liveIsFresh(key)) { console.log(`   en vivo: reciente, se conserva`); }
     else {
       spent = phase();
       try {
         const live = await buildLive();
-        if (live) { put(`live/${key}.enc.json`, live); console.log(`   en vivo: ${live.rails.length} filas -> live/${key}.enc.json (${spent()})`); }
+        if (moved(key)) console.log(`   en vivo: moved to another account midway; not published (${spent()})`);
+        else if (live) { put(`live/${key}.enc.json`, live); console.log(`   en vivo: ${live.rails.length} filas -> live/${key}.enc.json (${spent()})`); }
         else console.log(`   en vivo: sin canales (${spent()})`);
       } catch (e) { console.log(`   en vivo: error ${feedSet.cleanError(e)} (${spent()})`); }
     }
