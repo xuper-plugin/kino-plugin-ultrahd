@@ -371,16 +371,21 @@ async function autoPick(opts) {
 }
 
 // With the feed painted the servers are not probed, except once a day, last, to keep the panel map and the index's server
-// fresh (the live failover and index results rely on them).
-const dailyHealth = () => (cat.panelsStale() ? ["health"] : []);
+// fresh (the live failover and index results rely on them): `panels`, the full check (category lists).
+const dailyHealth = () => (cat.panelsStale() ? ["panels"] : []);
+// The screen's checks run in short steps (cat.healthStep), the full kind while the panel map is stale (it serves both).
+const checkKind = (unit) => (unit === "panels" || cat.panelsStale() ? "full" : "live");
 
 function unitsFor(tab, lang) {
   // First run: the race picks the server (Spanish first); if it found none, the health check, the automatic pick over the
   // accounts that answered it, and only then the manual picker.
   if (!serverChosen()) return raceTried ? ["health", "autopick", "pick"] : ["race"];
-  // Right after the race the picked server has just answered: the health check goes after the content, not before it.
-  const hBefore = pickedNow ? [] : ["health"];
-  const hAfter = pickedNow ? ["health"] : [];
+  // Loading from the panel: first `hcheck`, done as soon as the active server is known to answer (it answered in the last
+  // minutes, or a fresh check found it online; else one quick step probes it and the chosen one). The rest of the check
+  // (`health`, which accounts answer, every 6 h) and the daily panel map come after the content. Right after the race the
+  // picked server has just answered: nothing before the content.
+  const hBefore = pickedNow ? [] : ["hcheck"];
+  const hAfter = ["health", ...dailyHealth()];
   if (tab === "home") {
     // El Home carga fila por fila: primero el plan (categorías ordenadas), luego UNA unidad por fila (`hrail:...`), que aparece
     // apenas carga; país, recientes e índice van al final. Hasta tener el plan, solo health + plan.
@@ -403,8 +408,9 @@ function unitsFor(tab, lang) {
     return [...hBefore, `tab:${tab}:${lang}`, ...hAfter];
   }
   // En vivo: primero el feed pre-armado (1x/día); si está, la primera pantalla sale al instante. Cambiar de categoría es en vivo.
+  // With the feed no check runs on this tab but the daily panel map (it used to run the whole check every 30 min here).
   if (tab === "live") {
-    if (liveFeedData) return ["lfeed", "health"];
+    if (liveFeedData) return ["lfeed", ...dailyHealth()];
     if (!liveFeedTried) return ["lfeed", ...hBefore, "tab:live", ...hAfter];
     return [...hBefore, "tab:live", ...hAfter];
   }
@@ -422,6 +428,8 @@ function isDone(unit) {
   if (unit === "recent") return recentCards !== null;
   if (unit === "index") return !indexNeeded();
   if (unit === "health") return cat.healthReady();
+  if (unit === "hcheck") return cat.activeConfirmed();
+  if (unit === "panels") return !cat.panelsStale();
   if (unit === "race") return raceTried;
   if (unit === "autopick") return autoPickTried;
   if (unit === "pick") return pickServers !== null;
@@ -457,7 +465,13 @@ async function runUnit(unit, opts) {
     console.log("[dbg] index step -> " + out);
     if (out === "error" || out === "wait") throw new Error("índice: " + out);
   }
-  else if (unit === "health") { const n = await cat.healthCheck(until ? { until: until - FIRST_FEED_RESERVE_MS } : {}); pickedNow = false; console.log("[dbg] health online=" + n); }
+  else if (unit === "health" && !serverChosen()) { const n = await cat.healthCheck(until ? { until: until - FIRST_FEED_RESERVE_MS } : {}); console.log("[dbg] health online=" + n); }
+  else if (unit === "health" || unit === "hcheck" || unit === "panels") {
+    const out = await cat.healthStep({ kind: checkKind(unit) });
+    console.log("[dbg] " + unit + " step -> " + out);
+    if (out === "failed") throw new Error("health");
+    if (out === "done") pickedNow = false;
+  }
   else if (unit === "race") await race(opts);
   else if (unit === "autopick") await autoPick(opts);
   else if (unit === "pick") pickServers = await cat.serverList();
@@ -546,7 +560,7 @@ function mainView(ctx) {
   // real del servidor ocurre antes de reproducir (resolve). Solo se muestra "Verificando…" cuando no hay nada que pintar.
   // Right after the first run's race picked the server (pickedNow) it already answered: the Home's loading layout, not
   // "Verificando…", while its rows load.
-  if (!data && !cat.healthReady() && !pickedNow && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
+  if (!data && !pickedNow && unitsFor(tab, lang).includes("hcheck") && !isDone("hcheck") && !(state.failed && state.failed.hcheck)) return verifyingView({ device: ctx.device });
   const failed = unitsFor(tab, lang).some((u) => state.failed && state.failed[u]);
   return browseView({
     tab, data, recent: recentCards || [], country: countryCards || [],

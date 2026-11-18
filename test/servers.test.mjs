@@ -186,8 +186,8 @@ test("the picker and the first-run auto-pick never offer a dead account", async 
   assert.ok(!list.items.some((x) => x.host === "home.example"));
   assert.ok(!list.items.some((x) => x.host === "off.example"), "offline after a fresh check");
   assert.equal(w.log.filter((e) => e.n === "home").length, 1);
-  // 40 min later the health result is stale (every server listed again) but the dead account still is not.
-  advance(40 * 60000);
+  // 6 h later the health result is stale (every server listed again) but the dead account still is not.
+  advance(6 * 60 * 60000 + 60000);
   const later = await cat.serverList();
   assert.ok(later.items.some((x) => x.host === "off.example"));
   assert.ok(!later.items.some((x) => x.host === "home.example"));
@@ -339,7 +339,7 @@ test("first run: the auto-pick races the Spanish accounts before any health chec
   const race = w.log.filter((e) => e.action);
   // home, a1 and a2 start together; home's auth 0 starts c, the next Spanish account. No health check (n and off untouched).
   assert.deepEqual(race.map((e) => e.n), ["home", "a1", "a2", "c"], "the Spanish accounts raced, a dead one replaced at once");
-  assert.ok(race.every((e) => e.timeoutMs === 4000));
+  assert.ok(race.every((e) => e.timeoutMs === 2500));
   assert.ok(isDead(srvOf("home"), T), "home answered auth 0: remembered dead");
   assert.ok(["a1", "a2", "c"].includes(activeName(w)), "the pick is an account that answered well");
   assert.equal(srvs(w).chosen, keyOf(srvOf(activeName(w))));

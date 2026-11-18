@@ -1,7 +1,7 @@
 // The first open on a fresh install, in Kino's network in virtual time. Kino holds a call until every request it started
 // settles, so `tick` here waits for them too and reports that held time (what the person waits for), as on a device.
 // The race: the accounts of the picker's order (Spanish first), 3 probes in flight, at most one per host, a failed one
-// replaced at once by the next, each with 4 s clipped to the race's 9 s; the first good answer is chosen and its feed paints
+// replaced at once by the next, each with 2.5 s clipped to the race's 9 s; the first good answer is chosen and its feed paints
 // in the same tick; the full health check runs only after the first content. A dead account never wins, a late answer never
 // moves the pick, an account in another language never wins while a Spanish one is in flight or left to race. When the race finds none, the
 // health check and the automatic pick over the accounts that answered it, in one tick when it fits; the manual picker only
@@ -119,9 +119,9 @@ test("first run: the race picks in the first tick and the feed paints right afte
   const s = await screenOf(w);
   assert.ok((await s.view()).includes('"verifying"'), "Verificando before the first tick");
   const held = await s.tick();
-  // The race: 3 accounts at once, 4 s each; nothing failed before m2 answered, so nobody else started; no health check.
+  // The race: 3 accounts at once, 2.5 s each; nothing failed before m2 answered, so nobody else started; no health check.
   assert.deepEqual(w.probes().map((e) => e.n).sort(), ["e1", "m1", "m2"]);
-  assert.ok(w.probes().every((e) => e.timeoutMs === 4000 && e.t === w.probes()[0].t), "all three start together, 4 s each");
+  assert.ok(w.probes().every((e) => e.timeoutMs === 2500 && e.t === w.probes()[0].t), "all three start together, 2.5 s each");
   assert.equal(w.chosenId(), "m2", "the first good answer wins");
   assert.equal(w.store.get("srvChosen:v1"), "1");
   // The picked server's feed came in the same tick, and the screen shows it.
@@ -129,8 +129,8 @@ test("first run: the race picks in the first tick and the feed paints right afte
   assert.deepEqual(feedReq.map((e) => e.feed), [w.keyFor("m2")]);
   assert.ok(feedReq[0].timeoutMs > 0 && feedReq[0].timeoutMs <= 16000, "the feed has a deadline inside the call");
   assert.ok(s.last.answered <= BOOT + 700 + 250 + 50, `the plugin answered after ${s.last.answered} ms (bootstrap 600 + race 700 + feed 250)`);
-  // Kino holds the call until e1's probe ends: its own 4 s timeout, never more.
-  assert.ok(held <= BOOT + 4000 + 50, `the call as Kino holds it: ${held} ms`);
+  // Kino holds the call until e1's probe ends: its own 2.5 s timeout, never more.
+  assert.ok(held <= BOOT + 2500 + 50, `the call as Kino holds it: ${held} ms`);
   const v = await s.view();
   assert.ok(v.includes("Estrenos del feed") && !v.includes('"verifying"'), "the feed paints after the first tick");
   // The full health check runs later (the daily one, last), and keeps the pick.
@@ -143,7 +143,7 @@ test("first run: the race picks in the first tick and the feed paints right afte
 });
 
 // The Redmi run of 2026-11-17 (D1): the top Spanish accounts were capitanhero.com (auth 0 in ~1.05 s), xiques96sa.site
-// (auth 0 in ~0.88 s) and line.krishkaz.com (connect timeout at 4 s); a fixed race of those 3 found nothing, and the person
+// (auth 0 in ~0.88 s) and line.krishkaz.com (silent: it held the first tick until the race's own timeout); a fixed race of those 3 found nothing, and the person
 // got the manual picker at ~57 s. nexotvplus.com, the next one, answers well.
 test("D1: two dead accounts and a silent host first; the race replaces them at once and picks the good account in ~3 s", async () => {
   const w = world([
@@ -167,9 +167,11 @@ test("D1: two dead accounts and a silent host first; the race replaces them at o
   assert.deepEqual(w.probes().map((e) => e.n).sort(), ["cap", "fv", "kri", "nex", "xiq"], "no other account was needed");
   assert.ok(isDead(w.srvOf({ id: "cap", host: "cap.example" }), w.net.now()) && isDead(w.srvOf({ id: "xiq", host: "xiq.example" }), w.net.now()), "the dead accounts are remembered dead, as always");
   assert.equal(Math.max(...w.peak.values()), 1, "one probe per host at a time");
-  // The feed came in the same tick; the call ends when kri's probe times out (its own 4 s), at 4.6 s.
+  // The feed came in the same tick; kri's probe timed out (its own 2.5 s) at 3.1 s, before the feed was in, so the call
+  // ends with fv's late answer at 3.65 s (with 4 s it ended at 4.6 s, 1.4 s after the content was ready).
   assert.deepEqual(w.log.filter((e) => e.feed).map((e) => e.feed), [w.keyFor("nex")]);
-  assert.ok(held <= BOOT + 4000 + 50, `the call as Kino holds it: ${held} ms`);
+  assert.equal(w.probe("kri").end - t0, BOOT + 2500, "the silent host's probe ends at its 2.5 s");
+  assert.ok(held <= BOOT + 1050 + 2000 + 50, `the call as Kino holds it: ${held} ms`);
   const v = await s.view();
   assert.ok(v.includes("Estrenos del feed") && !v.includes('"verifying"') && !v.includes('"fpPage"'), "content after the first tick, never the picker");
 
@@ -191,27 +193,27 @@ test("D1: two dead accounts and a silent host first; the race replaces them at o
   assert.equal(real.chosenId(), "fv");
   assert.equal(real.srvs().okAt - sr.last.t0, BOOT + 883 + 739, "picked 2.2 s into the tick");
   assert.deepEqual(real.probes().map((e) => e.n), ["cap", "xiq", "kri", "fv", "tre"], "Spanish first; nothing in another language");
-  assert.ok(heldReal <= BOOT + 4000 + 50, `the call as Kino holds it: ${heldReal} ms`);
+  assert.ok(heldReal <= BOOT + 2500 + 50, `the call as Kino holds it: ${heldReal} ms (4 s before: ${BOOT + 4000})`);
   assert.ok((await sr.view()).includes("Estrenos del feed"));
 });
 
-test("hanging accounts: each probe ends by its own 4 s and none outlives the race's 9 s; the 6th account still wins", async () => {
+test("hanging accounts: each probe ends by its own 2.5 s and none outlives the race's 9 s; the 6th account still wins", async () => {
   const hang = (n) => ({ id: "h" + n, host: `h${n}.example`, flag: "🇪🇸", does: "hang" });
   const w = world([hang(1), hang(2), hang(3), hang(4), hang(5), { id: "g6", host: "g6.example", flag: "🇲🇽", does: "ok", ms: 1000 }]);
   const s = await screenOf(w);
   const held = await s.tick();
   assert.equal(w.chosenId(), "g6", "the second wave finds it");
-  for (const e of w.probes()) assert.ok(e.end - e.t <= 4000, `${e.n} held ${e.end - e.t} ms`);
-  assert.equal(w.srvs().okAt - s.last.t0, BOOT + 4000 + 1000);
-  assert.ok(held <= BOOT + 4000 + 4000 + 50, `held until the second wave's hangs time out: ${held} ms`);
+  for (const e of w.probes()) assert.ok(e.end - e.t <= 2500, `${e.n} held ${e.end - e.t} ms`);
+  assert.equal(w.srvs().okAt - s.last.t0, BOOT + 2500 + 1000);
+  assert.ok(held <= BOOT + 2500 + 2500 + 50, `held until the second wave's hangs time out: ${held} ms`);
   assert.ok((await s.view()).includes("Estrenos del feed"));
 
-  // Nine hanging accounts: two waves, and no third one (1 s left of the race's 9 s); every probe ends by the race's deadline.
+  // Nine hanging accounts: three waves (two with 4 s); every probe ends by the race's deadline.
   const w2 = world([1, 2, 3, 4, 5, 6, 7, 8, 9].map(hang));
   const s2 = await screenOf(w2);
   const held2 = await s2.tick();
-  assert.equal(w2.probes().length, 6);
-  for (const e of w2.probes()) assert.ok(e.end - e.t <= 4000 && e.end - s2.last.t0 <= BOOT + 9000, `${e.n}: ${e.t}-${e.end}`);
+  assert.equal(w2.probes().length, 9);
+  for (const e of w2.probes()) assert.ok(e.end - e.t <= 2500 && e.end - s2.last.t0 <= BOOT + 9000, `${e.n}: ${e.t}-${e.end}`);
   assert.ok(held2 <= BOOT + 9000, `the race's tick: ${held2} ms`);
   assert.equal(w2.chosenId(), null);
 });
@@ -221,12 +223,12 @@ test("the race finds none, a slow account answers the health check: picked autom
     { id: "d1", host: "d1.example", flag: "🇪🇸", does: "dead", ms: 1000 },
     { id: "d2", host: "d2.example", flag: "🇲🇽", does: "dead", ms: 900 },
     { id: "h1", host: "h1.example", flag: "🇪🇸", does: "hang" },
-    { id: "s1", host: "s1.example", flag: "🇪🇸", does: "ok", ms: 5000 }, // slower than the race's 4 s
+    { id: "s1", host: "s1.example", flag: "🇪🇸", does: "ok", ms: 5000 }, // slower than the race's 2.5 s
   ]);
   const s = await screenOf(w);
   const held = await s.tick();
-  // Race: d1, d2, h1 at 600; d2's auth 0 starts s1 at 1500, which times out at 5500: no winner, 10.5 s left of the tick's
-  // 16 s. The health check follows in the same tick (6 s probes, 4 s kept for the feed), s1 answers it, the pick takes it.
+  // Race: d1, d2, h1 at 600; d2's auth 0 starts s1 at 1500, which times out at 4000: no winner, 12 s left of the tick's
+  // 16 s. The health check follows in the same tick (7.5 s probes, 4 s kept for the feed), s1 answers it, the pick takes it.
   assert.equal(w.chosenId(), "s1");
   assert.equal(w.store.get("srvChosen:v1"), "1");
   assert.equal(w.probes().filter((e) => e.n === "s1").length, 2, "the race's probe and the health check's");
@@ -243,7 +245,7 @@ test("a slow network (every account answers in 5 s): the race runs out its 9 s; 
   const s = await screenOf(w);
   const first = await s.tick();
   assert.equal(w.chosenId(), null);
-  assert.equal(w.probes().length, 6, "two waves of 3");
+  assert.equal(w.probes().length, 7, "three waves (3, 3, 1): every account got its 2.5 s");
   assert.ok(first <= BOOT + 9000, `the race's tick: ${first} ms`);
   assert.ok(!w.store.get("health:v1"), "no time left for the health check in the race's tick");
   assert.ok((await s.view()).includes('"verifying"'));
@@ -316,25 +318,26 @@ test("one probe per host at a time: the next account of a busy host waits; a hos
   ]);
   const s2 = await screenOf(one);
   await s2.tick();
-  const race = one.probes().filter((e) => e.t - s2.last.t0 < BOOT + 4000);
+  const race = one.probes().filter((e) => e.t - s2.last.t0 < BOOT + 2500);
   assert.deepEqual(race.map((e) => e.n), ["s1", "t1"], "s2 waited for its host");
-  // Had the race not skipped the host, s2 would have started there when s1 timed out (with the race's 4 s) and won it.
+  // Had the race not skipped the host, s2 would have started there when s1 timed out (with the race's 2.5 s) and won it.
   const s2probes = one.probes().filter((e) => e.n === "s2");
   assert.equal(s2probes.length, 1);
-  assert.ok(s2probes[0].timeoutMs > 4000, `s2's only probe is the health check's (${s2probes[0].timeoutMs} ms), not the race's`);
+  assert.ok(s2probes[0].timeoutMs > 2500, `s2's only probe is the health check's (${s2probes[0].timeoutMs} ms), not the race's`);
   assert.ok(one.store.get("health:v1"), "the health check ran in the same tick");
   assert.equal(one.chosenId(), "s2", "found by the health check, picked automatically");
 });
 
 test("a probe that starts late in the race gets only what is left of its 9 s; the race never outlives it", async () => {
-  const dead = (id) => ({ id, host: `${id}.example`, flag: "🇪🇸", does: "dead", ms: 2000 });
+  const dead = (id) => ({ id, host: `${id}.example`, flag: "🇪🇸", does: "dead", ms: 2400 });
   const hang = (id) => ({ id, host: `${id}.example`, flag: "🇪🇸", does: "hang" });
-  const w = world([dead("d1"), hang("h1"), hang("h2"), dead("d2"), dead("d3"), hang("h3"), hang("h4"), hang("h5")]);
+  const w = world([dead("d1"), hang("h1"), hang("h2"), dead("d2"), dead("d3"), dead("d4"), hang("h3"), hang("h4"), hang("h5"), hang("h6")]);
   const s = await screenOf(w);
   const held = await s.tick();
-  // d1, d2, d3 free one slot every 2 s; h5 starts at 600 + 6000, with 3 s left of the race (600 + 9000).
-  assert.equal(w.probe("h5").t - s.last.t0, BOOT + 6000);
-  assert.equal(w.probe("h5").timeoutMs, 3000, "clipped to the race's deadline");
+  // d1-d4 free their slot after 2.4 s, h1-h3 after 2.5 s; h6 starts at 600 + 7300 (when h3 times out), with 1.7 s left of
+  // the race (600 + 9000).
+  assert.equal(w.probe("h6").t - s.last.t0, BOOT + 7300);
+  assert.equal(w.probe("h6").timeoutMs, 1700, "clipped to the race's deadline");
   for (const e of w.probes()) assert.ok(e.end - s.last.t0 <= BOOT + 9000, `${e.n} ended at ${e.end - s.last.t0} ms`);
   assert.ok(held <= BOOT + 9000, `the race's tick: ${held} ms`);
   assert.equal(w.chosenId(), null);

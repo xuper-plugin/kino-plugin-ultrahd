@@ -3120,8 +3120,9 @@ var hostnameOf2 = (srv) => {
     return "";
   }
 };
+var aliveAt = /* @__PURE__ */ new Map();
 async function callServer(srv, action2, extra, opts) {
-  const params = new URLSearchParams({ username: srv.username, password: srv.password, action: action2, ...extra });
+  const params = new URLSearchParams({ username: srv.username, password: srv.password, ...action2 ? { action: action2 } : {}, ...extra });
   let r;
   try {
     r = await kino.fetch(`${srv.url}/player_api.php?${params}`, {
@@ -3148,8 +3149,9 @@ async function callServer(srv, action2, extra, opts) {
     noteDead(srv);
     throw Object.assign(new Error("cuenta no v\xE1lida"), { dead: true });
   }
-  if (badAnswer(action2, data)) throw new Error("respuesta inv\xE1lida");
+  if (action2 ? badAnswer(action2, data) : !(data && typeof data === "object" && !Array.isArray(data) && data.user_info)) throw new Error("respuesta inv\xE1lida");
   noteAlive(srv);
+  aliveAt.set(keyOf(srv), Date.now());
   return data;
 }
 function rememberProbeCats(srv, data) {
@@ -3356,7 +3358,7 @@ async function selectServer(i) {
   return { ok: false, host: hostOf(st.list[start]), label: labelOf2(st.list[start]), index: start + 1, total: n };
 }
 var RACE_PARALLEL = 3;
-var RACE_TIMEOUT_MS = 4e3;
+var RACE_TIMEOUT_MS = 2500;
 var RACE_WINDOW_MS = 9e3;
 var RACE_RESERVE_MS = 4e3;
 var RACE_MIN_MS = 1500;
@@ -3479,7 +3481,7 @@ function serverListFresh() {
   return !!(st && Array.isArray(st.list) && st.list.length && st.ts && st.v === SRVS_V && Date.now() - st.ts < CACHE_TTL_MS);
 }
 var HEALTH_KEY = "health:v1";
-var HEALTH_TTL_MS = 30 * 60 * 1e3;
+var HEALTH_TTL_MS = 6 * 60 * 60 * 1e3;
 var HEALTH_TIMEOUT_MS = 1e4;
 var HEALTH_DEADLINE_MS = 15e3;
 var HEALTH_PARALLEL = 6;
@@ -3494,15 +3496,23 @@ function readHealth() {
     return null;
   }
 }
+var HEALTH_EMPTY_TTL_MS = 30 * 60 * 1e3;
 var healthFresh = () => {
   const h = readHealth();
-  return h && Date.now() - h.ts < HEALTH_TTL_MS ? h : null;
+  return h && Date.now() - h.ts < (h.online.length ? HEALTH_TTL_MS : HEALTH_EMPTY_TTL_MS) ? h : null;
 };
 var healthReady = () => !!healthFresh();
 var panelsStale = () => {
   const m = readPanels();
   return !m || Date.now() - (Number(m.at) || 0) > PANELS_STALE_MS;
 };
+var ACTIVE_FRESH_MS = 5 * 60 * 1e3;
+function activeConfirmed() {
+  const k = serverKey();
+  if (!k) return false;
+  const at = aliveAt.get(k);
+  return typeof at === "number" && Date.now() - at < ACTIVE_FRESH_MS || healthReady();
+}
 var FIT_MIN = 0.8;
 var INDEX_NAMES_TIMEOUT_MS = 4e3;
 var sameIndexName = (name, e) => !!name && Array.isArray(e) && normKey(cleanCategoryName(name).title) === normKey(e[0]);
@@ -3593,9 +3603,7 @@ async function healthCheck(opts = {}) {
     const answers = /* @__PURE__ */ new Map();
     const answered = /* @__PURE__ */ new Set();
     const unprobed = /* @__PURE__ */ new Set();
-    const first = new Set([keyOf(list[st.idx]), st.chosen].filter(Boolean));
-    const order = [...list.filter((s) => first.has(keyOf(s))), ...list.filter((s) => !first.has(keyOf(s)))];
-    await pool(order, HEALTH_PARALLEL, async (s) => {
+    await pool(checkOrder(st), HEALTH_PARALLEL, async (s) => {
       if (!usable(s)) return;
       const left = until - Date.now();
       if (left < 1500) {
@@ -3611,31 +3619,7 @@ async function healthCheck(opts = {}) {
       }
     });
     pickAnswers = st.chosen ? null : { at: Date.now(), answers };
-    const online = list.filter((s) => answered.has(s.url)).map((s) => s.url);
-    const now = Date.now();
-    put(HEALTH_KEY, JSON.stringify({ ts: now, online: list.filter((s) => answered.has(s.url) || unprobed.has(s.url)).map((s) => s.url) }));
-    const prev = readPanels();
-    const map = groupPanels(sets, prev, now);
-    const ix = await indexFitsFrom(answers, list, prev && prev.ix, until);
-    if (ix) map.ix = ix;
-    writePanels(map);
-    const ixHome = ix && ix.home ? list.find((s) => keyOf(s) === ix.home) : null;
-    if (ixHome && answers.has(ix.home)) rememberProbeCats(ixHome, answers.get(ix.home));
-    const fresh = readSrvs() || st;
-    const cur = fresh.list && fresh.list[fresh.idx];
-    if (cur && online.length && !online.includes(cur.url)) {
-      const p = panelOf(keyOf(cur), map);
-      const flag = flagOf(cur);
-      const score = (s) => [p && panelOf(keyOf(s), map) === p ? 0 : 1, flagOf(s) === flag ? 0 : 1, priorityOf(s)];
-      const cands = fresh.list.map((s, i) => ({ s, i, sc: score(s) })).filter((x) => online.includes(x.s.url)).sort((a, b) => a.sc[0] - b.sc[0] || a.sc[1] - b.sc[1] || a.sc[2] - b.sc[2] || a.i - b.i);
-      if (cands.length) {
-        fresh.idx = cands[0].i;
-        fresh.ok = true;
-        fresh.okAt = now;
-        writeSrvs(fresh);
-      }
-    }
-    return online.length;
+    return await afterCheck(st, list, { sets, answers, answered, unprobed, until });
   } catch (_) {
     try {
       put(HEALTH_KEY, JSON.stringify({ ts: Date.now(), online: [] }));
@@ -3644,6 +3628,86 @@ async function healthCheck(opts = {}) {
     const prev = readSrvs();
     pickAnswers = prev && prev.chosen ? null : { at: Date.now(), answers: /* @__PURE__ */ new Map() };
     return 0;
+  } finally {
+    healthRunning = false;
+  }
+}
+function checkOrder(st) {
+  const list = st.list || [];
+  const first = new Set([keyOf(list[st.idx]), st.chosen].filter(Boolean));
+  return [...list.filter((s) => first.has(keyOf(s))), ...list.filter((s) => !first.has(keyOf(s)))];
+}
+async function afterCheck(st, list, { sets, answers, answered, unprobed, until }) {
+  const online = list.filter((s) => answered.has(s.url)).map((s) => s.url);
+  const now = Date.now();
+  put(HEALTH_KEY, JSON.stringify({ ts: now, online: list.filter((s) => answered.has(s.url) || unprobed.has(s.url)).map((s) => s.url) }));
+  let map = readPanels();
+  if (sets) {
+    const prev = map;
+    map = groupPanels(sets, prev, now);
+    const ix = await indexFitsFrom(answers, list, prev && prev.ix, until);
+    if (ix) map.ix = ix;
+    writePanels(map);
+    const ixHome = ix && ix.home ? list.find((s) => keyOf(s) === ix.home) : null;
+    if (ixHome && answers.has(ix.home)) rememberProbeCats(ixHome, answers.get(ix.home));
+  }
+  const fresh = readSrvs() || st;
+  const cur = fresh.list && fresh.list[fresh.idx];
+  if (cur && online.length && !online.includes(cur.url)) {
+    const p = panelOf(keyOf(cur), map);
+    const flag = flagOf(cur);
+    const score = (s) => [p && panelOf(keyOf(s), map) === p ? 0 : 1, flagOf(s) === flag ? 0 : 1, priorityOf(s)];
+    const cands = fresh.list.map((s, i) => ({ s, i, sc: score(s) })).filter((x) => online.includes(x.s.url)).sort((a, b) => a.sc[0] - b.sc[0] || a.sc[1] - b.sc[1] || a.sc[2] - b.sc[2] || a.i - b.i);
+    if (cands.length) {
+      fresh.idx = cands[0].i;
+      fresh.ok = true;
+      fresh.okAt = now;
+      writeSrvs(fresh);
+    }
+  }
+  return online.length;
+}
+var LIVE_PROBE_TIMEOUT_MS = 3e3;
+var FULL_PROBE_TIMEOUT_MS = 4e3;
+var STEP_START_MS = 700;
+var ROUND_MAX_MS = 10 * 60 * 1e3;
+var round = null;
+async function healthStep({ kind = "live" } = {}) {
+  if (healthRunning) return "more";
+  healthRunning = true;
+  try {
+    if (!round || Date.now() - round.ts > ROUND_MAX_MS || round.kind !== kind && round.kind !== "full") {
+      const st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS });
+      const order = checkOrder(st).filter((s) => usable(s));
+      const head = new Set([keyOf(st.list[st.idx]), st.chosen].filter(Boolean));
+      round = { kind, ts: Date.now(), st, order, next: 0, head: order.filter((s) => head.has(keyOf(s))).length, sets: /* @__PURE__ */ new Map(), answers: /* @__PURE__ */ new Map(), answered: /* @__PURE__ */ new Set() };
+    }
+    const r = round;
+    const full = r.kind === "full";
+    const stop = r.next === 0 && r.head > 0 ? r.head : r.order.length;
+    const startUntil = Date.now() + STEP_START_MS;
+    await Promise.all(Array.from({ length: HEALTH_PARALLEL }, async () => {
+      while (r.next < stop && Date.now() < startUntil) {
+        const s = r.order[r.next++];
+        try {
+          const data = full ? await callServer(s, PROBE, {}, { timeoutMs: FULL_PROBE_TIMEOUT_MS }) : await callServer(s, null, {}, { timeoutMs: LIVE_PROBE_TIMEOUT_MS });
+          r.answered.add(s.url);
+          if (full) {
+            r.sets.set(keyOf(s), pairHashes(data));
+            r.answers.set(keyOf(s), data);
+          }
+        } catch (_) {
+        }
+      }
+    }));
+    if (r.next < r.order.length) return "more";
+    round = null;
+    const list = r.st.list || [];
+    await afterCheck(r.st, list, { sets: full ? r.sets : null, answers: r.answers, answered: r.answered, unprobed: /* @__PURE__ */ new Set(), until: Date.now() + INDEX_NAMES_TIMEOUT_MS });
+    return "done";
+  } catch (_) {
+    round = null;
+    return "failed";
   } finally {
     healthRunning = false;
   }
@@ -5450,11 +5514,12 @@ async function autoPick(opts) {
     cacheKey = serverKey();
   }
 }
-var dailyHealth = () => panelsStale() ? ["health"] : [];
+var dailyHealth = () => panelsStale() ? ["panels"] : [];
+var checkKind = (unit) => unit === "panels" || panelsStale() ? "full" : "live";
 function unitsFor(tab, lang) {
   if (!serverChosen()) return raceTried ? ["health", "autopick", "pick"] : ["race"];
-  const hBefore = pickedNow ? [] : ["health"];
-  const hAfter = pickedNow ? ["health"] : [];
+  const hBefore = pickedNow ? [] : ["hcheck"];
+  const hAfter = ["health", ...dailyHealth()];
   if (tab === "home") {
     if (homeFeedData.has(lang)) return [`hfeed:${lang}`, ...countryOn() ? ["country"] : [], "recent", "index", ...dailyHealth()];
     const plan = homePlan.get(lang) || [];
@@ -5468,7 +5533,7 @@ function unitsFor(tab, lang) {
     return [...hBefore, `tab:${tab}:${lang}`, ...hAfter];
   }
   if (tab === "live") {
-    if (liveFeedData) return ["lfeed", "health"];
+    if (liveFeedData) return ["lfeed", ...dailyHealth()];
     if (!liveFeedTried) return ["lfeed", ...hBefore, "tab:live", ...hAfter];
     return [...hBefore, "tab:live", ...hAfter];
   }
@@ -5484,6 +5549,8 @@ function isDone(unit) {
   if (unit === "recent") return recentCards !== null;
   if (unit === "index") return !indexNeeded();
   if (unit === "health") return healthReady();
+  if (unit === "hcheck") return activeConfirmed();
+  if (unit === "panels") return !panelsStale();
   if (unit === "race") return raceTried;
   if (unit === "autopick") return autoPickTried;
   if (unit === "pick") return pickServers !== null;
@@ -5513,10 +5580,14 @@ async function runUnit(unit, opts) {
     const out = await indexStep({ budgetMs: 2500 });
     console.log("[dbg] index step -> " + out);
     if (out === "error" || out === "wait") throw new Error("\xEDndice: " + out);
-  } else if (unit === "health") {
+  } else if (unit === "health" && !serverChosen()) {
     const n = await healthCheck(until ? { until: until - FIRST_FEED_RESERVE_MS } : {});
-    pickedNow = false;
     console.log("[dbg] health online=" + n);
+  } else if (unit === "health" || unit === "hcheck" || unit === "panels") {
+    const out = await healthStep({ kind: checkKind(unit) });
+    console.log("[dbg] " + unit + " step -> " + out);
+    if (out === "failed") throw new Error("health");
+    if (out === "done") pickedNow = false;
   } else if (unit === "race") await race(opts);
   else if (unit === "autopick") await autoPick(opts);
   else if (unit === "pick") pickServers = await serverList();
@@ -5590,7 +5661,7 @@ function mainView(ctx) {
       console.log("[dbg] view tab=" + tab + " lang=" + lang + " data=" + (data ? data.stale ? "SNAPSHOT" : "rails=" + (data.rails || []).length : "NULL(skeleton)") + " feedForLang=" + homeFeedData.has(lang) + " movieFeedTab=" + !!feedTabFor("movies", lang));
     }
   }
-  if (!data && !healthReady() && !pickedNow && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
+  if (!data && !pickedNow && unitsFor(tab, lang).includes("hcheck") && !isDone("hcheck") && !(state.failed && state.failed.hcheck)) return verifyingView({ device: ctx.device });
   const failed = unitsFor(tab, lang).some((u) => state.failed && state.failed[u]);
   return browseView({
     tab,

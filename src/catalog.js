@@ -221,11 +221,17 @@ function badAnswer(action, data) {
 
 const hostnameOf = (srv) => { try { return new URL(srv.url).hostname; } catch (_) { return ""; } };
 
+// When each account last answered well in this runtime (key -> ms): the screen loads from the active server without a
+// health check first while it answered lately (activeConfirmed).
+const aliveAt = new Map();
+
 // One Xtream call. Remembers the account: dead (auth 0 / expired) for a day, blocked (Kino refuses this server's own host)
 // until the next version. A refusal of ANOTHER host (an ISP block that redirects to a government page over http) is a plain
 // failure: it depends on the network, not on the account. opts.timeoutMs: the health check and the failover keep it short.
+// [action] null: the account's login answer (player_api.php with no action: user_info and server_info, a few hundred
+// bytes), the cheap liveness probe.
 async function callServer(srv, action, extra, opts) {
-  const params = new URLSearchParams({ username: srv.username, password: srv.password, action, ...extra });
+  const params = new URLSearchParams({ username: srv.username, password: srv.password, ...(action ? { action } : {}), ...extra });
   let r;
   try {
     r = await kino.fetch(`${srv.url}/player_api.php?${params}`, {
@@ -248,8 +254,9 @@ async function callServer(srv, action, extra, opts) {
     noteDead(srv);
     throw Object.assign(new Error("cuenta no válida"), { dead: true });
   }
-  if (badAnswer(action, data)) throw new Error("respuesta inválida");
+  if (action ? badAnswer(action, data) : !(data && typeof data === "object" && !Array.isArray(data) && data.user_info)) throw new Error("respuesta inválida");
   noteAlive(srv);
+  aliveAt.set(keyOf(srv), Date.now());
   return data;
 }
 
@@ -474,12 +481,15 @@ export async function selectServer(i) {
 // A rolling race: RACE_PARALLEL probes in flight, at most one per host, and a failed one is replaced at once by the next
 // account in the order, until one answers well or the race's deadline.
 const RACE_PARALLEL = 3;
-const RACE_TIMEOUT_MS = 4000;
+// Measured on a Redmi (2026-11-17): working accounts answered the probe in 0.5-0.8 s and dead ones in 0.8-1.0 s, while one
+// silent host held the first tick (Kino holds a call until every request it started settles) up to this timeout after the
+// winner had answered. 2.5 s keeps three times the slowest good answer.
+const RACE_TIMEOUT_MS = 2500;
 // The race's deadline, from its start. Every probe's timeout is clipped to it, so no request of the race outlives it (Kino
 // holds a call until every request it started settles). Why 9 s: the first run's tick has 16 s of Kino's 20 s screen call;
 // the bootstrap takes 1-2.5 s and the feed that follows the pick in the same tick keeps RACE_RESERVE_MS, so 2.5 + 9 + 4 =
-// 15.5 s. 9 s is two full waves of 3 hanging accounts (2 x 4 s) plus a margin: at least the published one-by-one pick's 6
-// tries even when every one hangs, and many more when they fail fast (a dead account answers auth 0 in about 1 s).
+// 15.5 s. 9 s is three full waves of 3 hanging accounts (3 x 2.5 s) plus a margin: more than the published one-by-one
+// pick's 6 tries even when every one hangs, and many more when they fail fast (a dead account answers auth 0 in about 1 s).
 const RACE_WINDOW_MS = 9000;
 // The race leaves this much of the caller's deadline to the feed that follows it in the same call.
 const RACE_RESERVE_MS = 4000;
@@ -632,7 +642,9 @@ export function serverListFresh() {
 
 // ---- chequeo de salud: para que el selector muestre solo los servidores que responden ----------------
 const HEALTH_KEY = "health:v1";
-const HEALTH_TTL_MS = 30 * 60 * 1000; // se revisa de nuevo cuando pasa esto
+// Which accounts answer is checked again after this. It was 30 min: up to 30 full category lists on the screen's path every
+// half hour (and on every En vivo visit), for a list of online accounts that changes over hours.
+const HEALTH_TTL_MS = 6 * 60 * 60 * 1000;
 const HEALTH_TIMEOUT_MS = 10000;
 // The check runs inside one screen call (Kino gives it 20 s, ScreenLimits.CALL_TIMEOUT_MS): it stops starting probes at
 // this deadline and writes what answered. Kino runs 6 of a plugin's requests at once, so a probe started here starts there
@@ -646,11 +658,22 @@ let healthRunning = false;
 function readHealth() {
   try { const o = JSON.parse(kino.storage.get(HEALTH_KEY) || "null"); return o && Array.isArray(o.online) && typeof o.ts === "number" ? o : null; } catch (_) { return null; }
 }
-const healthFresh = () => { const h = readHealth(); return h && Date.now() - h.ts < HEALTH_TTL_MS ? h : null; };
-export const healthNeeded = () => !healthFresh() && !healthRunning;
+// A check that nothing answered (no network) is good for 30 min only: an empty online list would hide every other server's
+// sources in the player for the whole HEALTH_TTL_MS.
+const HEALTH_EMPTY_TTL_MS = 30 * 60 * 1000;
+const healthFresh = () => { const h = readHealth(); return h && Date.now() - h.ts < (h.online.length ? HEALTH_TTL_MS : HEALTH_EMPTY_TTL_MS) ? h : null; };
 export const healthReady = () => !!healthFresh();
 /** The panel map is missing or older than 20 h: the screen runs one more health check after painting from the feed. */
 export const panelsStale = () => { const m = readPanels(); return !m || Date.now() - (Number(m.at) || 0) > PANELS_STALE_MS; };
+// The active server answered something (a probe, a listing) this long ago at most: the screen loads from it without a check.
+const ACTIVE_FRESH_MS = 5 * 60 * 1000;
+/** The active server answered lately in this runtime, or the fresh check found it online (else it would have moved). */
+export function activeConfirmed() {
+  const k = serverKey();
+  if (!k) return false;
+  const at = aliveAt.get(k);
+  return (typeof at === "number" && Date.now() - at < ACTIVE_FRESH_MS) || healthReady();
+}
 
 // ---- the title index's server --------------------------------------------------------------------------------------
 // The index's category ids and stream ids are those of the panel it was generated from. Its own server is "home" (as before);
@@ -754,6 +777,7 @@ function indexHomeIdx(st, map) {
 // run at a time; never throws (without even a list, it stores an empty check so the "Verificando" screen cannot hang).
 // opts.until: an earlier deadline (ms since the epoch), for the first run's tick that picks a server and loads its feed after
 // the check. While no server is chosen, the answers stay in memory for that pick (autoPickServer).
+// The first run's rescue (one call); the screen's other checks run in short steps (healthStep).
 export async function healthCheck(opts = {}) {
   if (healthRunning) return 0;
   healthRunning = true;
@@ -765,9 +789,7 @@ export async function healthCheck(opts = {}) {
     const answers = new Map();
     const answered = new Set();
     const unprobed = new Set();
-    const first = new Set([keyOf(list[st.idx]), st.chosen].filter(Boolean));
-    const order = [...list.filter((s) => first.has(keyOf(s))), ...list.filter((s) => !first.has(keyOf(s)))];
-    await pool(order, HEALTH_PARALLEL, async (s) => {
+    await pool(checkOrder(st), HEALTH_PARALLEL, async (s) => {
       if (!usable(s)) return;
       const left = until - Date.now();
       if (left < 1500) { unprobed.add(s.url); return; }
@@ -779,33 +801,107 @@ export async function healthCheck(opts = {}) {
       } catch (_) { /* down */ }
     });
     pickAnswers = st.chosen ? null : { at: Date.now(), answers };
-    const online = list.filter((s) => answered.has(s.url)).map((s) => s.url);
-    const now = Date.now();
-    put(HEALTH_KEY, JSON.stringify({ ts: now, online: list.filter((s) => answered.has(s.url) || unprobed.has(s.url)).map((s) => s.url) }));
-    const prev = readPanels();
-    const map = groupPanels(sets, prev, now);
+    return await afterCheck(st, list, { sets, answers, answered, unprobed, until });
+  } catch (_) {
+    try { put(HEALTH_KEY, JSON.stringify({ ts: Date.now(), online: [] })); } catch (__) { /* nada */ }
+    const prev = readSrvs();
+    pickAnswers = prev && prev.chosen ? null : { at: Date.now(), answers: new Map() };
+    return 0;
+  } finally { healthRunning = false; }
+}
+
+// The order a check probes in: the active and the chosen server first, then the list's order.
+function checkOrder(st) {
+  const list = st.list || [];
+  const first = new Set([keyOf(list[st.idx]), st.chosen].filter(Boolean));
+  return [...list.filter((s) => first.has(keyOf(s))), ...list.filter((s) => !first.has(keyOf(s)))];
+}
+
+// What a check stores once its probes are over: the online list, and with category answers (`sets`, a full check) the panel
+// map and the index's accounts; then the jump off a dead active server. Returns how many answered.
+async function afterCheck(st, list, { sets, answers, answered, unprobed, until }) {
+  const online = list.filter((s) => answered.has(s.url)).map((s) => s.url);
+  const now = Date.now();
+  put(HEALTH_KEY, JSON.stringify({ ts: now, online: list.filter((s) => answered.has(s.url) || unprobed.has(s.url)).map((s) => s.url) }));
+  let map = readPanels();
+  if (sets) {
+    const prev = map;
+    map = groupPanels(sets, prev, now);
     const ix = await indexFitsFrom(answers, list, prev && prev.ix, until);
     if (ix) map.ix = ix;
     writePanels(map);
     // The index panel's account answers index results: its categories now, so that lookup needs no request for 6 h.
     const ixHome = ix && ix.home ? list.find((s) => keyOf(s) === ix.home) : null;
     if (ixHome && answers.has(ix.home)) rememberProbeCats(ixHome, answers.get(ix.home));
-    const fresh = readSrvs() || st;
-    const cur = fresh.list && fresh.list[fresh.idx];
-    if (cur && online.length && !online.includes(cur.url)) {
-      const p = panelOf(keyOf(cur), map);
-      const flag = flagOf(cur);
-      const score = (s) => [p && panelOf(keyOf(s), map) === p ? 0 : 1, flagOf(s) === flag ? 0 : 1, priorityOf(s)];
-      const cands = fresh.list.map((s, i) => ({ s, i, sc: score(s) })).filter((x) => online.includes(x.s.url))
-        .sort((a, b) => a.sc[0] - b.sc[0] || a.sc[1] - b.sc[1] || a.sc[2] - b.sc[2] || a.i - b.i);
-      if (cands.length) { fresh.idx = cands[0].i; fresh.ok = true; fresh.okAt = now; writeSrvs(fresh); }
+  }
+  const fresh = readSrvs() || st;
+  const cur = fresh.list && fresh.list[fresh.idx];
+  if (cur && online.length && !online.includes(cur.url)) {
+    const p = panelOf(keyOf(cur), map);
+    const flag = flagOf(cur);
+    const score = (s) => [p && panelOf(keyOf(s), map) === p ? 0 : 1, flagOf(s) === flag ? 0 : 1, priorityOf(s)];
+    const cands = fresh.list.map((s, i) => ({ s, i, sc: score(s) })).filter((x) => online.includes(x.s.url))
+      .sort((a, b) => a.sc[0] - b.sc[0] || a.sc[1] - b.sc[1] || a.sc[2] - b.sc[2] || a.i - b.i);
+    if (cands.length) { fresh.idx = cands[0].i; fresh.ok = true; fresh.okAt = now; writeSrvs(fresh); }
+  }
+  return online.length;
+}
+
+// ---- the screen's checks, in short steps ----------------------------------------------------------------------------------
+// Calls to a plugin run one at a time, so a check that holds one screen tick for seconds also holds a channel the person
+// taps meanwhile. The screen's checks therefore run as rounds of short steps, one per tick: a step starts no probe after
+// STEP_START_MS and each probe has a short timeout, so a step lasts about a second (its slowest probe's timeout at worst).
+// Two kinds of round:
+// - "live": the account's login answer only (player_api.php with no action, a few hundred bytes, LIVE_PROBE_TIMEOUT_MS):
+//   which accounts answer, for the picker, the player's sources and the live failover's ranking. Every HEALTH_TTL_MS.
+// - "full": the VOD category lists (FULL_PROBE_TIMEOUT_MS), which also regroup the accounts into panels and find the index's
+//   accounts. Once a day: the live failover only moves a channel to accounts its panel map confirmed within 24 h.
+// A round's first step probes only the active and the chosen server (the screen waits for nothing else before it loads).
+const LIVE_PROBE_TIMEOUT_MS = 3000;
+const FULL_PROBE_TIMEOUT_MS = 4000;
+const STEP_START_MS = 700;
+const ROUND_MAX_MS = 10 * 60 * 1000; // a round left unfinished longer than this (the screen closed) starts over
+let round = null;
+
+/**
+ * One step of the screen's check of [kind] ("live" or "full"; a full round in progress serves a live one too). Never throws.
+ * "done" when the round finished (stored like healthCheck, with the jump off a dead active server), "more" when it goes on in
+ * the next step, "failed" when there is no server list to check (nothing stored: the next screen visit tries again).
+ */
+export async function healthStep({ kind = "live" } = {}) {
+  if (healthRunning) return "more";
+  healthRunning = true;
+  try {
+    if (!round || Date.now() - round.ts > ROUND_MAX_MS || (round.kind !== kind && round.kind !== "full")) {
+      const st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS });
+      const order = checkOrder(st).filter((s) => usable(s));
+      const head = new Set([keyOf(st.list[st.idx]), st.chosen].filter(Boolean));
+      round = { kind, ts: Date.now(), st, order, next: 0, head: order.filter((s) => head.has(keyOf(s))).length, sets: new Map(), answers: new Map(), answered: new Set() };
     }
-    return online.length;
+    const r = round;
+    const full = r.kind === "full";
+    const stop = r.next === 0 && r.head > 0 ? r.head : r.order.length;
+    const startUntil = Date.now() + STEP_START_MS;
+    await Promise.all(Array.from({ length: HEALTH_PARALLEL }, async () => {
+      while (r.next < stop && Date.now() < startUntil) {
+        const s = r.order[r.next++];
+        try {
+          const data = full
+            ? await callServer(s, PROBE, {}, { timeoutMs: FULL_PROBE_TIMEOUT_MS })
+            : await callServer(s, null, {}, { timeoutMs: LIVE_PROBE_TIMEOUT_MS });
+          r.answered.add(s.url);
+          if (full) { r.sets.set(keyOf(s), pairHashes(data)); r.answers.set(keyOf(s), data); }
+        } catch (_) { /* down */ }
+      }
+    }));
+    if (r.next < r.order.length) return "more";
+    round = null;
+    const list = r.st.list || [];
+    await afterCheck(r.st, list, { sets: full ? r.sets : null, answers: r.answers, answered: r.answered, unprobed: new Set(), until: Date.now() + INDEX_NAMES_TIMEOUT_MS });
+    return "done";
   } catch (_) {
-    try { put(HEALTH_KEY, JSON.stringify({ ts: Date.now(), online: [] })); } catch (__) { /* nada */ }
-    const prev = readSrvs();
-    pickAnswers = prev && prev.chosen ? null : { at: Date.now(), answers: new Map() };
-    return 0;
+    round = null;
+    return "failed";
   } finally { healthRunning = false; }
 }
 
