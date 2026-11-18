@@ -1,90 +1,3 @@
-// src/homeFeed.js
-var BASE = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/main/home/";
-var LIVE_BASE = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/main/live/";
-var MAX_AGE_MS = 3 * 24 * 60 * 60 * 1e3;
-function openBox(text2) {
-  let box = null;
-  try {
-    box = JSON.parse(text2);
-  } catch (_) {
-    return null;
-  }
-  if (!box || typeof box !== "object" || box.v !== 1 || typeof box.iv !== "string" || typeof box.data !== "string") return null;
-  try {
-    return JSON.parse(kino.crypto.decrypt("aes-256-gcm", { key: kino.secret("feedKey"), iv: box.iv, ivEncoding: "base64", data: box.data }));
-  } catch (_) {
-    return null;
-  }
-}
-function tabOf(t) {
-  if (!t || !Array.isArray(t.rows)) return null;
-  const rows = t.rows.filter((r) => r && typeof r.id === "string" && typeof r.title === "string" && Array.isArray(r.items) && r.items.length);
-  if (!rows.length) return null;
-  return { slides: Array.isArray(t.slides) ? t.slides : [], rows, cats: Array.isArray(t.cats) ? t.cats : [] };
-}
-async function fetchHomeFeed(serverKey2, lang) {
-  if (!serverKey2) return null;
-  if (lang === "es-419" || lang === "es-ES") {
-    const own = await fetchFeedFile(serverKey2, serverKey2 + "." + lang);
-    if (own && own.lang === lang) return own;
-  }
-  return fetchFeedFile(serverKey2, serverKey2);
-}
-async function fetchFeedFile(serverKey2, name) {
-  try {
-    const r = await kino.fetch(`${BASE}${encodeURIComponent(name)}.enc.json?v=${Math.floor(Date.now() / 36e5)}`, { headers: { Accept: "application/json" } });
-    if (!r.ok) {
-      console.log("[dbg] homefeed: HTTP no ok status=" + r.status + " key=" + serverKey2);
-      return null;
-    }
-    const d = openBox(r.text());
-    if (!d) {
-      console.log("[dbg] homefeed: NO ABRE (descifrado fallido o sobre invalido) key=" + serverKey2);
-      return null;
-    }
-    if (d.v !== 1 || d.serverKey !== serverKey2 || !Array.isArray(d.rows) || !d.rows.length) {
-      console.log("[dbg] homefeed: contenido no valido v=" + d.v + " serverKey=" + d.serverKey + " esperado=" + serverKey2 + " rows=" + (Array.isArray(d.rows) ? d.rows.length : "n/a"));
-      return null;
-    }
-    if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) {
-      console.log("[dbg] homefeed: VIEJO " + Math.round((Date.now() - d.at) / 36e5) + " h");
-      return null;
-    }
-    const home2 = tabOf({ slides: d.slides, rows: d.rows });
-    if (!home2) {
-      console.log("[dbg] homefeed: tabOf(home) vacio");
-      return null;
-    }
-    console.log("[dbg] homefeed: OK key=" + serverKey2 + " lang=" + d.lang + " home=" + home2.rows.length + " movies=" + (d.movies && d.movies.rows ? d.movies.rows.length : 0) + " series=" + (d.series && d.series.rows ? d.series.rows.length : 0) + " " + Math.round(r.text().length / 1024) + "KB");
-    return {
-      lang: typeof d.lang === "string" ? d.lang : null,
-      langs: Array.isArray(d.langs) ? d.langs : [],
-      slides: home2.slides,
-      rows: home2.rows,
-      movies: tabOf(d.movies),
-      // null en feeds v1
-      series: tabOf(d.series)
-    };
-  } catch (e) {
-    console.log("[dbg] homefeed: EXCEPCION " + (e && e.message));
-    return null;
-  }
-}
-async function fetchLiveFeed(serverKey2) {
-  if (!serverKey2) return null;
-  try {
-    const r = await kino.fetch(`${LIVE_BASE}${encodeURIComponent(serverKey2)}.enc.json?v=${Math.floor(Date.now() / 864e5)}`, { headers: { Accept: "application/json" } });
-    if (!r.ok) return null;
-    const d = openBox(r.text());
-    if (!d || d.v !== 1 || d.serverKey !== serverKey2 || !Array.isArray(d.rails) || !d.rails.length) return null;
-    if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) return null;
-    const rails = d.rails.filter((r2) => r2 && typeof r2.id === "string" && typeof r2.title === "string" && Array.isArray(r2.items) && r2.items.length);
-    return rails.length ? { rails } : null;
-  } catch (_) {
-    return null;
-  }
-}
-
 // src/store.js
 var SOFT_CAP = 200 * 1024;
 var CLASSES = {
@@ -214,6 +127,140 @@ function put(key, value) {
 function get(key) {
   try {
     return kino.storage.get(key);
+  } catch (_) {
+    return null;
+  }
+}
+
+// src/homeFeed.js
+var REPO = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd/";
+var DATA_BRANCH = "data";
+var MAIN_BRANCH = "main";
+var DATA_MISS_KEY = "feedData:v1";
+var DATA_MISS_TTL_MS = 6 * 60 * 60 * 1e3;
+var MIN_REQUEST_MS = 1e3;
+var MAX_AGE_MS = 3 * 24 * 60 * 60 * 1e3;
+var dataMissAt;
+function dataMissing() {
+  if (dataMissAt === void 0) {
+    let o = null;
+    try {
+      o = JSON.parse(kino.storage.get(DATA_MISS_KEY) || "null");
+    } catch (_) {
+      o = null;
+    }
+    dataMissAt = o && typeof o.at === "number" ? o.at : 0;
+  }
+  const age = Date.now() - dataMissAt;
+  return dataMissAt > 0 && age >= 0 && age < DATA_MISS_TTL_MS;
+}
+function noteDataMissing() {
+  dataMissAt = Date.now();
+  put(DATA_MISS_KEY, JSON.stringify({ at: dataMissAt }));
+}
+function openBox(text2) {
+  let box = null;
+  try {
+    box = JSON.parse(text2);
+  } catch (_) {
+    return null;
+  }
+  if (!box || typeof box !== "object" || box.v !== 1 || typeof box.iv !== "string" || typeof box.data !== "string") return null;
+  try {
+    return JSON.parse(kino.crypto.decrypt("aes-256-gcm", { key: kino.secret("feedKey"), iv: box.iv, ivEncoding: "base64", data: box.data }));
+  } catch (_) {
+    return null;
+  }
+}
+async function fetchSealed(path, v, accept, until) {
+  const one = async (branch) => {
+    const init = { headers: { Accept: "application/json" } };
+    if (until) {
+      const left = until - Date.now();
+      if (left < MIN_REQUEST_MS) return { late: true };
+      init.timeoutMs = left;
+    }
+    const r = await kino.fetch(`${REPO}${branch}/${path}?v=${v}`, init);
+    if (!r.ok) {
+      console.log("[dbg] feed: HTTP " + r.status + " " + branch + "/" + path.split("/")[0]);
+      return { status: r.status };
+    }
+    const text2 = r.text();
+    const d = openBox(text2);
+    if (!d) {
+      console.log("[dbg] feed: NO ABRE " + branch + "/" + path.split("/")[0]);
+      return { status: r.status };
+    }
+    return { d, kb: Math.round(text2.length / 1024) };
+  };
+  if (!dataMissing()) {
+    const a = await one(DATA_BRANCH);
+    if (a.d) return accept(a.d, a.kb);
+    if (a.late) return null;
+    const b2 = await one(MAIN_BRANCH);
+    const out = b2.d ? accept(b2.d, b2.kb) : null;
+    if (out && a.status === 404) noteDataMissing();
+    return out;
+  }
+  const b = await one(MAIN_BRANCH);
+  return b.d ? accept(b.d, b.kb) : null;
+}
+function tabOf(t) {
+  if (!t || !Array.isArray(t.rows)) return null;
+  const rows = t.rows.filter((r) => r && typeof r.id === "string" && typeof r.title === "string" && Array.isArray(r.items) && r.items.length);
+  if (!rows.length) return null;
+  return { slides: Array.isArray(t.slides) ? t.slides : [], rows, cats: Array.isArray(t.cats) ? t.cats : [] };
+}
+async function fetchHomeFeed(serverKey2, lang, opts) {
+  if (!serverKey2) return null;
+  const until = opts && opts.until || 0;
+  if (lang === "es-419" || lang === "es-ES") {
+    const own = await fetchFeedFile(serverKey2, serverKey2 + "." + lang, until);
+    if (own && own.lang === lang) return own;
+  }
+  return fetchFeedFile(serverKey2, serverKey2, until);
+}
+async function fetchFeedFile(serverKey2, name, until) {
+  try {
+    return await fetchSealed(`home/${encodeURIComponent(name)}.enc.json`, Math.floor(Date.now() / 36e5), (d, kb) => {
+      if (d.v !== 1 || d.serverKey !== serverKey2 || !Array.isArray(d.rows) || !d.rows.length) {
+        console.log("[dbg] homefeed: contenido no valido v=" + d.v + " serverKey=" + d.serverKey + " esperado=" + serverKey2 + " rows=" + (Array.isArray(d.rows) ? d.rows.length : "n/a"));
+        return null;
+      }
+      if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) {
+        console.log("[dbg] homefeed: VIEJO " + Math.round((Date.now() - d.at) / 36e5) + " h");
+        return null;
+      }
+      const home2 = tabOf({ slides: d.slides, rows: d.rows });
+      if (!home2) {
+        console.log("[dbg] homefeed: tabOf(home) vacio");
+        return null;
+      }
+      console.log("[dbg] homefeed: OK key=" + serverKey2 + " lang=" + d.lang + " home=" + home2.rows.length + " movies=" + (d.movies && d.movies.rows ? d.movies.rows.length : 0) + " series=" + (d.series && d.series.rows ? d.series.rows.length : 0) + " " + kb + "KB");
+      return {
+        lang: typeof d.lang === "string" ? d.lang : null,
+        langs: Array.isArray(d.langs) ? d.langs : [],
+        slides: home2.slides,
+        rows: home2.rows,
+        movies: tabOf(d.movies),
+        // null en feeds v1
+        series: tabOf(d.series)
+      };
+    }, until);
+  } catch (e) {
+    console.log("[dbg] homefeed: EXCEPCION " + (e && e.message));
+    return null;
+  }
+}
+async function fetchLiveFeed(serverKey2, opts) {
+  if (!serverKey2) return null;
+  try {
+    return await fetchSealed(`live/${encodeURIComponent(serverKey2)}.enc.json`, Math.floor(Date.now() / 864e5), (d) => {
+      if (d.v !== 1 || d.serverKey !== serverKey2 || !Array.isArray(d.rails) || !d.rails.length) return null;
+      if (typeof d.at === "number" && Date.now() - d.at > MAX_AGE_MS) return null;
+      const rails = d.rails.filter((r2) => r2 && typeof r2.id === "string" && typeof r2.title === "string" && Array.isArray(r2.items) && r2.items.length);
+      return rails.length ? { rails } : null;
+    }, opts && opts.until || 0);
   } catch (_) {
     return null;
   }
@@ -392,7 +439,7 @@ var LANG_LABELS = {
 };
 
 // src/titleIndex.js
-var BASE2 = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd-data/data/";
+var BASE = "https://raw.githubusercontent.com/xuper-plugin/kino-plugin-ultrahd-data/data/";
 var FORMAT = 1;
 var STATE_KEY = "idx:state";
 var DAY_MS = 24 * 3600 * 1e3;
@@ -419,7 +466,7 @@ var MAX_TITLE = 300;
 var REV = /^\d{8}T\d{6}Z$/;
 var RETRY_FIRST_MS = 60 * 1e3;
 var RETRY_LATER_MS = 10 * 60 * 1e3;
-var fetchBase = BASE2;
+var fetchBase = BASE;
 function cleanTitle(raw, yearField) {
   let name = String(raw || "").replace(/[\r\n\t]+/g, " ");
   let year = 0;
