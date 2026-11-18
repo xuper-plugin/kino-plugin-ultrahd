@@ -3618,7 +3618,10 @@ var healthFresh = () => {
   return h && Date.now() - h.ts < (h.online.length ? HEALTH_TTL_MS : HEALTH_EMPTY_TTL_MS) ? h : null;
 };
 var healthReady = () => !!healthFresh();
+var PANELS_RETRY_MS = 30 * 60 * 1e3;
+var panelsRetryAt = 0;
 var panelsStale = () => {
+  if (Date.now() < panelsRetryAt) return false;
   const m = readPanels();
   return !m || Date.now() - (Number(m.at) || 0) > PANELS_STALE_MS;
 };
@@ -3758,7 +3761,8 @@ async function afterCheck(st, list, { sets, answers, answered, unprobed, until }
   const now = Date.now();
   put(HEALTH_KEY, JSON.stringify({ ts: now, online: list.filter((s) => answered.has(s.url) || unprobed.has(s.url)).map((s) => s.url) }));
   let map = readPanels();
-  if (sets) {
+  if (sets && !sets.size) panelsRetryAt = now + PANELS_RETRY_MS;
+  else if (sets) {
     const prev = map;
     map = groupPanels(sets, prev, now);
     const ix = await indexFitsFrom(answers, list, prev && prev.ix, until);

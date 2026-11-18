@@ -696,8 +696,18 @@ function readHealth() {
 const HEALTH_EMPTY_TTL_MS = 30 * 60 * 1000;
 const healthFresh = () => { const h = readHealth(); return h && Date.now() - h.ts < (h.online.length ? HEALTH_TTL_MS : HEALTH_EMPTY_TTL_MS) ? h : null; };
 export const healthReady = () => !!healthFresh();
+// A full check that no account answered (no network, every panel unreachable) leaves the panel map as it was: written, it
+// would count as fresh for PANELS_STALE_MS with no account confirmed, and the live failover only moves a channel to accounts
+// its map confirmed within 24 h (the full check runs once a day now, so no later check would fix it that day). The screen
+// tries again after PANELS_RETRY_MS (kept in memory: a new runtime tries at once).
+const PANELS_RETRY_MS = 30 * 60 * 1000;
+let panelsRetryAt = 0;
 /** The panel map is missing or older than 20 h: the screen runs one more health check after painting from the feed. */
-export const panelsStale = () => { const m = readPanels(); return !m || Date.now() - (Number(m.at) || 0) > PANELS_STALE_MS; };
+export const panelsStale = () => {
+  if (Date.now() < panelsRetryAt) return false;
+  const m = readPanels();
+  return !m || Date.now() - (Number(m.at) || 0) > PANELS_STALE_MS;
+};
 // The active server answered something (a probe, a listing) this long ago at most: the screen loads from it without a check.
 const ACTIVE_FRESH_MS = 5 * 60 * 1000;
 /** The active server answered lately in this runtime, or the fresh check found it online (else it would have moved). */
@@ -857,7 +867,8 @@ async function afterCheck(st, list, { sets, answers, answered, unprobed, until }
   const now = Date.now();
   put(HEALTH_KEY, JSON.stringify({ ts: now, online: list.filter((s) => answered.has(s.url) || unprobed.has(s.url)).map((s) => s.url) }));
   let map = readPanels();
-  if (sets) {
+  if (sets && !sets.size) panelsRetryAt = now + PANELS_RETRY_MS;
+  else if (sets) {
     const prev = map;
     map = groupPanels(sets, prev, now);
     const ix = await indexFitsFrom(answers, list, prev && prev.ix, until);

@@ -119,6 +119,25 @@ test("the full round (once a day): VOD category lists with 4 s, the panel map re
   assert.equal(st.chosen, w.keyOf(0), "the person's choice is untouched (backHome returns there)");
 });
 
+test("a full round nothing answered (no network): the panel map keeps its age and confirmations, tried again in 30 min, not every tick", async () => {
+  const w = world(hosts(4, "n", () => true));
+  const T0 = w.net.now();
+  const old = { v: 1, at: T0 - 21 * H, g: {}, t: {} };
+  for (let i = 0; i < 4; i++) { old.g[w.keyOf(i)] = "P1"; old.t[w.keyOf(i)] = T0 - 21 * H; }
+  w.store.set("panels:v1", JSON.stringify(old));
+  const cat = await fresh("catalog.js");
+  assert.ok(cat.panelsStale());
+  let out;
+  for (let i = 0; i < 10 && out !== "done"; i++) out = (await w.call(cat.healthStep({ kind: "full" }))).out;
+  assert.equal(out, "done");
+  // Written, the map would count as fresh for 20 h with no account confirmed: the failover's same-panel step would have no
+  // account from hour 24 of the last confirmation until the next day's check.
+  assert.deepEqual(JSON.parse(w.store.get("panels:v1")), old, "the map as it was");
+  assert.ok(!cat.panelsStale(), "the screen's next ticks do not start it again");
+  await w.net.run(w.net.request(31 * 60000));
+  assert.ok(cat.panelsStale(), "30 min later it is tried again");
+});
+
 // ---- on the screen ---------------------------------------------------------------------------------------------------
 
 async function screenOf(w, state0 = {}) {
