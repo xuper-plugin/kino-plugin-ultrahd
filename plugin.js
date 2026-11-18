@@ -4518,16 +4518,20 @@ function b64text(s) {
 var GUIDE_MAX = 12;
 var GUIDE_PARALLEL = 4;
 var GUIDE_TIMEOUT_MS = 3e3;
+var GUIDE_MIN_MS = 500;
 async function guide({ channelIds, from, to }) {
   const ids = (Array.isArray(channelIds) ? channelIds : []).slice(0, GUIDE_MAX);
   const st = readSrvs();
   const srv = st && Array.isArray(st.list) ? st.list[st.idx] : null;
   if (!srv || !usable(srv)) return [];
+  const until = Date.now() + GUIDE_TIMEOUT_MS;
   const lists = await pool(ids, GUIDE_PARALLEL, async (cid) => {
     const streamId = String(cid).replace(/^live-/, "");
     if (!/^\d+$/.test(streamId)) return [];
+    const left = until - Date.now();
+    if (left < GUIDE_MIN_MS) return [];
     try {
-      const data = await callServer(srv, "get_short_epg", { stream_id: streamId, limit: "20" }, { timeoutMs: GUIDE_TIMEOUT_MS });
+      const data = await callServer(srv, "get_short_epg", { stream_id: streamId, limit: "20" }, { timeoutMs: left });
       const rows = Array.isArray(data) ? data : data && (data.epg_listings || data.listings || data.epg) || [];
       return rows.map((e) => ({
         channelId: String(cid),
