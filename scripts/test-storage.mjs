@@ -49,6 +49,7 @@ async function run(label, cap) {
   safely(() => store.put("vcode", "21"));
   safely(() => store.put("browseTab", "movies"));
   safely(() => store.put("browseLang", "es-419"));
+  safely(() => store.put("srvChosen:v1", "1"));
 
   const catList = (n) => JSON.stringify({ ts: Date.now(), l: Array.from({ length: n }, (_, i) => [String(1000 + i), `CATEGORÍA DE EJEMPLO NÚMERO ${i} - (LAT)`]) });
   const ficha = () => ({ backdrop: "https://image.tmdb.org/t/p/w1280/" + "a".repeat(27) + ".jpg", tmdb: 123456, runtime: 114, genres: ["Terror", "Misterio", "Crimen"] });
@@ -83,7 +84,7 @@ async function run(label, cap) {
   check(worst <= cap, `se pasó del tope (${worst} > ${cap})`);
   for (const [c, d] of Object.entries(store.CLASSES)) check((worstClass[c] || 0) <= d.budget, `la clase ${c} se pasó de su presupuesto`);
   check(fake.api.get("srvs") !== null && fake.api.get("vcode") !== null, "la lista de servidores o el código de versión se expulsaron");
-  check(fake.api.get("browseTab") === "movies" || store.CLASSES.misc.budget > 0, "los ajustes pequeños se perdieron");
+  check(fake.api.get("browseTab") === "movies" && fake.api.get("browseLang") === "es-419" && fake.api.get("srvChosen:v1") === "1", "las elecciones de la persona (pestaña, idioma, servidor elegido) se perdieron");
 }
 
 await run("contrato (262144 B)", 262144);

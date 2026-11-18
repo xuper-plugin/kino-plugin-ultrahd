@@ -66,6 +66,7 @@ export const TEXTS = Object.freeze({
   refreshed: ["Lista actualizada: {n} servidores.", "List updated: {n} servers."],
   refreshFail: ["No se pudo actualizar la lista.", "Could not update the list."],
   checking: ["Comprobando…", "Checking…"],
+  liveNoServer: ["Este canal no responde ahora en ningún servidor. Inténtalo en unos minutos.", "This channel isn't answering on any server right now. Try again in a few minutes."],
 });
 
 const fill = (s, vars) => (vars ? s.replace(/\{(\w+)\}/g, (_, k) => (k in vars ? String(vars[k]) : "")) : s);

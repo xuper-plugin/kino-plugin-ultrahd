@@ -10,7 +10,12 @@ Requiere Kino 0.9.74 o posterior (usa `kino.catalog`).
 - **En vivo:** categorías, canales con logo y número, búsqueda de canales y guía de programación (cuando el servidor la publica).
 - **TMDB al vuelo:** solo el id de lo que se muestra (primeras filas del Home y primeros resultados de búsqueda), con `kino.tmdb`: la clave y la caché son de Kino, el plugin no lleva ninguna.
 - **Contenido 18+:** las categorías adultas se marcan y Kino las muestra solo con el código 18+ desbloqueado; el inicio las omite.
-- **Servidores:** guarda una lista, prefiere HTTPS, recuerda el que funciona y pasa al siguiente cuando falla. Kino solo deja HTTP con hosts declarados en el manifiesto, así que un workflow diario (`.github/workflows/hosts.yml`, `scripts/health-hosts.mjs`) prueba cada servidor con una petición ligera, declara en `hosts` los que responden y retira los que fallan 3 veces seguidas (sube la versión de parche cuando cambia el conjunto).
+- **Servidores:** guarda una lista, prefiere HTTPS, recuerda el que elegiste (también al renovar la lista cada 6 horas) y pasa a otro cuando falla. Las cuentas muertas ("Invalid username or password") se recuerdan un día y no gastan peticiones.
+- **Paneles y canal caído:** muchos servidores son cuentas del MISMO panel (mismas categorías y mismos ids). El chequeo de salud los agrupa sin peticiones extra (`src/panels.js`, con las categorías de películas). Si la cuenta que reproduce un canal en vivo lo rechaza (407, 509, una respuesta muerta) o Kino lo reabre dos veces seguidas, el canal pasa a otra cuenta del mismo panel con el mismo id y, si no hay, al mismo canal buscado POR NOMBRE en otro panel (`src/liveFailover.js`, `src/channelMatch.js`); nunca el mismo id en un panel ajeno. No cambia el servidor elegido, y solo ese canal se mueve: los demás siguen en tu cuenta salvo que una prueba muestre que la cuenta los rechaza (407, 509).
+- **Nombres de canal limpios:** lo que el panel le pone alrededor al nombre de un canal en vivo (`┃ES┃ M+ DEPORTES`, `ES ▎DAZN 1`, `|MX| ESPN`, `[ES] …`, `ES: …`, `MULTI ▎ VIAPLAY`, `ESPN ┃MX┃`) no se muestra (`src/channelTitle.js`, idéntico en kino-plugin-supertv). La calidad se queda (`4K ▎DAZN 1` → `DAZN 1 4K`). Si dos canales de una misma lista quedarían iguales, vuelve el país al final (`ESPN · México`), salvo el país de la propia categoría. Solo cambia el título: el id, el ref y el emparejamiento por nombre entre paneles siguen leyendo el nombre original del panel. Los títulos de películas y series no cambian.
+- **Servidor del índice:** los ids del índice son del panel que lo generó. Si su servidor está muerto o no responde, los resultados del índice se buscan en otra cuenta de ese panel (la que trae las categorías del índice con los mismos ids y nombres), sin cambiar tu servidor; nunca se vuelve a ella sola.
+- **Hosts declarados:** Kino solo deja HTTP con hosts declarados en el manifiesto, así que un workflow (`.github/workflows/hosts.yml`, `scripts/health-hosts.mjs`) mantiene `hosts`: conserva los declarados mientras el servicio los liste y agrega uno nuevo solo si respondió en esa corrida y el plugin lo usa (está entre sus 30 servidores); el tope de 50 nunca quita uno declarado. `hosts-state.json` solo guarda cuántas corridas lleva sin listarse un host declarado, así que una corrida con las mismas respuestas no cambia nada ni hace commit. **No sube la versión:** la firma del autor no cubre `hosts`, así que el job no necesita la llave. Las instalaciones nuevas reciben la lista al instante; las instaladas, con la próxima versión firmada (`npm run release`).
+- **Ojo con el job entre dos versiones:** si una corrida agrega hosts, la siguiente versión firmada le pide a CADA persona que apruebe esos hosts antes de actualizar (Kino retiene la actualización); `npm run release` se niega sin `--allow-new-hosts`. Por eso el workflow corre solo a mano (`workflow_dispatch`) hasta que salga la versión que lo trae; después se le puede devolver el `schedule` diario.
 - **Hosts:** el servicio de arranque va por HTTP (`insecureHttp`) y el video puede salir de otros hosts (`streamHosts: any`, aviso en rojo al instalar).
 
 ## Cómo funciona el índice
@@ -36,9 +41,14 @@ El catálogo admite 100.000 títulos; si se pasara, el plugin se queda con lo qu
 ```bash
 npm install
 npm run build        # empaqueta src/plugin.js en plugin.js con esbuild
-npm run validate     # build + node sdk/validate.mjs .
+npm run validate     # build + node sdk/validate.mjs . + chequeo QuickJS
+npm test             # node --test test/*.test.mjs (kino falso, sin red) + test:storage
 npm run test:index   # índice, deltas y TMDB perezoso (necesita el repo hermano kino-plugin-ultrahd-data; UHD_DATA=ruta)
 npm run test:storage # presupuesto de los 256 KB de kino.storage
+npm run hosts        # revisa los servidores y actualiza "hosts" en el manifiesto (--dry para no escribir)
+git pull --ff-only && npm run release -- 0.8.6   # la versión siguiente: los archivos de versión quedan en la última
+                                                 # publicada; release la sube, compila, firma con la llave del autor
+                                                 # (solo en la máquina del dueño), verifica, valida y prueba
 npm run e2e          # extremo a extremo con red real (usa el índice publicado y el servicio)
 node sdk/run.mjs . home
 node sdk/run.mjs . search "spider"

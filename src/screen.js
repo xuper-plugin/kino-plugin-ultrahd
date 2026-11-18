@@ -10,6 +10,8 @@ import { enrichTmdb, tmdbAvailable } from "./tmdbLazy.js";
 import { LANG_ORDER, isLang } from "./names.js";
 import { fetchHomeFeed, fetchLiveFeed } from "./homeFeed.js";
 import { TAB_IDS, browseView, searchView, liveView, settingsView, verifyingView, firstPickView, cardOf, slidesOf } from "./screenView.js";
+import { PLUGIN_VERSION } from "./version.js";
+import { cleanRails } from "./channelTitle.js";
 
 
 // ---- Depuración (v0.8.1): registra cada petición SIN credenciales (solo host, primer tramo del camino y `action`). ----
@@ -43,7 +45,6 @@ try {
   }
 } catch (_) { /* kino congelado: sin log de peticiones */ }
 
-const PLUGIN_VERSION = "0.8.5";
 const TAB_KEY = "browseTab";
 const LANG_KEY = "browseLang";
 const HIST_KEY = "searchHist:v1";
@@ -77,9 +78,17 @@ let cacheKey = null;
 let autoPickTried = false; // primera instalación: ya se intentó elegir servidor automáticamente (en español, sin que la persona elija)
 
 // La persona ya eligió servidor al menos una vez: se recuerda para no volver a mostrar el selector inicial (se cambia con 🌐).
+// The flag, or the chosen server kept with the server list (both never evicted); a missing flag is written again.
 const SRVCHOSEN_KEY = "srvChosen:v1";
-const serverChosen = () => { try { return kino.storage.get(SRVCHOSEN_KEY) === "1"; } catch (_) { return false; } };
 const markServerChosen = () => { try { put(SRVCHOSEN_KEY, "1"); } catch (_) { /* da igual */ } };
+function serverChosen() {
+  let flag = null;
+  try { flag = kino.storage.get(SRVCHOSEN_KEY); } catch (_) { flag = null; }
+  if (flag === "1") return true;
+  if (!cat.hasChosenServer()) return false;
+  markServerChosen();
+  return true;
+}
 
 function resetCaches() {
   memo.clear();
@@ -218,8 +227,11 @@ async function loadLiveFeed() {
   let f = null;
   try { f = await fetchLiveFeed(cat.serverKey()); } catch (_) { f = null; }
   if (!f || !f.rails || !f.rails.length) return;
-  liveFeedData = { slides: [], rails: f.rails, langs: [], lang: null, partial: false };
-  writeTabSnap("live", "-", [], f.rails);
+  // The feed is built by the Action from the published code: a feed from before the title cleanup still carries the
+  // panels' decorated channel names. Cleaning again is a no-op on titles already clean.
+  const rails = cleanRails(f.rails, cat.langNow());
+  liveFeedData = { slides: [], rails, langs: [], lang: null, partial: false };
+  writeTabSnap("live", "-", [], rails);
 }
 
 // El plan del Home: la lista ordenada de categorías (películas y series) a mostrar como filas, barato (solo listas cacheadas).
@@ -335,7 +347,8 @@ function feedTabFor(tab, lang) {
 }
 
 // Primera instalación: elige el servidor automáticamente, PREFIRIENDO los de habla hispana (la mayoría del público), sin que la
-// persona elija ni ver el selector. selectServer prueba el servidor (y alterna dentro del mismo país), así el elegido responde.
+// persona elija ni ver el selector. Corre después del chequeo de salud: la lista ya viene sin los caídos, los muertos ni los
+// bloqueados. selectServer prueba el servidor (y alterna dentro del mismo país), así el elegido responde.
 // Si ninguno responde (p. ej. sin internet), queda sin elegir y mainView muestra el selector como respaldo. El 🌐 lo cambia luego.
 async function autoPick() {
   autoPickTried = true;
@@ -350,16 +363,22 @@ async function autoPick() {
   } catch (_) { /* sin internet: queda el selector de respaldo */ }
 }
 
+// With the feed painted the servers are not probed, except once a day, last, to keep the panel map and the index's server
+// fresh (the live failover and index results rely on them).
+const dailyHealth = () => (cat.panelsStale() ? ["health"] : []);
+
 function unitsFor(tab, lang) {
-  // Primera instalación: se elige servidor automáticamente (autopick, en español). Si no logró ninguno, se cae al selector manual.
-  if (!serverChosen()) return autoPickTried ? ["health", "pick"] : ["autopick"];
+  // Primera instalación: chequeo de salud y luego se elige servidor automáticamente (autopick, en español) entre los que
+  // responden. Si no logró ninguno, se cae al selector manual.
+  if (!serverChosen()) return autoPickTried ? ["health", "pick"] : ["health", "autopick"];
   if (tab === "home") {
     // El Home carga fila por fila: primero el plan (categorías ordenadas), luego UNA unidad por fila (`hrail:...`), que aparece
     // apenas carga; país, recientes e índice van al final. Hasta tener el plan, solo health + plan.
     // Primero el feed pre-armado (una sola descarga): si está, el Home se pinta entero al instante y NO se recorre el IPTV.
     // Si el feed falta/está viejo/falló, se cae a la carga en vivo progresiva (plan + una unidad por fila + hero).
     // Con el feed ya no se sondean los servidores (`health`): la pantalla está pintada y la verificación real ocurre antes de reproducir.
-    if (homeFeedData.has(lang)) return [`hfeed:${lang}`, ...(countryOn() ? ["country"] : []), "recent", "index"];
+    // Only once a day, last (dailyHealth): the panel map and the index's server go stale otherwise.
+    if (homeFeedData.has(lang)) return [`hfeed:${lang}`, ...(countryOn() ? ["country"] : []), "recent", "index", ...dailyHealth()];
     const plan = homePlan.get(lang) || [];
     const railUnits = plan.map((p) => `hrail:${p.kind}:${lang}:${p.id}`);
     const heroUnit = railUnits.length ? [`hhero:${lang}`] : [];
@@ -369,7 +388,7 @@ function unitsFor(tab, lang) {
   // Películas/Series: el feed (v2) también trae estas pestañas pre-armadas. Si la de este idioma ya está, se pinta al instante
   // y no se recorre el IPTV; si falta, se intenta el feed una vez (hfeed) y, si no llega o es v1, cae a la carga en vivo.
   if (tab === "movies" || tab === "series") {
-    if (feedTabFor(tab, lang)) return [`hfeed:${lang}`];
+    if (feedTabFor(tab, lang)) return [`hfeed:${lang}`, ...dailyHealth()];
     if (!homeFeedTried.has(lang)) return [`hfeed:${lang}`, "health", `tab:${tab}:${lang}`];
     return ["health", `tab:${tab}:${lang}`];
   }
@@ -449,7 +468,8 @@ function tabData(tab, lang, state = {}) {
     const m = memo.get("live");
     if (m) return m;
     const snap = readSnap("live", "-");
-    return snap ? { slides: [], rails: snap.rails, langs: [], lang: null, partial: false, stale: true } : null;
+    // A snapshot written by an older build carries decorated channel names: cleaned when read (channel rails only).
+    return snap ? { slides: [], rails: cleanRails(snap.rails, cat.langNow()), langs: [], lang: null, partial: false, stale: true } : null;
   }
   if (tab !== "home") {
     // Feed: la pestaña ya viene pre-armada → se pinta al instante, con su selector de categorías (cats) y sin paginación.

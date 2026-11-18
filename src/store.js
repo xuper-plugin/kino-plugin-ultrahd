@@ -6,7 +6,17 @@ export const SOFT_CAP = 200 * 1024;
 
 // Clases: prefijo de clave -> presupuesto en bytes. "keep" = nunca se expulsa por falta de espacio de otra clase.
 export const CLASSES = {
-  servers: { match: (k) => k === "srvs" || k === "vcode", budget: 5 * 1024, keep: true },
+  servers: { match: (k) => k === "srvs" || k === "vcode", budget: 8 * 1024, keep: true },
+  // The person's choices: nothing else can evict them (they used to share the 2 KB "misc" class with avail:v1 and the health
+  // result, and about 13 plays were enough to push srvChosen:v1 out).
+  prefs: { match: (k) => k === "srvChosen:v1" || k === "browseTab" || k === "browseLang" || k === "seed:v1", budget: 256, keep: true },
+  health: { match: (k) => k === "health:v1", budget: 3 * 1024, keep: true },
+  panels: { match: (k) => k === "panels:v1", budget: 4 * 1024, keep: true },
+  acct: { match: (k) => k === "acct:v1", budget: 2 * 1024, keep: true },
+  // The live failover's last switch (live:v1): the account it moved a channel to survives a runtime restart.
+  live: { match: (k) => k === "live:v1", budget: 512, keep: true },
+  // Which server has which title (the "Servidor" menu's learning): its own class, trimmed by bytes in catalog.js.
+  avail: { match: (k) => k === "avail:v1", budget: 16 * 1024 },
   cats: { match: (k) => k.startsWith("cats:"), budget: 60 * 1024 },
   hero: { match: (k) => k.startsWith("vinfo:"), budget: 30 * 1024 },
   hist: { match: (k) => k.startsWith("searchHist:"), budget: 10 * 1024 },
@@ -17,7 +27,7 @@ export const CLASSES = {
   homeSnap: { match: (k) => k.startsWith("homeSnap:"), budget: 40 * 1024 },
   misc: { match: () => true, budget: 2 * 1024 },
 };
-const ORDER = ["servers", "cats", "hero", "hist", "recent", "idx", "tmdb", "homeSnap", "misc"];
+const ORDER = ["servers", "prefs", "health", "panels", "acct", "live", "avail", "cats", "hero", "hist", "recent", "idx", "tmdb", "homeSnap", "misc"];
 const IDX = "_idx";
 
 export const classOf = (key) => ORDER.find((c) => CLASSES[c].match(key));

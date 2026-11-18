@@ -5,15 +5,29 @@
 import { fetchHomeFeed } from "./homeFeed.js";
 import { noteRecent } from "./recent.js";
 import { put } from "./store.js";
-import { indexFitsServer, indexSearch, indexStep, indexReady, indexStale, resolveIdxRef, indexLabel, cleanTitle, findKey, parseIdxRef } from "./titleIndex.js";
+import { indexFitsServer, indexSource, indexCategoryNames, indexSearch, indexStep, indexReady, indexStale, resolveIdxRef, indexLabel, cleanTitle, findKey, parseIdxRef } from "./titleIndex.js";
 import { enrichTmdb } from "./tmdbLazy.js";
-import { LANG_ORDER, langLabel, displayTitle, titleCase, countryMatch, COUNTRY_PHRASES } from "./names.js";
+import { LANG_ORDER, langLabel, displayTitle, titleCase, countryMatch, COUNTRY_PHRASES, cleanCategoryName } from "./names.js";
 import { mergeVod, mergeLive, searchOrder, homeOrder } from "./categories.js";
+import { normKey } from "./categoryRules.js";
+import { say } from "./i18n.js";
+import { keyOf, pairHashes, groupPanels, readPanels, writePanels, panelOf, noteDead, noteBlocked, noteAlive, usable, accountVerdict } from "./panels.js";
+import { categoryTok, channelTok } from "./channelMatch.js";
+import { createLiveFailover, liveRef } from "./liveFailover.js";
+import { channelTitles, cleanChannelTitle, categoryKey, normName } from "./channelTitle.js";
+
+export { keyOf };
 
 const BOOTSTRAP_URL = "http://vegetatvv2.duckdns.org/bootstrap.php";
 const VEGETA_VERSION_CODE = "21"; // versionCode de la app (VegetaTV 11.1): el bootstrap rechaza menos de 21 con 426
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
 const SRVS_V = 2; // versión de la caché de servidores: subir para invalidar listas viejas (p. ej. sin el país del servidor)
+
+// Ultra HD checks a server with its VOD categories everywhere: the title index and the panels are VOD-based (measured:
+// accounts of one panel share VOD category ids and names), and the probe's answer is that server's VOD category cache.
+const PROBE = "get_vod_categories";
+const PROBE_KIND = "vod";
+const SRVCHOSEN_KEY = "srvChosen:v1"; // written by the screen when the person (or the first-run auto-pick) chose a server
 
 const PER_PAGE = 60;
 const HOME_PREVIEW = 20;
@@ -91,10 +105,11 @@ function parseServers(text) {
 
 // El bootstrap exige un código de versión mínimo (426 / ok:false). Se parte del guardado y se reintenta UNA vez con el
 // mayor entre minimum_version_code y latest_version_code que el propio servicio declare; el que funciona se guarda.
-async function fetchServerList() {
+async function fetchServerList(opts) {
+  const t = opts && opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {};
   let code = readVersionCode();
   for (let attempt = 0; attempt < 2; attempt++) {
-    const r = await kino.fetch(BOOTSTRAP_URL + "?v=" + Date.now(), { headers: { ...vegetaHeaders(code), "Accept": "application/json" } });
+    const r = await kino.fetch(BOOTSTRAP_URL + "?v=" + Date.now(), { headers: { ...vegetaHeaders(code), "Accept": "application/json" }, ...t });
     let data = null;
     try { data = r.json(); } catch (_) { data = null; }
     if (!r.ok || !data || data.ok === false) {
@@ -106,7 +121,7 @@ async function fetchServerList() {
     let list = [];
     if (typeof data.servers_text === "string" && data.servers_text.trim()) list = parseServers(data.servers_text);
     if (!list.length && typeof data.servers_url === "string" && data.servers_url.trim()) {
-      const r2 = await kino.fetch(data.servers_url, { headers: { ...vegetaHeaders(code), "Accept": "text/plain" } });
+      const r2 = await kino.fetch(data.servers_url, { headers: { ...vegetaHeaders(code), "Accept": "text/plain" }, ...t });
       if (r2.ok) list = parseServers(r2.text());
     }
     if (!list.length) {
@@ -120,17 +135,7 @@ async function fetchServerList() {
   throw kino.error("unavailable", "bootstrap: sin servidores", { userMessage: "El servicio no tiene servidores disponibles." });
 }
 
-// Clave corta del servidor activo (sin usuario ni contraseña a la vista): separa las cachés de catálogo entre servidores.
-// Clave estable de un servidor (misma cuenta en el mismo host): identifica un servidor concreto en los `ref` de las fuentes
-// alternativas y en la caché de disponibilidad, sin exponer usuario ni contraseña.
-export function keyOf(srv) {
-  if (!srv || !srv.url) return "";
-  let h = 5381;
-  const text = srv.url + "|" + srv.username;
-  for (let i = 0; i < text.length; i++) h = ((h << 5) + h + text.charCodeAt(i)) | 0;
-  return (h >>> 0).toString(36);
-}
-
+// Clave corta del servidor activo (keyOf, sin usuario ni contraseña a la vista): separa las cachés de catálogo entre servidores.
 export function serverKey() {
   const st = readSrvs();
   const srv = st && Array.isArray(st.list) ? st.list[st.idx] : null;
@@ -152,21 +157,55 @@ function writeSrvs(st) {
   put("srvs", JSON.stringify(st));
 }
 
-// Estado en storage: { ts, list, idx (servidor activo), ok (idx ya comprobado) }.
-async function loadServers(force) {
-  const cached = readSrvs();
-  const usable = cached && Array.isArray(cached.list) && cached.list.length;
-  if (!force && usable && cached.ts && cached.v === SRVS_V && Date.now() - cached.ts < CACHE_TTL_MS) return cached;
+// Before 0.8.6 a choice was only `pin` (also set by the health check's jump) plus the screen's flag, which the 2 KB "misc"
+// storage class could evict. Once: the server active then becomes the person's `chosen` server, and `pin` goes away.
+function migrate(st) {
+  if (!st || !Array.isArray(st.list) || st.mig === 1) return st;
+  let flag = null;
+  try { flag = kino.storage.get(SRVCHOSEN_KEY); } catch (_) { flag = null; }
+  if (st.chosen === undefined && (st.pin || flag === "1") && st.list[st.idx]) st.chosen = keyOf(st.list[st.idx]);
+  delete st.pin;
+  st.mig = 1;
+  writeSrvs(st);
+  return st;
+}
+
+// A new list keeps the person's choice: the chosen server (when it is still listed and not dead), else the one active
+// before, else home. Without this every 6-hour refresh went back to the index's server and lost the choice.
+function carryOver(prev, st) {
+  if (!prev) { st.idx = homeIdx(st); return st; }
+  const keys = st.list.map(keyOf);
+  const at = (k) => (k ? keys.indexOf(k) : -1);
+  if (prev.chosen) st.chosen = prev.chosen;
+  if (prev.mig) st.mig = prev.mig;
+  const c = at(prev.chosen);
+  const a = at(keyOf(prev.list[prev.idx]));
+  st.idx = c >= 0 && usable(st.list[c]) ? c : a >= 0 ? a : homeIdx(st);
+  if (st.idx === a) { st.ok = !!prev.ok; st.okAt = prev.okAt; st.homeAt = prev.homeAt; }
+  return st;
+}
+
+// Estado en storage: { ts, list, idx (servidor activo), ok (idx ya comprobado), chosen (clave del elegido por la persona) }.
+async function loadServers(force, opts) {
+  const cached = migrate(readSrvs());
+  const usableList = cached && Array.isArray(cached.list) && cached.list.length;
+  if (!force && usableList && cached.ts && cached.v === SRVS_V && Date.now() - cached.ts < CACHE_TTL_MS) return cached;
   try {
-    const list = await fetchServerList();
-    const st = { ts: Date.now(), list, idx: Math.max(0, list.findIndex((s) => indexFitsServer(s.url))), ok: false, v: SRVS_V };
+    const list = await fetchServerList(opts);
+    const st = carryOver(usableList ? cached : null, { ts: Date.now(), list, idx: 0, ok: false, v: SRVS_V });
     writeSrvs(st);
     return st;
   } catch (e) {
     lastErr = "lista: " + errText(e);
-    if (usable) return cached; // bootstrap caído: seguimos con la lista vieja
+    if (usableList) return cached; // bootstrap caído: seguimos con la lista vieja
     throw e;
   }
+}
+
+/** The person (or the first-run auto-pick) chose a server: a key in `srvs`, never evicted. */
+export function hasChosenServer() {
+  const st = migrate(readSrvs());
+  return !!(st && st.chosen);
 }
 
 // ---- Xtream Codes API -----------------------------------------------------------
@@ -180,40 +219,89 @@ function badAnswer(action, data) {
   return data.length === 0 && action.endsWith("_categories");
 }
 
-async function callServer(srv, action, extra) {
+const hostnameOf = (srv) => { try { return new URL(srv.url).hostname; } catch (_) { return ""; } };
+
+// One Xtream call. Remembers the account: dead (auth 0 / expired) for a day, blocked (Kino refuses this server's own host)
+// until the next version. A refusal of ANOTHER host (an ISP block that redirects to a government page over http) is a plain
+// failure: it depends on the network, not on the account. opts.timeoutMs: the health check and the failover keep it short.
+async function callServer(srv, action, extra, opts) {
   const params = new URLSearchParams({ username: srv.username, password: srv.password, action, ...extra });
-  const r = await kino.fetch(`${srv.url}/player_api.php?${params}`, {
-    headers: {
-      "Accept": "application/json,text/plain,*/*",
-      "Cache-Control": "no-cache",
-      "Pragma": "no-cache",
-      "User-Agent": "Mozilla/5.0 (compatible; VegetaTVCache/2.0)"
-    }
-  });
+  let r;
+  try {
+    r = await kino.fetch(`${srv.url}/player_api.php?${params}`, {
+      headers: {
+        "Accept": "application/json,text/plain,*/*",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
+        "User-Agent": "Mozilla/5.0 (compatible; VegetaTVCache/2.0)"
+      },
+      ...(opts && opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}),
+    });
+  } catch (e) {
+    if (e && e.code === "host_not_allowed" && e.host && e.host === hostnameOf(srv)) noteBlocked(srv);
+    throw e;
+  }
   if (!r.ok) throw new Error("API " + r.status);
-  const data = r.json();
+  let data;
+  try { data = r.json(); } catch (_) { throw new Error("respuesta inválida"); }
+  if (accountVerdict(data) === "dead") {
+    noteDead(srv);
+    throw Object.assign(new Error("cuenta no válida"), { dead: true });
+  }
   if (badAnswer(action, data)) throw new Error("respuesta inválida");
+  noteAlive(srv);
   return data;
 }
 
+// The VOD categories a probe just brought, kept as that server's category cache (no second request when it becomes active).
+function rememberProbeCats(srv, data) {
+  const k = keyOf(srv);
+  if (!k || !Array.isArray(data) || !data.length) return;
+  const list = data.map((c) => ({ category_id: String(c.category_id || ""), category_name: String(c.category_name || "").trim() }));
+  if (serverKey() === k) catMemo[PROBE_KIND] = { key: k, ts: Date.now(), list };
+  put("cats:" + PROBE_KIND + ":" + k, JSON.stringify({ ts: Date.now(), l: list.map((c) => [c.category_id, c.category_name]) }));
+}
+
 // El servidor "de casa" es el que generó el índice de títulos (sus ids y categorías son los del índice); si no se sabe, el primero.
+// Only the start of a fresh list and backHome without a choice use it: the index's fallback (indexHomeIdx) never pulls anyone.
 function homeIdx(st) {
   const i = st.list.findIndex((s) => indexFitsServer(s.url));
   return i >= 0 ? i : 0;
 }
 
-// Tras un fallo se pasó a otro servidor: se vuelve al de casa en cuanto responde (se mira cada 5 min), salvo que la persona haya
-// elegido otro a mano con «Cambiar servidor».
+// Where backHome returns: the person's chosen server, else home.
+function backTarget(st) {
+  if (st.chosen) {
+    const i = st.list.findIndex((s) => keyOf(s) === st.chosen);
+    if (i >= 0) return i;
+  }
+  return homeIdx(st);
+}
+
+// Tras un fallo (o el salto del chequeo de salud) se pasó a otro servidor: se vuelve al elegido por la persona (o al de casa)
+// en cuanto responde. Se mira cada 5 min; nunca a uno muerto o bloqueado (cero peticiones).
 async function backHome() {
   const st = await loadServers(false);
-  const home = homeIdx(st);
-  if (st.idx === home || st.pin || Date.now() - (st.homeAt || 0) < 300000) return;
+  const target = backTarget(st);
+  if (st.idx === target || Date.now() - (st.homeAt || 0) < 300000 || !usable(st.list[target])) return;
   st.homeAt = Date.now();
   try {
-    await callServer(st.list[home], "get_vod_categories", {});
-    st.idx = home; st.ok = true; st.okAt = Date.now();
+    const data = await callServer(st.list[target], PROBE, {});
+    st.idx = target; st.ok = true; st.okAt = Date.now();
+    rememberProbeCats(st.list[target], data);
   } catch (_) { /* sigue en el actual */ }
   writeSrvs(st);
+}
+
+// The failover walk: the active server, then the other accounts of its panel (same ids, same lists), then the rest in
+// list order. Dead and blocked accounts cost no request.
+function walkOrder(st) {
+  const n = st.list.length;
+  const map = readPanels();
+  const p = panelOf(keyOf(st.list[st.idx]), map);
+  const ring = Array.from({ length: n }, (_, j) => (st.idx + j) % n);
+  const same = p ? ring.filter((i) => i !== st.idx && panelOf(keyOf(st.list[i]), map) === p) : [];
+  return [st.idx, ...same, ...ring.filter((i) => i !== st.idx && !same.includes(i))].filter((i) => usable(st.list[i]));
 }
 
 async function api(action, extra = {}) {
@@ -223,8 +311,7 @@ async function api(action, extra = {}) {
     if (pass === 0) await backHome();
     const st2 = readSrvs();
     if (st2 && pass === 0) { st.idx = st2.idx; st.ok = st2.ok; st.okAt = st2.okAt; st.homeAt = st2.homeAt; }
-    for (let n = 0; n < st.list.length; n++) {
-      const i = (st.idx + n) % st.list.length;
+    for (const i of walkOrder(st)) {
       try {
         const data = await callServer(st.list[i], action, extra);
         if (i !== st.idx || !st.ok || Date.now() - (st.okAt || 0) > 5000) {
@@ -247,7 +334,7 @@ async function api(action, extra = {}) {
 async function activeServer() {
   let st = await loadServers(false);
   if (!st.ok) {
-    await api("get_vod_categories");
+    await api(PROBE);
     st = readSrvs();
   }
   return st.list[st.idx];
@@ -291,7 +378,7 @@ export async function serverStatus() {
   // Si ya hubo una respuesta buena de este servidor, se informa sin otra petición (el servicio puede tardar y el estado caducaba).
   if (cached && cached.ok && cached.list && cached.list[cached.idx] && Date.now() - (cached.okAt || 0) < 20000) return { ok: true, host: hostOf(cached.list[cached.idx]), index: cached.idx + 1, total: cached.list.length, at: cached.okAt };
   try {
-    await api("get_vod_categories");
+    await api(PROBE);
     const st = readSrvs();
     return { ok: true, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: st.list.length, at: st.okAt };
   } catch (e) {
@@ -307,13 +394,15 @@ export async function switchServer() {
   const https = st.list.filter((s) => String(s.url).startsWith("https://")).length;
   for (let k = 1; k < n; k++) {
     const i = (st.idx + k) % n;
+    if (!usable(st.list[i])) continue;
     try {
-      await callServer(st.list[i], "get_vod_categories", {});
+      const data = await callServer(st.list[i], PROBE, {});
       st.idx = i;
       st.ok = true;
       st.okAt = Date.now();
-      st.pin = i !== homeIdx(st); // elegido a mano: no se vuelve solo al de casa
+      st.chosen = keyOf(st.list[i]); // elegido a mano: es adonde se vuelve
       writeSrvs(st);
+      rememberProbeCats(st.list[i], data);
       return { changed: true, host: hostOf(st.list[i]), index: i + 1, total: n };
     } catch (e) { lastErr = errText(e); }
   }
@@ -338,12 +427,15 @@ function srvPriority(x) {
   if (!code) return 2; // Global / sin país
   return 3;
 }
+const flagOf = (srv) => { const fi = flagInfo(labelOf(srv)); return fi ? fi.code : ""; };
+const priorityOf = (srv) => srvPriority({ flag: flagOf(srv), label: niceLabel(srv) });
 
 // Items del selector con bandera y estado online; con un chequeo fresco, solo los que responden. Hispanohablantes primero.
+// Dead (auth 0) and blocked accounts are never offered: the first-run auto-pick and the picker skip them.
 function itemsWithHealth(st) {
   const h = healthFresh();
   const online = h ? new Set(h.online) : null;
-  let items = (st.list || []).map((s, i) => {
+  let items = (st.list || []).map((s, i) => ({ s, i })).filter(({ s }) => usable(s)).map(({ s, i }) => {
     const fi = flagInfo(labelOf(s));
     const flag = fi ? fi.code : "";
     const label = niceLabel(s);
@@ -355,7 +447,7 @@ function itemsWithHealth(st) {
   return items;
 }
 
-// Fija un servidor elegido a mano (no se vuelve solo al de casa). Lo prueba antes con una petición ligera.
+// Fija un servidor elegido a mano: es adonde se vuelve tras un fallo. Lo prueba antes con una petición ligera.
 // Prueba el elegido; si no responde, otros del mismo país (misma bandera) hasta dar con uno vivo (muchos están caídos). Tope de intentos.
 export async function selectServer(i) {
   const st = await loadServers(false);
@@ -364,12 +456,14 @@ export async function selectServer(i) {
   if (!(start >= 0 && start < n)) return { ok: false };
   const wantLabel = labelOf(st.list[start]);
   const all = Array.from({ length: n }, (_, k) => k);
-  const order = [start, ...all.filter((k) => k !== start && labelOf(st.list[k]) === wantLabel)].slice(0, 5);
+  // The tapped one is always tried once; its same-country fallbacks skip dead and blocked accounts.
+  const order = [start, ...all.filter((k) => k !== start && labelOf(st.list[k]) === wantLabel && usable(st.list[k]))].slice(0, 5);
   for (const idx of order) {
     try {
-      await callServer(st.list[idx], "get_vod_categories", {});
-      st.idx = idx; st.ok = true; st.okAt = Date.now(); st.pin = idx !== homeIdx(st);
+      const data = await callServer(st.list[idx], PROBE, {});
+      st.idx = idx; st.ok = true; st.okAt = Date.now(); st.chosen = keyOf(st.list[idx]);
       writeSrvs(st);
+      rememberProbeCats(st.list[idx], data);
       return { ok: true, host: hostOf(st.list[idx]), label: labelOf(st.list[idx]), index: idx + 1, total: n, exact: idx === start };
     } catch (e) { lastErr = errText(e); }
   }
@@ -379,6 +473,14 @@ export async function selectServer(i) {
 // ---- chequeo de salud: para que el selector muestre solo los servidores que responden ----------------
 const HEALTH_KEY = "health:v1";
 const HEALTH_TTL_MS = 30 * 60 * 1000; // se revisa de nuevo cuando pasa esto
+const HEALTH_TIMEOUT_MS = 10000;
+// The check runs inside one screen call (Kino gives it 20 s, ScreenLimits.CALL_TIMEOUT_MS): it stops starting probes at
+// this deadline and writes what answered. Kino runs 6 of a plugin's requests at once, so a probe started here starts there
+// and its timeout is the time it really has.
+const HEALTH_DEADLINE_MS = 15000;
+const HEALTH_PARALLEL = 6;
+const LIST_TIMEOUT_MS = 4000;
+const PANELS_STALE_MS = 20 * 60 * 60 * 1000; // the screen refreshes the panel map once a day (the live failover trusts 24 h)
 let healthRunning = false;
 
 function readHealth() {
@@ -387,25 +489,153 @@ function readHealth() {
 const healthFresh = () => { const h = readHealth(); return h && Date.now() - h.ts < HEALTH_TTL_MS ? h : null; };
 export const healthNeeded = () => !healthFresh() && !healthRunning;
 export const healthReady = () => !!healthFresh();
+/** The panel map is missing or older than 20 h: the screen runs one more health check after painting from the feed. */
+export const panelsStale = () => { const m = readPanels(); return !m || Date.now() - (Number(m.at) || 0) > PANELS_STALE_MS; };
 
-const probeAlive = async (srv) => { try { await callServer(srv, "get_vod_categories", {}); return true; } catch (_) { return false; } };
+// ---- the title index's server --------------------------------------------------------------------------------------
+// The index's category ids and stream ids are those of the panel it was generated from. Its own server is "home" (as before);
+// when it is dead or not answering, another account of the SAME panel can resolve index results just as fast. The health
+// check finds those accounts from the VOD categories it already downloads: the ones that carry the index's categories under
+// the same ids and names (fit, as mergeVod compares them). Measured: nexotvplus.com 72/72 while capitanhero.com is dead.
+// Stored in panels:v1 as `ix: { src, fits: [keys], home: key }`. Never a place to return to (backHome, a fresh list): only
+// where index results are looked up.
+const FIT_MIN = 0.8;
+const INDEX_NAMES_TIMEOUT_MS = 4000;
 
-// Prueba todos los servidores en paralelo y guarda las URLs de los que responden; si el activo quedó caído, salta al primero
-// online. Corre ANTES del Home (pantalla "Verificando servidores…"). Una corrida a la vez; nunca lanza (si no se pudo ni
-// cargar la lista, marca el chequeo hecho y vacío para no colgar la verificación).
+// A server's category [name] is the index's category entry [e] ([title, lang]), as mergeVod compares them.
+const sameIndexName = (name, e) => !!name && Array.isArray(e) && normKey(cleanCategoryName(name).title) === normKey(e[0]);
+
+// [until]: the health check's deadline; the index's names are not waited for past it (the last check's result stays).
+async function indexFitsFrom(answers, list, prevIx, until) {
+  const src = indexSource();
+  if (!src) return null;
+  const left = until - Date.now();
+  const names = left >= 1000 ? await indexCategoryNames({ timeoutMs: Math.min(INDEX_NAMES_TIMEOUT_MS, left), cacheMiss: false }).catch(() => null) : null;
+  const entries = Object.entries((names && names.vod) || {});
+  if (!entries.length) return prevIx && prevIx.src === src ? prevIx : null; // not known now: keep what the last check found
+  const idxKey = keyOf(list.find((s) => indexFitsServer(s.url)));
+  const scored = [];
+  list.forEach((s, i) => {
+    const data = answers.get(keyOf(s));
+    if (!Array.isArray(data)) return;
+    const byId = new Map(data.map((c) => [String(c.category_id || ""), String(c.category_name || "")]));
+    let n = 0;
+    for (const [id, e] of entries) if (sameIndexName(byId.get(id), e)) n++;
+    if (n / entries.length >= FIT_MIN) scored.push({ k: keyOf(s), fit: n / entries.length, full: n === entries.length, i });
+  });
+  const seed = installSeed();
+  const tie = (k) => { let h = 0x811c9dc5; const t = seed + k; for (let j = 0; j < t.length; j++) { h ^= t.charCodeAt(j); h = Math.imul(h, 16777619); } return h >>> 0; };
+  const others = scored.filter((x) => x.k !== idxKey).sort((a, b) => b.fit - a.fit || tie(a.k) - tie(b.k));
+  return { src, fits: scored.map((x) => x.k), full: scored.filter((x) => x.full).map((x) => x.k), ...(others.length ? { home: others[0].k } : {}) };
+}
+
+const ixOf = (map) => (map && map.ix && map.ix.src && map.ix.src === indexSource() ? map.ix : null);
+
+// Whether [srv]'s VOD ids are the index's: the index's own server, or an account the health check found carrying at least
+// FIT_MIN of the index's categories (an account of its panel; its bouquet can still lack some: see carriesIndexCats).
+function fitsIndex(srv, map) {
+  if (!srv) return false;
+  if (indexFitsServer(srv.url)) return true;
+  const ix = ixOf(map);
+  return !!ix && Array.isArray(ix.fits) && ix.fits.includes(keyOf(srv));
+}
+// ...with every one of the index's categories (fit 1).
+function fullyFitsIndex(srv, map) {
+  const ix = ixOf(map);
+  return !!srv && !!ix && Array.isArray(ix.full) && ix.full.includes(keyOf(srv));
+}
+
+// [srv]'s cached category list of [kind] (memory or storage, any age), or null: no request.
+function storedCats(kind, srv) {
+  const k = keyOf(srv);
+  const m = catMemo[kind];
+  if (k && m && m.key === k && Array.isArray(m.list)) return m.list;
+  try {
+    const o = JSON.parse(kino.storage.get("cats:" + kind + ":" + k) || "null");
+    return o && Array.isArray(o.l) ? o.l.map(([category_id, category_name]) => ({ category_id: String(category_id), category_name: String(category_name) })) : null;
+  } catch (_) { return null; }
+}
+
+// Whether [srv] carries the index title [p]'s own categories: each of its index category ids is in [srv]'s cached categories
+// under the index's name. null when it cannot tell (no cached categories, no index names, a ref without categories).
+async function carriesIndexCats(srv, p) {
+  if (!p || !p.cats.length) return null;
+  const kind = p.kind === "movies" ? "vod" : "series";
+  const names = await indexCategoryNames({ timeoutMs: INDEX_NAMES_TIMEOUT_MS }).catch(() => null);
+  const idx = (names && names[kind]) || {};
+  const cats = storedCats(kind, srv);
+  const ids = p.cats.map(String).filter((id) => idx[id]);
+  if (!cats || !ids.length) return null;
+  const byId = new Map(cats.map((c) => [String(c.category_id), c.category_name]));
+  return ids.every((id) => sameIndexName(byId.get(id), idx[id]));
+}
+
+// Where index results are looked up: the index's server while it answers, else the account of its panel found by the health
+// check, else the index's server when it is not known dead or blocked, else none (-1: the active server resolves by title).
+function indexHomeIdx(st, map) {
+  const i = st.list.findIndex((s) => indexFitsServer(s.url));
+  if (!indexSource()) return i; // an index without its server's tag: as before
+  const h = healthFresh();
+  const up = (s) => usable(s) && (!h || h.online.includes(s.url));
+  if (i >= 0 && up(st.list[i])) return i;
+  const ix = ixOf(map);
+  if (ix && ix.home) {
+    const j = st.list.findIndex((s) => keyOf(s) === ix.home);
+    if (j >= 0 && up(st.list[j])) return j;
+  }
+  return i >= 0 && usable(st.list[i]) ? i : -1;
+}
+
+// Probes the servers 6 at a time (never a dead or blocked account: zero requests), the active and the chosen one first, within
+// HEALTH_DEADLINE_MS, and stores the URLs of those that answer; a server the deadline left unprobed is stored with them (not
+// known down: the picker keeps offering it), never as down. With the same answers it groups the servers into panels and finds
+// the accounts of the index's panel (0 extra requests to the servers). When the active server is down it jumps to one that
+// answered: same panel, then same country, then by priority. The jump never touches `chosen` (backHome returns there). One
+// run at a time; never throws (without even a list, it stores an empty check so the "Verificando" screen cannot hang).
 export async function healthCheck() {
   if (healthRunning) return 0;
   healthRunning = true;
+  const until = Date.now() + HEALTH_DEADLINE_MS;
   try {
-    const st = await loadServers(false);
+    const st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS });
     const list = st.list || [];
-    const results = await Promise.all(list.map(async (s) => ((await probeAlive(s)) ? s.url : null)));
-    const online = results.filter(Boolean);
-    put(HEALTH_KEY, JSON.stringify({ ts: Date.now(), online }));
-    const cur = list[st.idx];
+    const sets = new Map();
+    const answers = new Map();
+    const answered = new Set();
+    const unprobed = new Set();
+    const first = new Set([keyOf(list[st.idx]), st.chosen].filter(Boolean));
+    const order = [...list.filter((s) => first.has(keyOf(s))), ...list.filter((s) => !first.has(keyOf(s)))];
+    await pool(order, HEALTH_PARALLEL, async (s) => {
+      if (!usable(s)) return;
+      const left = until - Date.now();
+      if (left < 1500) { unprobed.add(s.url); return; }
+      try {
+        const data = await callServer(s, PROBE, {}, { timeoutMs: Math.min(HEALTH_TIMEOUT_MS, left - 500) });
+        sets.set(keyOf(s), pairHashes(data));
+        answers.set(keyOf(s), data);
+        answered.add(s.url);
+      } catch (_) { /* down */ }
+    });
+    const online = list.filter((s) => answered.has(s.url)).map((s) => s.url);
+    const now = Date.now();
+    put(HEALTH_KEY, JSON.stringify({ ts: now, online: list.filter((s) => answered.has(s.url) || unprobed.has(s.url)).map((s) => s.url) }));
+    const prev = readPanels();
+    const map = groupPanels(sets, prev, now);
+    const ix = await indexFitsFrom(answers, list, prev && prev.ix, until);
+    if (ix) map.ix = ix;
+    writePanels(map);
+    // The index panel's account answers index results: its categories now, so that lookup needs no request for 6 h.
+    const ixHome = ix && ix.home ? list.find((s) => keyOf(s) === ix.home) : null;
+    if (ixHome && answers.has(ix.home)) rememberProbeCats(ixHome, answers.get(ix.home));
+    const fresh = readSrvs() || st;
+    const cur = fresh.list && fresh.list[fresh.idx];
     if (cur && online.length && !online.includes(cur.url)) {
-      const i = list.findIndex((s) => s.url === online[0]);
-      if (i >= 0) { st.idx = i; st.ok = true; st.okAt = Date.now(); st.pin = true; writeSrvs(st); }
+      const p = panelOf(keyOf(cur), map);
+      const flag = flagOf(cur);
+      const score = (s) => [p && panelOf(keyOf(s), map) === p ? 0 : 1, flagOf(s) === flag ? 0 : 1, priorityOf(s)];
+      const cands = fresh.list.map((s, i) => ({ s, i, sc: score(s) })).filter((x) => online.includes(x.s.url))
+        .sort((a, b) => a.sc[0] - b.sc[0] || a.sc[1] - b.sc[1] || a.sc[2] - b.sc[2] || a.i - b.i);
+      if (cands.length) { fresh.idx = cands[0].i; fresh.ok = true; fresh.okAt = now; writeSrvs(fresh); }
     }
     return online.length;
   } catch (_) {
@@ -419,7 +649,7 @@ export async function refreshServers() {
   const st = await loadServers(true);
   const fresh = !before || st.ts !== before.ts; // la lista se pidió de nuevo (si el arranque falla, loadServers devuelve la vieja)
   let ok = fresh;
-  if (fresh) { try { await api("get_vod_categories"); } catch (_) { /* la lista nueva ya está; el servidor se prueba al usarlo */ } }
+  if (fresh) { try { await api(PROBE); } catch (_) { /* la lista nueva ya está; el servidor se prueba al usarlo */ } }
   const now = readSrvs() || st;
   return { ok, total: now.list.length, host: hostOf(now.list[now.idx]) };
 }
@@ -618,14 +848,23 @@ async function pool(list, limit, fn) {
 }
 
 // Una categoría: vacía ([]) es válida; fallar lanza (se reintenta una vez, con respaldo de servidor dentro de api()).
-async function fetchCategory(action, categoryId) {
+// [srv]: ask that server only (index results on the index's server), without the walk and without touching srvs: once, with
+// a short timeout (opts.timeoutMs, else EXPLICIT_TIMEOUT_MS), so resolve keeps time for the active server.
+const EXPLICIT_TIMEOUT_MS = 4000;
+async function fetchCategory(action, categoryId, srv, opts) {
+  const extra = { category_id: String(categoryId) };
+  if (srv) {
+    const data = await callServer(srv, action, extra, { timeoutMs: (opts && opts.timeoutMs) || EXPLICIT_TIMEOUT_MS });
+    if (!Array.isArray(data)) throw new Error("respuesta que no es lista");
+    return data;
+  }
   for (let attempt = 0; ; attempt++) {
     try {
-      const data = await api(action, { category_id: String(categoryId) });
+      const data = await api(action, extra);
       if (!Array.isArray(data)) throw new Error("respuesta que no es lista");
       return data;
     } catch (e) {
-      if (attempt >= 1 || (e && e.code === "rate_limited")) throw e;
+      if (attempt >= 1 || (e && (e.code === "rate_limited" || e.dead))) throw e;
     }
   }
 }
@@ -638,29 +877,31 @@ const byAddedDesc = (a, b) => num(b.added) - num(a.added);
 const CAT_ACTIONS = { vod: "get_vod_categories", series: "get_series_categories", live: "get_live_categories" };
 const catMemo = {};
 
-async function categoryList(kind) {
-  const key = serverKey();
+// [srv]: that server's list (index results on the index's server): storage cache only, the memo stays the active server's;
+// asked with a short timeout (opts.timeoutMs, else EXPLICIT_TIMEOUT_MS).
+async function categoryList(kind, srv, opts) {
+  const key = srv ? keyOf(srv) : serverKey();
   const m = catMemo[kind];
-  if (key && m && m.key === key && Date.now() - m.ts < CACHE_TTL_MS) return m.list;
+  if (!srv && key && m && m.key === key && Date.now() - m.ts < CACHE_TTL_MS) return m.list;
   if (key) {
     try {
       const o = JSON.parse(kino.storage.get("cats:" + kind + ":" + key) || "null");
       if (o && Array.isArray(o.l) && Date.now() - o.ts < CACHE_TTL_MS) {
         const list = o.l.map(([category_id, category_name]) => ({ category_id, category_name }));
-        catMemo[kind] = { key, ts: o.ts, list };
+        if (!srv) catMemo[kind] = { key, ts: o.ts, list };
         return list;
       }
     } catch (_) { /* se vuelve a pedir */ }
   }
-  const data = await api(CAT_ACTIONS[kind]);
+  const data = srv ? await callServer(srv, CAT_ACTIONS[kind], {}, { timeoutMs: (opts && opts.timeoutMs) || EXPLICIT_TIMEOUT_MS }) : await api(CAT_ACTIONS[kind]);
   const list = (Array.isArray(data) ? data : []).map((c) => ({ category_id: String(c.category_id || ""), category_name: String(c.category_name || "").trim() }));
-  const now = serverKey();
-  catMemo[kind] = { key: now, ts: Date.now(), list };
+  const now = srv ? key : serverKey();
+  if (!srv) catMemo[kind] = { key: now, ts: Date.now(), list };
   put("cats:" + kind + ":" + now, JSON.stringify({ ts: Date.now(), l: list.map((c) => [c.category_id, c.category_name]) }));
   return list;
 }
 
-const mergedVod = async (kind) => mergeVod(kind, await categoryList(kind), { showAdult: showAdult() });
+const mergedVod = async (kind, srv, opts) => mergeVod(kind, await categoryList(kind, srv, opts), { showAdult: showAdult() });
 
 const itemOf = (kind, x, adult) => (kind === "vod" ? vodItem(x, adult) : seriesItem(x, adult));
 
@@ -897,8 +1138,8 @@ export async function search(query) {
 
 // Categorías de este servidor (los ids del índice son de otro servidor): primero géneros y estrenos, que es donde más se repite.
 // [wanted]: [título, idioma] de las categorías del índice; las de este servidor que se llaman igual van primero.
-const serverCats = async (kind, wanted = []) => {
-  const all = searchOrder(await mergedVod(kind === "movies" ? "vod" : "series"));
+const serverCats = async (kind, wanted = [], srv, opts) => {
+  const all = searchOrder(await mergedVod(kind === "movies" ? "vod" : "series", srv, opts));
   const key = (title) => String(title).toLowerCase().replace(/[^a-z0-9]+/g, "");
   const hit = (c) => wanted.some(([t, l]) => key(t) === key(c.title) && (l === c.lang || !l));
   const same = all.filter(hit);
@@ -976,14 +1217,28 @@ export async function liveCategories() {
   }));
 }
 
-function liveItem(s, categoryId, adult) {
+// The category's name by id, from the live categories in memory (the listing's own server).
+let catNames = { list: null, map: null };
+function catNameOf(catId) {
+  const m = catMemo.live;
+  if (!m || !Array.isArray(m.list)) return "";
+  if (catNames.list !== m.list) catNames = { list: m.list, map: new Map(m.list.map((c) => [String(c.category_id), c.category_name])) };
+  return catNames.map.get(String(catId)) || "";
+}
+
+// A live item. Its ref carries the category (id and name) and the channel's name, identical for every account of a
+// panel: resolve() can then tell whether the id belongs to the active server's panel and find the channel by name on
+// another panel when every account of its own refuses it. The ref always reads the panel's RAW name; [shown] (the name
+// without its decorations, channelTitles) is only what the person sees.
+function liveItem(s, categoryId, adult, shown) {
   const id = String(s.stream_id || "");
-  const title = String(s.name || "").trim();
-  if (!id || !title) return null;
+  const raw = String(s.name || "").trim();
+  if (!id || !raw) return null;
+  const catId = String(categoryId || s.category_id || "");
   return {
     id: "live-" + id,
-    title,
-    ref: "live:" + id,
+    title: shown || raw,
+    ref: liveRef(id, catId, categoryTok(catNameOf(catId)), channelTok(raw)),
     logo: img(s.stream_icon),
     number: parseInt(s.num, 10) || undefined,
     categoryId: String(categoryId || s.category_id || ""),
@@ -997,12 +1252,26 @@ export async function liveChannels({ categoryId, cursor }) {
   if (adult && !showAdult()) return { items: [] };
   const all = await fetchCategory("get_live_streams", String(categoryId || ""));
   const start = Math.max(0, parseInt(cursor, 10) || 0);
-  const items = all.slice(start, start + LIVE_PAGE).map((s) => liveItem(s, categoryId, adult)).filter(Boolean);
+  // Shown titles over the whole category (not the page): a channel looks the same on every page.
+  const shown = shownTitles(all, categoryKey(catNameOf(categoryId)));
+  const items = [];
+  for (let i = start; i < Math.min(all.length, start + LIVE_PAGE); i++) { const it = liveItem(all[i], categoryId, adult, shown[i]); if (it) items.push(it); }
   return { items, next: all.length > start + LIVE_PAGE ? String(start + LIVE_PAGE) : undefined };
 }
 
+// The shown titles of one list of panel streams (`[{ name }]`) whose category's country or region is [catKey].
+const shownTitles = (streams, catKey) => channelTitles(streams.map((s) => (s && s.name) || ""), { cat: catKey, lang: langNow() });
+
+// Whether a stream's name holds [q] (lowercase): as the panel writes it, or as the person sees it. The shown title only adds
+// text the raw name lacks when it gained a " · " or a quality moved to its end, so only such a query cleans each name.
+const SHOWN_ONLY = /·|\b(?:4k|8k|uhd|fhd|hd|sd|hevc)\b/;
+const nameHas = (s, q) => {
+  const raw = String((s && s.name) || "");
+  return raw.toLowerCase().replace(/\s+/g, " ").includes(q) || (SHOWN_ONLY.test(q) && cleanChannelTitle(raw).title.toLowerCase().includes(q));
+};
+
 export async function liveSearchDetailed({ query }, { budgetMs = 11000 } = {}) {
-  const q = String(query || "").trim().toLowerCase();
+  const q = String(query || "").trim().toLowerCase().replace(/\s+/g, " ");
   if (q.length < 2) return { items: [], partial: false };
   const deadline = Date.now() + budgetMs;
   const cats = visibleLive(await liveCats());
@@ -1020,7 +1289,7 @@ export async function liveSearchDetailed({ query }, { budgetMs = 11000 } = {}) {
     const batch = await Promise.all(slice.map(async (cat) => {
       try {
         const data = await fetchCategory("get_live_streams", cat.id);
-        return data.filter((s) => String(s.name || "").toLowerCase().includes(q)).map((s) => liveItem(s, cat.id, cat.adult)).filter(Boolean)
+        return data.filter((s) => nameHas(s, q)).map((s) => liveItem(s, cat.id, cat.adult)).filter(Boolean)
           .map((it) => ({ ...it, adult: cat.adult === true }));
       } catch (e) {
         if (e && e.code === "rate_limited") capped = true; else failed++;
@@ -1032,6 +1301,11 @@ export async function liveSearchDetailed({ query }, { budgetMs = 11000 } = {}) {
   }
   if (items.length < LIMIT && scanned < cats.length) capped = true;
   if (!items.length && failed) throw kino.error("unavailable", "la búsqueda no pudo completarse", { userMessage: "No se pudo completar la búsqueda." });
+  // The hits are one mixed list: their shown titles are worked out together. A query that IS a hit's raw name (Kino looks a
+  // channel saved under its old, decorated name up this way) gets that hit under its raw name, so Kino recognises it.
+  const shown = shownTitles(items.map((it) => ({ name: it.title })), "");
+  const asked = normName(query);
+  items.forEach((it, i) => { if (normName(it.title) !== asked) it.title = shown[i]; });
   return { items, partial: failed > 0 || capped };
 }
 
@@ -1065,6 +1339,8 @@ export async function countryRow(limit = 20) {
       items.push({ id: it.id, ref: it.ref, title: it.title, kind: "live", poster: it.logo, ...(c.adult ? { adult: true } : {}) });
     }
   }
+  const shown = shownTitles(items.map((it) => ({ name: it.title })), cc.toLowerCase());
+  items.forEach((it, i) => { it.title = shown[i]; });
   return items.length ? { id: "live-country", title: "Canales en vivo", items } : null;
 }
 
@@ -1113,7 +1389,7 @@ export async function guide({ channelIds, from, to }) {
 
 const AVAIL_KEY = "avail:v1";
 const AVAIL_TTL_MS = 36 * 60 * 60 * 1000; // el catálogo cambia lento; se vuelve a comprobar pasado esto
-const AVAIL_MAX_IDS = 400;
+const AVAIL_MAX_BYTES = 15 * 1024; // its storage class holds 16 KB: the oldest titles go first, so a write always fits
 
 function readAvail() { try { const o = JSON.parse(kino.storage.get(AVAIL_KEY) || "{}"); return o && typeof o === "object" ? o : {}; } catch (_) { return {}; } }
 // Apunta si el servidor [k] tiene (ext = su extensión) o no (ext = null) la película [id].
@@ -1124,12 +1400,17 @@ function recordAvail(id, k, ext) {
   t[k] = ext ? { has: 1, ext, ts: Date.now() } : { has: 0, ts: Date.now() };
   t._ts = Date.now();
   all[id] = t;
-  const keys = Object.keys(all);
-  if (keys.length > AVAIL_MAX_IDS) { // se olvidan las películas vistas hace más tiempo
-    keys.sort((a, b) => (all[a]._ts || 0) - (all[b]._ts || 0));
-    for (const old of keys.slice(0, keys.length - AVAIL_MAX_IDS)) delete all[old];
+  // Se olvidan las películas vistas hace más tiempo hasta caber en AVAIL_MAX_BYTES (unos 150 títulos).
+  const keys = Object.keys(all).sort((a, b) => (all[a]._ts || 0) - (all[b]._ts || 0));
+  let drop = 0;
+  let text = JSON.stringify(all);
+  while (text.length > AVAIL_MAX_BYTES && drop < keys.length - 1) {
+    const cut = Math.max(1, Math.ceil((keys.length - drop) / 10));
+    for (const old of keys.slice(drop, drop + cut)) delete all[old];
+    drop += cut;
+    text = JSON.stringify(all);
   }
-  try { put(AVAIL_KEY, JSON.stringify(all)); } catch (_) { /* storage lleno: se pierde el aprendizaje, no pasa nada */ }
+  try { put(AVAIL_KEY, text); } catch (_) { /* storage lleno: se pierde el aprendizaje, no pasa nada */ }
 }
 // Lo que sabemos del servidor [k] para la película [id]: { has, ext? } fresco, o null si no se sabe / caducó.
 function availFor(id, k) {
@@ -1153,6 +1434,7 @@ function buildAlternatives(availId, activeKey, makeRef) {
   for (const srv of st.list) {
     const k = keyOf(srv);
     if (!k || k === activeKey) continue;
+    if (!usable(srv)) continue; // dead (auth 0) or blocked: never offered
     if (online && !online.has(srv.url)) continue; // solo online, si hay chequeo fresco
     const av = availFor(availId, k);
     if (av && !av.has) continue; // ya sabemos que no lo tiene: se omite
@@ -1205,7 +1487,8 @@ async function resolveAlt(s) {
   if (kind === "l") {
     const id = segs[2] || "";
     if (!/^\d+$/.test(id)) throw kino.error("not_found", "fuente desconocida");
-    // Mismo canal (mismo id) en el servidor [K]; sin verificar (ver la rama live de resolve). Si no lo tiene, el reproductor salta solo.
+    // El canal en el servidor [K] elegido por la persona: el menú solo ofrece cuentas del mismo panel (mismo id) o el id que
+    // la búsqueda por nombre verificó en otro panel (ver liveFailover.js).
     return { url: `${srv.url}/live/${srv.username}/${srv.password}/${id}.${liveFormat()}` };
   }
 
@@ -1231,24 +1514,111 @@ async function resolveAlt(s) {
   throw kino.error("not_found", "fuente desconocida");
 }
 
-// Resuelve un idx: en el servidor de CASA (el índice es suyo → resolveIdxRef+serverCats ahí es RÁPIDO), sin cambiar el servidor del
-// usuario: fija el activo a casa solo durante la resolución y lo restaura. Devuelve { srv (el que lo resolvió), direct } o null.
-async function resolveIdxOnHome(idxRef) {
+// ---- live failover ---------------------------------------------------------------------------------------------------
+
+// The cached live categories of [srv] (memory or storage, any age) and when they were fetched: no request.
+function cachedLive(srv) {
+  const k = keyOf(srv);
+  if (!k) return null;
+  const m = catMemo.live;
+  if (m && m.key === k && Array.isArray(m.list)) return { ts: m.ts, list: m.list };
+  try {
+    const o = JSON.parse(kino.storage.get("cats:live:" + k) || "null");
+    if (o && Array.isArray(o.l)) return { ts: o.ts, list: o.l.map(([category_id, category_name]) => ({ category_id: String(category_id), category_name: String(category_name) })) };
+  } catch (_) { /* not cached */ }
+  return null;
+}
+const cachedCats = (srv) => { const c = cachedLive(srv); return c ? c.list : null; };
+const cachedCatsAt = (srv) => { const c = cachedLive(srv); return c && typeof c.ts === "number" ? c.ts : null; };
+
+// Live categories the failover asked again, kept as that server's live category cache (the active one's memo too).
+function rememberLiveCats(srv, data) {
+  const k = keyOf(srv);
+  if (!k || !Array.isArray(data) || !data.length) return;
+  const list = data.map((c) => ({ category_id: String(c.category_id || ""), category_name: String(c.category_name || "").trim() }));
+  if (serverKey() === k) catMemo.live = { key: k, ts: Date.now(), list };
+  put("cats:live:" + k, JSON.stringify({ ts: Date.now(), l: list.map((c) => [c.category_id, c.category_name]) }));
+}
+
+// The server list for a live resolve: the cached one (even past its 6 h), never a failover walk; the bootstrap only on a
+// fresh install, with short timeouts (resolve has 20 s).
+async function liveServers() {
+  const st = readSrvs();
+  if (st && Array.isArray(st.list) && st.list.length) return st;
+  return loadServers(false, { timeoutMs: 4000 });
+}
+
+// A per-install number: equally ranked accounts are not all picked in the same order by every device (the accounts are
+// shared and allow 1-3 connections).
+let seedMemo = "";
+function installSeed() {
+  if (seedMemo) return seedMemo;
+  let v = null;
+  try { v = kino.storage.get("seed:v1"); } catch (_) { v = null; }
+  if (!v || !/^\d+$/.test(v)) { v = String(Math.floor(Math.random() * 1e9)); put("seed:v1", v); }
+  seedMemo = v;
+  return v;
+}
+
+export const langNow = () => { try { return /^en/i.test(String(kino.lang || "")) ? "en" : "es"; } catch (_) { return "es"; } };
+
+const failover = createLiveFailover({
+  servers: liveServers,
+  cachedCats,
+  catsAt: cachedCatsAt,
+  storeCats: rememberLiveCats,
+  callServer,
+  playUrl: (srv, id, format) => `${srv.url}/live/${srv.username}/${srv.password}/${id}.${format || liveFormat()}`,
+  label: niceLabel,
+  host: hostOf,
+  online: () => { const h = healthFresh(); return h ? new Set(h.online) : null; },
+  flag: flagOf,
+  priority: priorityOf,
+  seed: installSeed,
+  now: () => Date.now(),
+  unavailable: () => kino.error("unavailable", "no account plays this channel now", { userMessage: say("liveNoServer", langNow()) }),
+  notFound: () => kino.error("not_found", "channel not found"),
+});
+
+// An index result on the index's HOME (its category ids are the index's, so resolveIdxRef + serverCats there is FAST), without
+// changing the person's server: requests go to that server explicitly and srvs is never written (a Kino timeout can no longer
+// leave the person pinned at home). When the active server is an account of the index's panel that carries the title's own
+// categories (or, when that is unknown, every category of the index), the normal path resolves it: { skipped: true }.
+// Every request to home has a short timeout and no retry; the first one it does not answer (timeout, network, refused host,
+// dead account) or IDX_HOME_DEADLINE_MS ends the attempt (Kino gives resolve 20 s: the rest is the active server's). [force]: without the
+// active server's shortcut (it lacked the title). Returns { srv (the one that resolved it), direct }, { skipped: true } or null.
+const IDX_HOME_DEADLINE_MS = 10000;
+const IDX_RESOLVE_BUDGET_MS = 19000; // Kino's RESOLVE_TIMEOUT_MS is 20 s
+async function resolveIdxOnHome(idxRef, { force = false, until = Date.now() + IDX_HOME_DEADLINE_MS } = {}) {
   const st = readSrvs();
   if (!st || !Array.isArray(st.list)) return null;
-  const homeI = st.list.findIndex((x) => indexFitsServer(x.url));
-  if (homeI < 0 || homeI === st.idx) return null; // el activo ya es casa: lo resuelve el camino normal
-  const saved = { idx: st.idx, pin: st.pin, ok: st.ok, okAt: st.okAt };
-  writeSrvs({ ...st, idx: homeI, pin: true, ok: true, okAt: Date.now() });
-  let direct = null, srv = st.list[homeI];
+  const map = readPanels();
+  const active = st.list[st.idx];
+  if (!force && indexSource() && usable(active) && fitsIndex(active, map)) {
+    if (indexFitsServer(active.url)) return { skipped: true };
+    const carries = await carriesIndexCats(active, parseIdxRef(idxRef));
+    if (carries === true || (carries === null && fullyFitsIndex(active, map))) return { skipped: true };
+  }
+  const homeI = indexHomeIdx(st, map);
+  if (homeI < 0 || homeI === st.idx) return null; // the active server is home: the normal path resolves it
+  const home = st.list[homeI];
+  let down = false;
+  // One request to home, in the time the attempt has left; refused (thrown) once home is down or the deadline is near, which
+  // resolveIdxRef counts as a failed category.
+  const onHome = async (ask) => {
+    const left = until - Date.now();
+    if (down || left < 1000) throw new Error("index server not answering");
+    try { return await ask({ timeoutMs: Math.min(EXPLICIT_TIMEOUT_MS, left) }); } catch (e) {
+      if (e && (e.code === "timeout" || e.code === "network" || e.code === "host_not_allowed" || e.dead)) down = true;
+      throw e;
+    }
+  };
   try {
-    direct = await resolveIdxRef(idxRef, fetchCategory, serverCats);
-    const after = readSrvs(); // api() pudo saltar a otro servidor: la URL se arma con el que de verdad respondió
-    if (after && Array.isArray(after.list) && after.list[after.idx]) srv = after.list[after.idx];
-  } catch (_) { direct = null; }
-  const now = readSrvs() || st;
-  writeSrvs({ ...now, ...saved }); // restaurar el servidor del usuario
-  return direct ? { srv, direct } : null;
+    const direct = await resolveIdxRef(idxRef,
+      (action, cat) => onHome((o) => fetchCategory(action, cat, home, o)),
+      (kind, wanted) => onHome((o) => serverCats(kind, wanted, home, o)));
+    return direct ? { srv: home, direct } : null;
+  } catch (_) { return null; }
 }
 
 export async function resolve(ref) {
@@ -1257,15 +1627,35 @@ export async function resolve(ref) {
   // Fuente alternativa: la misma película en otro servidor (no el activo, y sin cambiarlo).
   if (s.startsWith("at:")) return await resolveAlt(s);
 
+  // En vivo: la cuenta que reproduce el canal y, con evidencia (un rechazo o la cadena de reaperturas de Kino), otra cuenta del
+  // mismo panel o el mismo canal por nombre en otro panel. Nunca cambia el servidor activo ni hace el recorrido de respaldo.
+  if (s.startsWith("live:")) return failover.resolve(s);
+
+  const t0 = Date.now();
   const active = await activeServer();
   const { url, username, password } = active;
 
-  // Resultado del índice (idx:m:): se resuelve en el servidor de CASA (rápido y con todos los títulos del índice); si el activo ya
-  // es casa, cae al camino normal de abajo. Lleva el find para las fuentes por servidor.
+  // An index result (idx:m:) resolves on the index's home (fast, and with every title of the index); when the active server
+  // carries the title's categories it takes the normal path below, and when the title is not there, home gets one try. It
+  // carries the find token for the per-server sources.
   if (s.startsWith("idx:m:")) {
     const p = parseIdxRef(s);
     const tok = (p && p.find) || "";
-    const onHome = await resolveIdxOnHome(s);
+    await indexCategoryNames({ timeoutMs: INDEX_NAMES_TIMEOUT_MS }).catch(() => null); // once per session, never Kino's 15 s
+    let onHome = await resolveIdxOnHome(s);
+    if (!onHome || !onHome.direct) {
+      // The active server carries the index's ids (or home did not answer): resolved there, then played as a normal movie.
+      try {
+        s = (await resolveIdxRef(s, fetchCategory, serverCats)) + (tok ? "~" + tok : ""); // "vod:<id>:<ext>" on the active server
+        onHome = null;
+      } catch (e) {
+        // The active account fit the index but lacked this title: once on the index's server, in the time resolve has left.
+        const until = Math.min(Date.now() + IDX_HOME_DEADLINE_MS, t0 + IDX_RESOLVE_BUDGET_MS);
+        if (!onHome || !onHome.skipped || !e || e.code !== "not_found" || until - Date.now() < 3000) throw e;
+        onHome = await resolveIdxOnHome(s, { force: true, until });
+        if (!onHome || !onHome.direct) throw e;
+      }
+    }
     const mv = onHome && /^vod:(\d+):(.+)$/.exec(onHome.direct);
     if (mv) {
       const [, id, ext] = mv, srv = onHome.srv, key = keyOf(srv);
@@ -1276,21 +1666,6 @@ export async function resolve(ref) {
       if (alts.length) { out.alternatives = alts; out.label = niceLabel(srv); }
       return out;
     }
-    // El activo ES casa (o casa no respondió): se resuelve en el activo y se sigue como una película normal.
-    const direct = await resolveIdxRef(s, fetchCategory, serverCats); // "vod:<id>:<ext>" en el activo, o lanza not_found
-    s = direct + (tok ? "~" + tok : "");
-  }
-
-  if (s.startsWith("live:")) {
-    const id = s.slice(5).split("~")[0];
-    if (!/^\d+$/.test(id)) throw kino.error("not_found");
-    const aKey = serverKey();
-    // En vivo no tiene consulta por id (verificar exigiría bajar toda la lista, ~MB → riesgo de OOM): se muestran todos los
-    // online, con el mismo id, y el que no tenga el canal lo cubre el fallback del reproductor. Sin "aprende" para en vivo.
-    const out = { url: `${url}/live/${username}/${password}/${id}.${liveFormat()}` };
-    const alts = buildAlternatives("l:" + id, aKey, (k) => `at:${k}~l~${id}`);
-    if (alts.length) { out.alternatives = alts; out.label = niceLabel(active); } // etiqueta del servidor activo en el menú "Servidor"
-    return out;
   }
 
   if (s.startsWith("vod:")) {

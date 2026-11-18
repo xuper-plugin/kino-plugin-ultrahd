@@ -96,11 +96,11 @@ const sleep = async (ms) => { try { if (typeof kino.sleep === "function") await 
 
 // ---- descarga y validación -----------------------------------------------------------------------------------------
 
-async function fetchJson(file, hash, tries) {
+async function fetchJson(file, hash, tries, timeoutMs) {
   let last = null;
   for (let i = 0; i < tries; i++) {
     try {
-      const r = await kino.fetch(`${fetchBase}${file}?v=${hash || Date.now()}`, { headers: { Accept: "application/json" } });
+      const r = await kino.fetch(`${fetchBase}${file}?v=${hash || Date.now()}`, { headers: { Accept: "application/json" }, ...(timeoutMs ? { timeoutMs } : {}) });
       if (!r.ok) throw new Error("HTTP " + r.status);
       return r.json();
     } catch (e) { last = e; if (i < tries - 1) await sleep(1500 * (i + 1)); }
@@ -191,6 +191,8 @@ export function indexFitsServer(url) {
   if (!st || !st.src) return true;
   return st.src === sourceTag(url);
 }
+/** The tag of the server the index was generated from ("" for an index without one: then every server "fits"). */
+export const indexSource = () => { const st = readState(); return st && st.src ? String(st.src) : ""; };
 
 // Texto para los ajustes: cuántos títulos hay y de qué revisión.
 export async function indexLabel(serverUrl) {
@@ -506,13 +508,17 @@ export function parseIdxRef(ref) {
 
 // Nombres de las categorías del servidor que generó el índice (id -> [título, idioma]); cada servidor numera las suyas, así que
 // el nombre es lo que se puede comparar. Se baja una vez por sesión (unos KB).
+// opts (the health check): { timeoutMs, cacheMiss: false } — a short wait, and a failure is not remembered for the session.
 let catNames = null;
-async function indexCategoryNames() {
+export async function indexCategoryNames(opts = {}) {
   if (catNames) return catNames;
   try {
-    const j = await fetchJson("categories.json", "", 1);
+    const j = await fetchJson("categories.json", "", 1, opts.timeoutMs);
     catNames = { vod: (j && j.vod) || {}, series: (j && j.series) || {} };
-  } catch (_) { catNames = { vod: {}, series: {} }; }
+  } catch (_) {
+    if (opts.cacheMiss === false) return { vod: {}, series: {} };
+    catNames = { vod: {}, series: {} };
+  }
   return catNames;
 }
 
