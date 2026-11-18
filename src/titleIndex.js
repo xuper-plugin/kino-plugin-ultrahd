@@ -29,6 +29,8 @@ const timed = async (st, rows, fn) => {
 };
 // El último trozo descargado se guarda en memoria: reanudar a mitad de trozo no lo vuelve a bajar ni a parsear.
 let partCache = null;
+// The same for the delta being applied: a step under a second applies a big delta over several steps.
+let deltaCache = null;
 const MIN_COVERAGE = 0.9;
 const MAX_TITLE = 300;
 const REV = /^\d{8}T\d{6}Z$/;
@@ -231,6 +233,8 @@ export function indexNeeded() {
 
 // Un paso del poblado/actualización, acotado por [budgetMs]. Idempotente y reanudable; nunca lanza.
 // Devuelve: "unsupported" | "fresh" | "paused" | "done" | "wait" | "error".
+// A step always makes progress, however short its budget (the screen gives it under a second, so that Kino never stretches
+// the wait after its tick): its first download or batch runs even when it would not fit, the next ones only when they do.
 export function indexStep(opts = {}) {
   if (!hasCatalog()) return Promise.resolve("unsupported");
   if (running) return running;
@@ -255,8 +259,14 @@ function snapshotStage(m, fresh) {
   };
 }
 
+// The deadline of the step running now, and whether it already downloaded or wrote something (then a next download or
+// batch waits for the next step unless it fits before the deadline).
+let did = false;
+const late = (needMs, deadline) => did && Date.now() + needMs > deadline;
+
 async function step({ budgetMs = 6000 } = {}) {
   const deadline = Date.now() + budgetMs;
+  did = false;
   let st = readState();
   const now = Date.now();
 
@@ -276,6 +286,7 @@ async function step({ budgetMs = 6000 } = {}) {
     let m;
     try {
       m = await download("index.json", "", first ? 3 : 1);
+      did = true;
       if (!validManifest(m)) throw new Error("manifiesto inválido");
     } catch (_) {
       const keep = st || { v: FORMAT, done: false, snap: 0 };
@@ -315,12 +326,13 @@ async function runDelta(st, deadline) {
   const sg = st.stage;
   const toSnapshot = () => { st.stage = sg.snap; st.snap = (st.snap || 0) + 1; writeState(st); return "again"; };
   while (sg.next < sg.chain.length) {
-    if (Date.now() + 2000 > deadline) { writeState(st); return "paused"; }
+    if (late(2000, deadline)) { writeState(st); return "paused"; }
     const { file, to } = sg.chain[sg.next];
     const from = sg.next === 0 ? st.rev : sg.chain[sg.next - 1].to;
     let d;
     try {
-      d = validDelta(await download(file, to, 1), from, to);
+      if (deltaCache && deltaCache.file === file) d = deltaCache.d;
+      else { d = validDelta(await download(file, to, 1), from, to); deltaCache = { file, d }; did = true; }
     } catch (e) {
       sg.fails++;
       if (sg.fails >= 2 || /inválid|desaline/.test(String(e && e.message))) return toSnapshot();
@@ -329,19 +341,21 @@ async function runDelta(st, deadline) {
     }
     try {
       for (let off = sg.offA; off < d.added.length;) {
-        if (Date.now() + lastBatchMs > deadline) { sg.offA = off; writeState(st); return "paused"; }
+        if (late(lastBatchMs, deadline)) { sg.offA = off; writeState(st); return "paused"; }
         const n = batchSize;
         const rows = d.added.slice(off, off + n).map((e) => rowOf(e.k, e.n, e.y, e.t, e.c, st.snap));
         await timed(st, rows.length, () => upsertKeeping(rows, true));
+        did = true;
         stats.upserted += rows.length;
         off += n;
       }
       sg.offA = d.added.length;
       for (let off = sg.offR; off < d.removed.length;) {
-        if (Date.now() + lastBatchMs > deadline) { sg.offR = off; writeState(st); return "paused"; }
+        if (late(lastBatchMs, deadline)) { sg.offR = off; writeState(st); return "paused"; }
         const n = batchSize;
         const ids = d.removed.slice(off, off + n);
         await timed(st, ids.length, () => kino.catalog.remove(ids));
+        did = true;
         stats.removed += ids.length;
         off += n;
       }
@@ -353,6 +367,7 @@ async function runDelta(st, deadline) {
       const c = await safeCount();
       if (c >= 0 && c !== d.total) return toSnapshot();
     }
+    deltaCache = null;
     st.rev = to;
     st.total = d.total;
     sg.next++;
@@ -377,13 +392,13 @@ async function runDelta(st, deadline) {
 async function runSnapshot(st, deadline) {
   const sg = st.stage;
   while (sg.next < sg.files.length) {
-    if (!(partCache && sg.offset > 0) && Date.now() + 1200 > deadline) { writeState(st); return "paused"; }
+    if (!(partCache && sg.offset > 0) && late(1200, deadline)) { writeState(st); return "paused"; }
     const [file, hash] = sg.files[sg.next];
     const kind = file.startsWith("movies") ? "m" : "s";
     let part;
     try {
       if (partCache && partCache.file === file && partCache.hash === hash) part = partCache.part;
-      else { part = validPart(await download(file, hash, 1)); partCache = { file, hash, part }; }
+      else { part = validPart(await download(file, hash, 1)); partCache = { file, hash, part }; did = true; }
     } catch (_) {
       sg.fails++;
       if (sg.fails >= 3) { st.stage = null; st.retryAt = Date.now() + RETRY_LATER_MS; writeState(st); return "error"; }
@@ -391,7 +406,7 @@ async function runSnapshot(st, deadline) {
       return "error";
     }
     for (let off = sg.offset; off < part.names.length;) {
-      if (Date.now() + lastBatchMs > deadline) { sg.offset = off; writeState(st); return "paused"; }
+      if (late(lastBatchMs, deadline)) { sg.offset = off; writeState(st); return "paused"; }
       const n = batchSize;
       const rows = [];
       for (let i = off; i < Math.min(off + n, part.names.length); i++) {
@@ -400,6 +415,7 @@ async function runSnapshot(st, deadline) {
       }
       try {
         await timed(st, rows.length, () => upsertKeeping(rows, !sg.fresh));
+        did = true;
         stats.upserted += rows.length;
         off += n;
       } catch (e) {
@@ -420,12 +436,13 @@ async function runSnapshot(st, deadline) {
   if (!sg.fresh && !st.capped) {
     if (!sg.purge) sg.purge = { offset: 0 };
     for (;;) {
-      if (Date.now() + 1500 > deadline) { writeState(st); return "paused"; }
+      if (late(1500, deadline)) { writeState(st); return "paused"; }
       let page;
       try { page = await kino.catalog.search({ q: "", limit: 100, offset: sg.purge.offset, order: "title" }); } catch (_) { writeState(st); return "error"; }
       const items = page && isList(page.items) ? page.items : [];
       if (!items.length) break;
       const stale = items.filter((r) => dataOf(r).r !== st.snap).map((r) => r.id);
+      did = true;
       if (stale.length) { try { await kino.catalog.remove(stale); stats.removed += stale.length; } catch (_) { writeState(st); return "error"; } }
       sg.purge.offset += items.length - stale.length;
       if (items.length < 100) break;

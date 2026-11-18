@@ -461,6 +461,7 @@ var timed = async (st, rows, fn) => {
   p.rows += rows;
 };
 var partCache = null;
+var deltaCache = null;
 var MIN_COVERAGE = 0.9;
 var MAX_TITLE = 300;
 var REV = /^\d{8}T\d{6}Z$/;
@@ -685,8 +686,11 @@ function snapshotStage(m, fresh) {
     purge: null
   };
 }
+var did = false;
+var late = (needMs, deadline) => did && Date.now() + needMs > deadline;
 async function step({ budgetMs = 6e3 } = {}) {
   const deadline = Date.now() + budgetMs;
+  did = false;
   let st = readState();
   const now = Date.now();
   if (st && st.rev) {
@@ -700,6 +704,7 @@ async function step({ budgetMs = 6e3 } = {}) {
     let m;
     try {
       m = await download("index.json", "", first ? 3 : 1);
+      did = true;
       if (!validManifest(m)) throw new Error("manifiesto inv\xE1lido");
     } catch (_) {
       const keep = st || { v: FORMAT, done: false, snap: 0 };
@@ -748,7 +753,7 @@ async function runDelta(st, deadline) {
     return "again";
   };
   while (sg.next < sg.chain.length) {
-    if (Date.now() + 2e3 > deadline) {
+    if (late(2e3, deadline)) {
       writeState(st);
       return "paused";
     }
@@ -756,7 +761,12 @@ async function runDelta(st, deadline) {
     const from = sg.next === 0 ? st.rev : sg.chain[sg.next - 1].to;
     let d;
     try {
-      d = validDelta(await download(file, to, 1), from, to);
+      if (deltaCache && deltaCache.file === file) d = deltaCache.d;
+      else {
+        d = validDelta(await download(file, to, 1), from, to);
+        deltaCache = { file, d };
+        did = true;
+      }
     } catch (e) {
       sg.fails++;
       if (sg.fails >= 2 || /inválid|desaline/.test(String(e && e.message))) return toSnapshot();
@@ -765,7 +775,7 @@ async function runDelta(st, deadline) {
     }
     try {
       for (let off = sg.offA; off < d.added.length; ) {
-        if (Date.now() + lastBatchMs > deadline) {
+        if (late(lastBatchMs, deadline)) {
           sg.offA = off;
           writeState(st);
           return "paused";
@@ -773,12 +783,13 @@ async function runDelta(st, deadline) {
         const n = batchSize;
         const rows = d.added.slice(off, off + n).map((e) => rowOf(e.k, e.n, e.y, e.t, e.c, st.snap));
         await timed(st, rows.length, () => upsertKeeping(rows, true));
+        did = true;
         stats.upserted += rows.length;
         off += n;
       }
       sg.offA = d.added.length;
       for (let off = sg.offR; off < d.removed.length; ) {
-        if (Date.now() + lastBatchMs > deadline) {
+        if (late(lastBatchMs, deadline)) {
           sg.offR = off;
           writeState(st);
           return "paused";
@@ -786,6 +797,7 @@ async function runDelta(st, deadline) {
         const n = batchSize;
         const ids = d.removed.slice(off, off + n);
         await timed(st, ids.length, () => kino.catalog.remove(ids));
+        did = true;
         stats.removed += ids.length;
         off += n;
       }
@@ -801,6 +813,7 @@ async function runDelta(st, deadline) {
       const c = await safeCount();
       if (c >= 0 && c !== d.total) return toSnapshot();
     }
+    deltaCache = null;
     st.rev = to;
     st.total = d.total;
     sg.next++;
@@ -824,7 +837,7 @@ async function runDelta(st, deadline) {
 async function runSnapshot(st, deadline) {
   const sg = st.stage;
   while (sg.next < sg.files.length) {
-    if (!(partCache && sg.offset > 0) && Date.now() + 1200 > deadline) {
+    if (!(partCache && sg.offset > 0) && late(1200, deadline)) {
       writeState(st);
       return "paused";
     }
@@ -836,6 +849,7 @@ async function runSnapshot(st, deadline) {
       else {
         part = validPart(await download(file, hash, 1));
         partCache = { file, hash, part };
+        did = true;
       }
     } catch (_) {
       sg.fails++;
@@ -849,7 +863,7 @@ async function runSnapshot(st, deadline) {
       return "error";
     }
     for (let off = sg.offset; off < part.names.length; ) {
-      if (Date.now() + lastBatchMs > deadline) {
+      if (late(lastBatchMs, deadline)) {
         sg.offset = off;
         writeState(st);
         return "paused";
@@ -862,6 +876,7 @@ async function runSnapshot(st, deadline) {
       }
       try {
         await timed(st, rows.length, () => upsertKeeping(rows, !sg.fresh));
+        did = true;
         stats.upserted += rows.length;
         off += n;
       } catch (e) {
@@ -885,7 +900,7 @@ async function runSnapshot(st, deadline) {
   if (!sg.fresh && !st.capped) {
     if (!sg.purge) sg.purge = { offset: 0 };
     for (; ; ) {
-      if (Date.now() + 1500 > deadline) {
+      if (late(1500, deadline)) {
         writeState(st);
         return "paused";
       }
@@ -899,6 +914,7 @@ async function runSnapshot(st, deadline) {
       const items = page && isList(page.items) ? page.items : [];
       if (!items.length) break;
       const stale = items.filter((r) => dataOf(r).r !== st.snap).map((r) => r.id);
+      did = true;
       if (stale.length) {
         try {
           await kino.catalog.remove(stale);
@@ -3947,6 +3963,18 @@ async function categoryList(kind, srv, opts) {
   put("cats:" + kind + ":" + now, JSON.stringify({ ts: Date.now(), l: list.map((c) => [c.category_id, c.category_name]) }));
   return list;
 }
+function categoriesCached(kind) {
+  const key = serverKey();
+  const m = catMemo[kind];
+  if (!key) return false;
+  if (m && m.key === key && Date.now() - m.ts < CACHE_TTL_MS) return true;
+  try {
+    const o = JSON.parse(kino.storage.get("cats:" + kind + ":" + key) || "null");
+    return !!(o && Array.isArray(o.l) && Date.now() - o.ts < CACHE_TTL_MS);
+  } catch (_) {
+    return false;
+  }
+}
 var mergedVod = async (kind, srv, opts) => mergeVod(kind, await categoryList(kind, srv, opts), { showAdult: showAdult() });
 var itemOf = (kind, x, adult) => kind === "vod" ? vodItem(x, adult) : seriesItem(x, adult);
 async function loadRailsInfo(kind, maxRails, perRail, opts = {}) {
@@ -4722,7 +4750,7 @@ var LOGO_DATA = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAIAAABt+
 // src/screenView.js
 var TAB_IDS = ["home", "movies", "series", "live"];
 var TAB_KEYS = { home: "tabHome", movies: "tabMovies", series: "tabSeries", live: "tabLive" };
-var POLL_MS = 1500;
+var POLL_MS = 1e3;
 var GRID_CAP = 60;
 var MAX_SLIDES = 6;
 var MAX_SLIDE_TEXT = 160;
@@ -5577,7 +5605,7 @@ async function runUnit(unit, opts) {
     countryCards = row ? row.items.map(cardOf) : [];
   } else if (unit === "recent") await loadRecent();
   else if (unit === "index") {
-    const out = await indexStep({ budgetMs: 2500 });
+    const out = await indexStep({ budgetMs: INDEX_STEP_MS });
     console.log("[dbg] index step -> " + out);
     if (out === "error" || out === "wait") throw new Error("\xEDndice: " + out);
   } else if (unit === "health" && !serverChosen()) {
@@ -5712,6 +5740,23 @@ async function screen(ctx) {
     return { type: "Column", padding: 16, children: [{ type: "settings", key: "classicForm" }] };
   }
 }
+var TICK_BUDGET_MS = 1200;
+var CHEAP_MS = 600;
+var INDEX_STEP_MS = 900;
+function unitCost(unit) {
+  if (unit === "recent") return recentLookups() * 300;
+  if (unit === "lfeed" || unit.startsWith("hfeed:")) return 300;
+  if (unit === "hcheck") return 400;
+  if (unit.startsWith("hplan:")) return categoriesCached("vod") && categoriesCached("series") ? 0 : 600;
+  if (unit.startsWith("hrail:")) return 600;
+  return 1e3;
+}
+function recentLookups() {
+  const key = serverKey();
+  let n = 0;
+  for (const e of recentEntriesAll()) if (!e.card && e.srv === key) n++;
+  return Math.min(n, 6);
+}
 var FIRST_RUN_BUDGET_MS = 16e3;
 var FIRST_FEED_RESERVE_MS = 4e3;
 var FIRST_FEED_MIN_MS = 2500;
@@ -5845,9 +5890,11 @@ var events = {
         failed[unit] = true;
       }
       console.log("[dbg] unit " + unit + " tab=" + tab + " " + (Date.now() - t1) + "ms" + (failed[unit] ? " FAILED" : ""));
-      if (!until) break;
       const next = pendingUnit({ ...state, failed }, tab, device);
-      if (!next || next === unit || !fitsFirstRun(next, until)) break;
+      if (!next || next === unit) break;
+      if (until) {
+        if (!fitsFirstRun(next, until)) break;
+      } else if (unitCost(next) > CHEAP_MS || Date.now() - t0 + unitCost(next) > TICK_BUDGET_MS) break;
       unit = next;
     }
     cacheKey = serverKey();

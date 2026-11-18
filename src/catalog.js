@@ -1162,6 +1162,18 @@ async function categoryList(kind, srv, opts) {
   return list;
 }
 
+/** The active server's [kind] category list is cached and fresh: listing it needs no request. */
+export function categoriesCached(kind) {
+  const key = serverKey();
+  const m = catMemo[kind];
+  if (!key) return false;
+  if (m && m.key === key && Date.now() - m.ts < CACHE_TTL_MS) return true;
+  try {
+    const o = JSON.parse(kino.storage.get("cats:" + kind + ":" + key) || "null");
+    return !!(o && Array.isArray(o.l) && Date.now() - o.ts < CACHE_TTL_MS);
+  } catch (_) { return false; }
+}
+
 const mergedVod = async (kind, srv, opts) => mergeVod(kind, await categoryList(kind, srv, opts), { showAdult: showAdult() });
 
 const itemOf = (kind, x, adult) => (kind === "vod" ? vodItem(x, adult) : seriesItem(x, adult));

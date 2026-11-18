@@ -461,7 +461,8 @@ async function runUnit(unit, opts) {
   } else if (unit === "recent") await loadRecent();
   else if (unit === "index") {
     // Un paso corto por tick: el índice se llena a ratos sin frenar el Home. "paused" = sigue en el próximo tick.
-    const out = await indexStep({ budgetMs: 2500 });
+    // Under a second (it took 1.4-2.4 s with 2.5 s, and Kino then waited 2.8-4.9 s before the next tick).
+    const out = await indexStep({ budgetMs: INDEX_STEP_MS });
     console.log("[dbg] index step -> " + out);
     if (out === "error" || out === "wait") throw new Error("índice: " + out);
   }
@@ -605,6 +606,32 @@ export async function screen(ctx) {
   }
 }
 
+// ---- the tick: several cheap units at once ----
+// Kino sends the next tick POLL_MS (1 s) after a tick and its render finished, stretched to twice what a slow tick took
+// (PluginScreenSession.nextWait). One unit per tick paid that wait after every unit, even one that needs no request (measured:
+// the first data 2.4-2.5 s after the first render, waits stretched up to 4.9 s). So after a unit the tick runs the next one
+// too while that one is cheap (its estimate at most CHEAP_MS) and the tick stays within TICK_BUDGET_MS; a heavy unit (the
+// index, a check, a tab, the hero) only ever starts a tick, and keeps itself near a second (INDEX_STEP_MS, healthStep).
+const TICK_BUDGET_MS = 1200;
+const CHEAP_MS = 600;
+const INDEX_STEP_MS = 900;
+// What a unit is expected to take, from its requests (a panel list ~0.5 s, a GitHub file ~0.25 s, a login ~0.3 s).
+function unitCost(unit) {
+  if (unit === "recent") return recentLookups() * 300;
+  if (unit === "lfeed" || unit.startsWith("hfeed:")) return 300;
+  if (unit === "hcheck") return 400; // one step: the active server's login answer
+  if (unit.startsWith("hplan:")) return cat.categoriesCached("vod") && cat.categoriesCached("series") ? 0 : 600;
+  if (unit.startsWith("hrail:")) return 600;
+  return 1000; // index, the checks, country, hero, a whole tab
+}
+// How many "Continuar viendo" cards loadRecent still has to ask the panel for (one request each, one after another).
+function recentLookups() {
+  const key = cat.serverKey();
+  let n = 0;
+  for (const e of recentEntriesAll()) if (!e.card && e.srv === key) n++;
+  return Math.min(n, 6);
+}
+
 // The first run's tick (the race, or the health check and the automatic pick, then the picked server's feed or the picker)
 // stays inside Kino's 20 s screen call.
 const FIRST_RUN_BUDGET_MS = 16000;
@@ -738,9 +765,10 @@ const events = {
       const t1 = Date.now();
       try { await runUnit(unit, { until }); } catch (_) { failed[unit] = true; }
       console.log("[dbg] unit " + unit + " tab=" + tab + " " + (Date.now() - t1) + "ms" + (failed[unit] ? " FAILED" : ""));
-      if (!until) break;
       const next = pendingUnit({ ...state, failed }, tab, device);
-      if (!next || next === unit || !fitsFirstRun(next, until)) break;
+      if (!next || next === unit) break;
+      if (until) { if (!fitsFirstRun(next, until)) break; }
+      else if (unitCost(next) > CHEAP_MS || Date.now() - t0 + unitCost(next) > TICK_BUDGET_MS) break;
       unit = next;
     }
     cacheKey = cat.serverKey();

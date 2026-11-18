@@ -5,7 +5,9 @@ import { langLabel } from "./names.js";
 
 export const TAB_IDS = ["home", "movies", "series", "live"];
 const TAB_KEYS = { home: "tabHome", movies: "tabMovies", series: "tabSeries", live: "tabLive" };
-const POLL_MS = 1_500;
+// The screen's timer while something loads: Kino's minimum (ScreenLimits). A tick keeps itself near a second (several
+// cheap units, or one heavy one), so the wait after it stays short (Kino stretches it to twice a slow tick's time).
+const POLL_MS = 1_000;
 const GRID_CAP = 60;
 const MAX_SLIDES = 6;
 const MAX_SLIDE_TEXT = 160;
