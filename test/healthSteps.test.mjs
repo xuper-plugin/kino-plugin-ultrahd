@@ -16,10 +16,10 @@ test.afterEach(() => { Date.now = realNow; });
 const { sealV2: seal, withCrypto } = sealer();
 
 // hosts: [{ id, does: "ok" | "hang" | "dead", ms }]; each its own host. feeds: serve the account's home and live feeds.
-// listAgeH: how old the cached server list is (the bootstrap serves the same list, in 300 ms).
+// listAgeH: how old the cached server list is (the bootstrap serves the same list, in 300 ms; bootHangs: it never answers).
 // The screen's catalog module is shared by every test of this file (its memory of who answered lately too): each test
 // names its hosts apart (hosts(n, prefix)).
-function world(hosts, { storage = {}, feeds = false, active = 0, listAgeH = 0 } = {}) {
+function world(hosts, { storage = {}, feeds = false, active = 0, listAgeH = 0, bootHangs = false } = {}) {
   const net = virtualNet({ start: Date.UTC(2026, 10, 17, 12) });
   Date.now = net.now;
   const srv = (h) => ({ url: `http://${h.id}.example`, username: "u" + h.id, password: "p" + h.id, name: "🇲🇽" });
@@ -30,8 +30,9 @@ function world(hosts, { storage = {}, feeds = false, active = 0, listAgeH = 0 } 
   const routes = [(url, init) => {
     const u = new URL(url);
     if (u.hostname === "vegetatvv2.duckdns.org") {
-      const e = { n: "boot", t: net.now() };
+      const e = { n: "boot", t: net.now(), timeoutMs: init && init.timeoutMs };
       log.push(e);
+      if (bootHangs) return track(e, net.request((init && init.timeoutMs) || 15000).then(() => kinoError("timeout", "the request took too long")));
       const text = list.map((s) => `${s.url}/get.php?username=${s.username}&password=${s.password} [${s.name}]`).join("\n");
       return track(e, net.request(300).then(() => res(200, { ok: true, servers_text: text })));
     }
@@ -207,4 +208,44 @@ test("a server list past its 6 h: En vivo paints from its feed with no bootstrap
   assert.equal(boot.length, 1);
   assert.ok(boot[0].t >= feed.end);
   assert.equal(w.probes().length, 0, "nothing else is probed");
+});
+
+test("a server list past its 6 h, no feed: the quick check before the content takes the cached list; the renewal comes after", async () => {
+  const w = world(hosts(6, "q"), { feeds: false, active: 1, listAgeH: 7 });
+  w.store.set("panels:v1", freshPanels(w));
+  w.store.set("health:v1", JSON.stringify({ ts: w.net.now() - 7 * H, online: [] }));
+  const s = await screenOf(w, { tab: "movies" });
+  const firstContent = () => w.probes().find((e) => e.action === "get_vod_streams");
+  assert.ok(await s.until(async () => !!firstContent()), "the tab loaded");
+  assert.deepEqual(w.probes().filter((e) => e.t < firstContent().t && e.action === null).map((e) => e.n), ["q1"], "the active server's quick check");
+  assert.ok(!w.log.some((e) => e.n === "boot" && e.t < firstContent().t), "no bootstrap request before the content: " + JSON.stringify(w.log.filter((e) => e.n === "boot")));
+  assert.ok(await s.until(async () => sharedCat.serverListFresh()), "renewed after the content");
+  assert.equal(w.log.filter((e) => e.n === "boot").length, 1);
+});
+
+test("a server list past its 6 h: the Home from its feed first, the list renewed once after it", async () => {
+  const w = world(hosts(4, "h"), { feeds: true, listAgeH: 7 });
+  w.store.set("panels:v1", freshPanels(w));
+  const s = await screenOf(w, { tab: "home" });
+  assert.ok(await s.until(async () => (await s.view()).includes("Del feed")), "the feed painted");
+  assert.ok(await s.until(async () => sharedCat.serverListFresh()), "renewed in a later tick");
+  const feed = w.log.find((e) => e.n === "github" && e.path.includes("/home/"));
+  const boot = w.log.filter((e) => e.n === "boot");
+  assert.equal(boot.length, 1);
+  assert.ok(boot[0].t >= feed.end, "after the feed");
+  assert.equal(w.probes().length, 0, "nothing else is probed");
+});
+
+test("a server list past its 6 h and a bootstrap that does not answer: the renewal is tried once, then rests 30 min", async () => {
+  const w = world(hosts(4, "z"), { feeds: true, listAgeH: 7, bootHangs: true });
+  w.store.set("panels:v1", freshPanels(w));
+  w.store.set("browseTab", "live");
+  const s = await screenOf(w, { tab: "live" });
+  const held = [];
+  for (let i = 0; i < 8; i++) held.push(await s.tick());
+  assert.ok((await s.view()).includes("Canal"), "the feed painted");
+  const boot = w.log.filter((e) => e.n === "boot");
+  assert.deepEqual(boot.map((e) => e.timeoutMs), [4000], "one try with its 4 s; tried every tick, each tick would hold Kino's call 4 s");
+  assert.ok(held.every((h) => h <= 4000), JSON.stringify(held));
+  assert.equal(sharedCat.serverListFresh(), false, "the cached list stays as it was");
 });
