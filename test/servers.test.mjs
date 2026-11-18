@@ -330,20 +330,19 @@ test("movies and episodes: the same paths, minus dead accounts in the 'Servidor'
   assert.ok(ep.url.startsWith(SRV.a1.url + "/series/") && ep.url.endsWith("/456.mkv"));
 });
 
-test("first run: the health check runs before the auto-pick, which never tries a dead account; a lost flag heals", async () => {
+test("first run: the auto-pick races 3 Spanish accounts before any health check and never picks a dead one; a lost flag heals", async () => {
   const w = world();
   const screen = await fresh("screen.js");
   let state = {};
   const tick = async () => { const r = await screen.screenEvent({ name: "tick", state, lang: "es" }); state = { ...state, ...(r && r.state) }; };
   await tick();
-  assert.deepEqual(new Set(w.log.filter((e) => e.action).map((e) => e.n)), new Set(NAMES), "the health check probed every server once");
-  const n = w.log.length;
-  await tick();
-  const pick = w.log.slice(n).filter((e) => e.action);
-  assert.equal(pick.length, 1, "the auto-pick tried one server");
-  assert.notEqual(pick[0].n, "home");
+  const race = w.log.filter((e) => e.action);
+  assert.deepEqual(race.map((e) => e.n).sort(), ["a1", "a2", "home"], "the first 3 Spanish accounts raced; no health check");
+  assert.ok(race.every((e) => e.timeoutMs === 4000));
+  assert.ok(isDead(srvOf("home"), T), "home answered auth 0: remembered dead");
+  assert.ok(["a1", "a2"].includes(activeName(w)), "the pick is an account that answered well");
+  assert.equal(srvs(w).chosen, keyOf(srvOf(activeName(w))));
   assert.equal(w.store.get("srvChosen:v1"), "1");
-  assert.ok(srvs(w).chosen);
   // The flag disappears (an older build's eviction): the chosen server still counts and the flag is written again.
   w.store.delete("srvChosen:v1");
   const view = await screen.screen({ route: { name: "main" }, state, device: { kind: "phone" } });

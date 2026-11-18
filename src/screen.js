@@ -76,6 +76,7 @@ let liveFound = null;
 let pickServers = null; // lista para el selector de servidor (respaldo si el auto-elegido no responde)
 let cacheKey = null;
 let autoPickTried = false; // primera instalación: ya se intentó elegir servidor automáticamente (en español, sin que la persona elija)
+let pickedNow = false; // the first run's race just picked the server: the health check comes after the first content, once
 
 // La persona ya eligió servidor al menos una vez: se recuerda para no volver a mostrar el selector inicial (se cambia con 🌐).
 // The flag, or the chosen server kept with the server list (both never evicted); a missing flag is written again.
@@ -203,10 +204,10 @@ const HOME_SERIES = 4;
 
 // Intenta el feed pre-armado del servidor. Si llega, el Home queda listo para pintar al instante (sin tocar el IPTV) y se
 // guarda el snapshot local; si no, se marca intentado y unitsFor deja correr la carga en vivo. Nunca lanza.
-async function loadHomeFeed(lang) {
+async function loadHomeFeed(lang, opts) {
   homeFeedTried.add(lang);
   let feed = null;
-  try { feed = await fetchHomeFeed(cat.serverKey(), lang); } catch (_) { feed = null; }
+  try { feed = await fetchHomeFeed(cat.serverKey(), lang, opts); } catch (_) { feed = null; }
   if (!feed || !feed.rows.length) return;
   // El feed trae el idioma por defecto del servidor; se usa para ese idioma (los demás caen a vivo).
   const key = feed.lang && isLang(feed.lang) ? feed.lang : lang;
@@ -222,10 +223,10 @@ async function loadHomeFeed(lang) {
 
 // Intenta el feed pre-armado de En vivo (la primera pantalla: filas de canales por categoría, refrescado ~1x/día en el Action).
 // Si llega, la pestaña En vivo se pinta al instante (sin recorrer el IPTV) y se guarda snapshot local. Nunca lanza.
-async function loadLiveFeed() {
+async function loadLiveFeed(opts) {
   liveFeedTried = true;
   let f = null;
-  try { f = await fetchLiveFeed(cat.serverKey()); } catch (_) { f = null; }
+  try { f = await fetchLiveFeed(cat.serverKey(), opts); } catch (_) { f = null; }
   if (!f || !f.rails || !f.rails.length) return;
   // The feed is built by the Action from the published code: a feed from before the title cleanup still carries the
   // panels' decorated channel names. Cleaning again is a no-op on titles already clean.
@@ -346,21 +347,15 @@ function feedTabFor(tab, lang) {
   return t && Array.isArray(t.rows) && t.rows.length ? t : null;
 }
 
-// Primera instalación: elige el servidor automáticamente, PREFIRIENDO los de habla hispana (la mayoría del público), sin que la
-// persona elija ni ver el selector. Corre después del chequeo de salud: la lista ya viene sin los caídos, los muertos ni los
-// bloqueados. selectServer prueba el servidor (y alterna dentro del mismo país), así el elegido responde.
-// Si ninguno responde (p. ej. sin internet), queda sin elegir y mainView muestra el selector como respaldo. El 🌐 lo cambia luego.
-async function autoPick() {
+// First run: the server is picked automatically, Spanish first (most of the audience), without the person choosing or seeing
+// the picker, and without a health check first: the top 3 Spanish accounts of the picker's order race (cat.raceFirstServer;
+// dead and blocked accounts never take part) and the first that answers well is chosen. Its feed follows in the same tick
+// (`tick`), and the health check runs after the first content. If none of the 3 answers (no internet, a slow network), the
+// plan falls back to the health check and the manual picker. The 🌐 changes the server later.
+async function autoPick(opts) {
   autoPickTried = true;
-  try {
-    const list = await cat.serverList();
-    const items = list.items || [];
-    const order = [...items.filter((x) => x.es), ...items.filter((x) => !x.es)].slice(0, 6);
-    for (const it of order) {
-      const r = await cat.selectServer(String(it.i)).catch(() => ({ ok: false }));
-      if (r && r.ok) { markServerChosen(); cacheKey = cat.serverKey(); return; }
-    }
-  } catch (_) { /* sin internet: queda el selector de respaldo */ }
+  const r = await cat.raceFirstServer(opts).catch(() => ({ ok: false }));
+  if (r && r.ok) { pickedNow = true; markServerChosen(); cacheKey = cat.serverKey(); }
 }
 
 // With the feed painted the servers are not probed, except once a day, last, to keep the panel map and the index's server
@@ -368,9 +363,12 @@ async function autoPick() {
 const dailyHealth = () => (cat.panelsStale() ? ["health"] : []);
 
 function unitsFor(tab, lang) {
-  // Primera instalación: chequeo de salud y luego se elige servidor automáticamente (autopick, en español) entre los que
-  // responden. Si no logró ninguno, se cae al selector manual.
-  if (!serverChosen()) return autoPickTried ? ["health", "pick"] : ["health", "autopick"];
+  // First run: the race picks the server (autopick, Spanish first); if none of its accounts answered, the health check and
+  // then the manual picker.
+  if (!serverChosen()) return autoPickTried ? ["health", "pick"] : ["autopick"];
+  // Right after the race the picked server has just answered: the health check goes after the content, not before it.
+  const hBefore = pickedNow ? [] : ["health"];
+  const hAfter = pickedNow ? ["health"] : [];
   if (tab === "home") {
     // El Home carga fila por fila: primero el plan (categorías ordenadas), luego UNA unidad por fila (`hrail:...`), que aparece
     // apenas carga; país, recientes e índice van al final. Hasta tener el plan, solo health + plan.
@@ -383,22 +381,22 @@ function unitsFor(tab, lang) {
     const railUnits = plan.map((p) => `hrail:${p.kind}:${lang}:${p.id}`);
     const heroUnit = railUnits.length ? [`hhero:${lang}`] : [];
     // hfeed va primero (no necesita el chequeo): si está el feed, el Home sale sin esperar los ~3s de "Verificando…".
-    return [`hfeed:${lang}`, "health", `hplan:${lang}`, ...railUnits, ...heroUnit, ...(countryOn() ? ["country"] : []), "recent", "index"];
+    return [`hfeed:${lang}`, ...hBefore, `hplan:${lang}`, ...railUnits, ...heroUnit, ...(countryOn() ? ["country"] : []), "recent", "index", ...hAfter];
   }
   // Películas/Series: el feed (v2) también trae estas pestañas pre-armadas. Si la de este idioma ya está, se pinta al instante
   // y no se recorre el IPTV; si falta, se intenta el feed una vez (hfeed) y, si no llega o es v1, cae a la carga en vivo.
   if (tab === "movies" || tab === "series") {
     if (feedTabFor(tab, lang)) return [`hfeed:${lang}`, ...dailyHealth()];
-    if (!homeFeedTried.has(lang)) return [`hfeed:${lang}`, "health", `tab:${tab}:${lang}`];
-    return ["health", `tab:${tab}:${lang}`];
+    if (!homeFeedTried.has(lang)) return [`hfeed:${lang}`, ...hBefore, `tab:${tab}:${lang}`, ...hAfter];
+    return [...hBefore, `tab:${tab}:${lang}`, ...hAfter];
   }
   // En vivo: primero el feed pre-armado (1x/día); si está, la primera pantalla sale al instante. Cambiar de categoría es en vivo.
   if (tab === "live") {
     if (liveFeedData) return ["lfeed", "health"];
-    if (!liveFeedTried) return ["lfeed", "health", "tab:live"];
-    return ["health", "tab:live"];
+    if (!liveFeedTried) return ["lfeed", ...hBefore, "tab:live", ...hAfter];
+    return [...hBefore, "tab:live", ...hAfter];
   }
-  return ["health", `tab:${tab}:${lang}`];
+  return [...hBefore, `tab:${tab}:${lang}`, ...hAfter];
 }
 
 function memoKey(unit) {
@@ -432,7 +430,8 @@ function pendingUnit(state, tab, device) {
   return unitsFor(tab, lang).find((u) => !isDone(u) && !failed[u]) || null;
 }
 
-async function runUnit(unit) {
+// opts.until: a deadline (ms since the epoch) for the units the first run's tick runs (autopick and the feed after it).
+async function runUnit(unit, opts) {
   if (unit === "country") {
     const row = await cat.countryRow(20);
     countryCards = row ? row.items.map(cardOf) : [];
@@ -443,11 +442,11 @@ async function runUnit(unit) {
     console.log("[dbg] index step -> " + out);
     if (out === "error" || out === "wait") throw new Error("índice: " + out);
   }
-  else if (unit === "health") { const n = await cat.healthCheck(); console.log("[dbg] health online=" + n); }
-  else if (unit === "autopick") await autoPick();
+  else if (unit === "health") { const n = await cat.healthCheck(); pickedNow = false; console.log("[dbg] health online=" + n); }
+  else if (unit === "autopick") await autoPick(opts);
   else if (unit === "pick") pickServers = await cat.serverList();
-  else if (unit === "lfeed") await loadLiveFeed();
-  else if (unit.startsWith("hfeed:")) await loadHomeFeed(unit.slice("hfeed:".length));
+  else if (unit === "lfeed") await loadLiveFeed(opts);
+  else if (unit.startsWith("hfeed:")) await loadHomeFeed(unit.slice("hfeed:".length), opts);
   else if (unit.startsWith("hplan:")) await loadHomePlan(unit.slice("hplan:".length));
   else if (unit.startsWith("hhero:")) { await loadHomeHero(unit.slice("hhero:".length)); homeHeroDone.add(unit.slice("hhero:".length)); }
   else if (unit.startsWith("hrail:")) {
@@ -572,6 +571,9 @@ export async function screen(ctx) {
   }
 }
 
+// The first run's tick (the race, then the picked server's feed) stays inside Kino's 20 s screen call.
+const FIRST_RUN_BUDGET_MS = 16000;
+
 const cardsOf = (items) => (Array.isArray(items) ? items : []).filter((i) => i && typeof i.id === "string" && typeof i.ref === "string").slice(0, CHANNELS_CAP).map(cardOf);
 const bump = (state) => ({ n: (state.n || 0) + 1 });
 
@@ -673,8 +675,15 @@ const events = {
     if (!unit) return null;
     const failed = { ...(state.failed || {}) };
     const t0 = Date.now();
+    const until = unit === "autopick" ? t0 + FIRST_RUN_BUDGET_MS : 0;
     console.log("[dbg] tick start tab=" + tab + " wantedLang=" + wantedLang(state) + " storedLang=" + String(getStored(LANG_KEY)) + " unit=" + unit + " plan=[" + unitsFor(tab, wantedLang(state)).join(",") + "] feedLangs=[" + [...homeFeedData.keys()].join(",") + "] tried=[" + [...homeFeedTried].join(",") + "] server=" + cat.serverKey() + " healthReady=" + cat.healthReady());
-    try { await runUnit(unit); } catch (_) { failed[unit] = true; }
+    try { await runUnit(unit, { until }); } catch (_) { failed[unit] = true; }
+    // The server was just picked: its feed loads in this same tick, so the first content paints right after the race
+    // instead of after another (stretched) wait.
+    if (unit === "autopick" && serverChosen()) {
+      const next = pendingUnit({ ...state, failed }, tab, device);
+      if (next && (next === "lfeed" || next.startsWith("hfeed:"))) { try { await runUnit(next, { until }); } catch (_) { failed[next] = true; } }
+    }
     console.log("[dbg] unit " + unit + " tab=" + tab + " " + (Date.now() - t0) + "ms" + (failed[unit] ? " FAILED" : ""));
     cacheKey = cat.serverKey();
     return { state: { ...bump(state), failed } };

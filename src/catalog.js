@@ -470,6 +470,68 @@ export async function selectServer(i) {
   return { ok: false, host: hostOf(st.list[start]), label: labelOf(st.list[start]), index: start + 1, total: n };
 }
 
+// ---- first run: the server picked by a race -------------------------------------------------------------------------
+const RACE_SIZE = 3;
+const RACE_TIMEOUT_MS = 4000;
+// The race leaves this much of the caller's deadline to the feed that follows it in the same call.
+const RACE_RESERVE_MS = 4000;
+const RACE_MIN_MS = 1500;
+
+// The picker's order spread over hosts (one account per host first, then the rest in order): one host down cannot sink a
+// whole race, and no host gets more than RACE_SIZE (3) of the race's requests, under Kino's 4 per host.
+function spreadHosts(items) {
+  const seen = new Set();
+  const first = [];
+  const rest = [];
+  for (const x of items) {
+    if (seen.has(x.host)) rest.push(x);
+    else { seen.add(x.host); first.push(x); }
+  }
+  return [...first, ...rest];
+}
+
+/**
+ * The first run's pick, without a health check first: the first RACE_SIZE Spanish accounts of the picker's order (any
+ * language only when the list has no Spanish one; dead and blocked accounts, and after a fresh check the offline ones, are
+ * never in it) are probed at once, each with a short timeout, and the first that answers well becomes the chosen server.
+ * A late answer only records what it learned (an account alive, or dead for a day); it never changes the pick. A dead
+ * account cannot win: its answer throws in callServer.
+ * opts.until: the caller's deadline (ms since the epoch); the race keeps RACE_RESERVE_MS of it. Never throws.
+ * `{ ok: true, host, label, index, total }` or `{ ok: false }`.
+ */
+export async function raceFirstServer(opts = {}) {
+  const until = opts.until || Date.now() + HEALTH_DEADLINE_MS;
+  let st;
+  try { st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS }); } catch (e) { lastErr = errText(e); return { ok: false }; }
+  const timeoutMs = Math.min(RACE_TIMEOUT_MS, until - Date.now() - RACE_RESERVE_MS);
+  if (timeoutMs < RACE_MIN_MS) return { ok: false };
+  const items = itemsWithHealth(st);
+  // Only Spanish accounts race while there is one: a faster account in another language must not win over them.
+  const es = items.filter((x) => x.es);
+  const cands = spreadHosts(es.length ? es : items).slice(0, RACE_SIZE);
+  if (!cands.length) return { ok: false };
+  return new Promise((done) => {
+    let pending = cands.length;
+    let won = false;
+    for (const it of cands) {
+      const srv = st.list[it.i];
+      callServer(srv, PROBE, {}, { timeoutMs }).then((data) => {
+        if (won) return;
+        won = true;
+        try {
+          st.idx = it.i; st.ok = true; st.okAt = Date.now(); st.chosen = keyOf(srv);
+          writeSrvs(st);
+          rememberProbeCats(srv, data);
+        } catch (_) { /* storage refused: the pick still answers */ }
+        done({ ok: true, host: hostOf(srv), label: labelOf(srv), index: it.i + 1, total: st.list.length });
+      }, (e) => {
+        lastErr = errText(e);
+        if (--pending === 0 && !won) done({ ok: false });
+      });
+    }
+  });
+}
+
 // ---- chequeo de salud: para que el selector muestre solo los servidores que responden ----------------
 const HEALTH_KEY = "health:v1";
 const HEALTH_TTL_MS = 30 * 60 * 1000; // se revisa de nuevo cuando pasa esto

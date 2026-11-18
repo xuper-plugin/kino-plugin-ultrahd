@@ -3355,6 +3355,63 @@ async function selectServer(i) {
   }
   return { ok: false, host: hostOf(st.list[start]), label: labelOf2(st.list[start]), index: start + 1, total: n };
 }
+var RACE_SIZE = 3;
+var RACE_TIMEOUT_MS = 4e3;
+var RACE_RESERVE_MS = 4e3;
+var RACE_MIN_MS = 1500;
+function spreadHosts(items) {
+  const seen = /* @__PURE__ */ new Set();
+  const first = [];
+  const rest = [];
+  for (const x of items) {
+    if (seen.has(x.host)) rest.push(x);
+    else {
+      seen.add(x.host);
+      first.push(x);
+    }
+  }
+  return [...first, ...rest];
+}
+async function raceFirstServer(opts = {}) {
+  const until = opts.until || Date.now() + HEALTH_DEADLINE_MS;
+  let st;
+  try {
+    st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS });
+  } catch (e) {
+    lastErr = errText(e);
+    return { ok: false };
+  }
+  const timeoutMs = Math.min(RACE_TIMEOUT_MS, until - Date.now() - RACE_RESERVE_MS);
+  if (timeoutMs < RACE_MIN_MS) return { ok: false };
+  const items = itemsWithHealth(st);
+  const es = items.filter((x) => x.es);
+  const cands = spreadHosts(es.length ? es : items).slice(0, RACE_SIZE);
+  if (!cands.length) return { ok: false };
+  return new Promise((done) => {
+    let pending = cands.length;
+    let won = false;
+    for (const it of cands) {
+      const srv = st.list[it.i];
+      callServer(srv, PROBE, {}, { timeoutMs }).then((data) => {
+        if (won) return;
+        won = true;
+        try {
+          st.idx = it.i;
+          st.ok = true;
+          st.okAt = Date.now();
+          st.chosen = keyOf(srv);
+          writeSrvs(st);
+          rememberProbeCats(srv, data);
+        } catch (_) {
+        }
+        done({ ok: true, host: hostOf(srv), label: labelOf2(srv), index: it.i + 1, total: st.list.length });
+      }, (e) => {
+        lastErr = errText(e);
+        if (--pending === 0 && !won) done({ ok: false });
+      });
+    }
+  });
+}
 var HEALTH_KEY = "health:v1";
 var HEALTH_TTL_MS = 30 * 60 * 1e3;
 var HEALTH_TIMEOUT_MS = 1e4;
@@ -5017,6 +5074,7 @@ var liveFound = null;
 var pickServers = null;
 var cacheKey = null;
 var autoPickTried = false;
+var pickedNow = false;
 var SRVCHOSEN_KEY2 = "srvChosen:v1";
 var markServerChosen = () => {
   try {
@@ -5154,11 +5212,11 @@ async function loadVodTab(tab, lang, { home: home2 = false, offset = 0 } = {}) {
 }
 var HOME_MOVIES = 7;
 var HOME_SERIES = 4;
-async function loadHomeFeed(lang) {
+async function loadHomeFeed(lang, opts) {
   homeFeedTried.add(lang);
   let feed = null;
   try {
-    feed = await fetchHomeFeed(serverKey(), lang);
+    feed = await fetchHomeFeed(serverKey(), lang, opts);
   } catch (_) {
     feed = null;
   }
@@ -5172,11 +5230,11 @@ async function loadHomeFeed(lang) {
   if (feed.movies) writeTabSnap("movies", key, feed.movies.slides, feed.movies.rows);
   if (feed.series) writeTabSnap("series", key, feed.series.slides, feed.series.rows);
 }
-async function loadLiveFeed() {
+async function loadLiveFeed(opts) {
   liveFeedTried = true;
   let f = null;
   try {
-    f = await fetchLiveFeed(serverKey());
+    f = await fetchLiveFeed(serverKey(), opts);
   } catch (_) {
     f = null;
   }
@@ -5296,44 +5354,38 @@ function feedTabFor(tab, lang) {
   const t = tab === "movies" ? f.movies : tab === "series" ? f.series : null;
   return t && Array.isArray(t.rows) && t.rows.length ? t : null;
 }
-async function autoPick() {
+async function autoPick(opts) {
   autoPickTried = true;
-  try {
-    const list = await serverList();
-    const items = list.items || [];
-    const order = [...items.filter((x) => x.es), ...items.filter((x) => !x.es)].slice(0, 6);
-    for (const it of order) {
-      const r = await selectServer(String(it.i)).catch(() => ({ ok: false }));
-      if (r && r.ok) {
-        markServerChosen();
-        cacheKey = serverKey();
-        return;
-      }
-    }
-  } catch (_) {
+  const r = await raceFirstServer(opts).catch(() => ({ ok: false }));
+  if (r && r.ok) {
+    pickedNow = true;
+    markServerChosen();
+    cacheKey = serverKey();
   }
 }
 var dailyHealth = () => panelsStale() ? ["health"] : [];
 function unitsFor(tab, lang) {
-  if (!serverChosen()) return autoPickTried ? ["health", "pick"] : ["health", "autopick"];
+  if (!serverChosen()) return autoPickTried ? ["health", "pick"] : ["autopick"];
+  const hBefore = pickedNow ? [] : ["health"];
+  const hAfter = pickedNow ? ["health"] : [];
   if (tab === "home") {
     if (homeFeedData.has(lang)) return [`hfeed:${lang}`, ...countryOn() ? ["country"] : [], "recent", "index", ...dailyHealth()];
     const plan = homePlan.get(lang) || [];
     const railUnits = plan.map((p) => `hrail:${p.kind}:${lang}:${p.id}`);
     const heroUnit = railUnits.length ? [`hhero:${lang}`] : [];
-    return [`hfeed:${lang}`, "health", `hplan:${lang}`, ...railUnits, ...heroUnit, ...countryOn() ? ["country"] : [], "recent", "index"];
+    return [`hfeed:${lang}`, ...hBefore, `hplan:${lang}`, ...railUnits, ...heroUnit, ...countryOn() ? ["country"] : [], "recent", "index", ...hAfter];
   }
   if (tab === "movies" || tab === "series") {
     if (feedTabFor(tab, lang)) return [`hfeed:${lang}`, ...dailyHealth()];
-    if (!homeFeedTried.has(lang)) return [`hfeed:${lang}`, "health", `tab:${tab}:${lang}`];
-    return ["health", `tab:${tab}:${lang}`];
+    if (!homeFeedTried.has(lang)) return [`hfeed:${lang}`, ...hBefore, `tab:${tab}:${lang}`, ...hAfter];
+    return [...hBefore, `tab:${tab}:${lang}`, ...hAfter];
   }
   if (tab === "live") {
     if (liveFeedData) return ["lfeed", "health"];
-    if (!liveFeedTried) return ["lfeed", "health", "tab:live"];
-    return ["health", "tab:live"];
+    if (!liveFeedTried) return ["lfeed", ...hBefore, "tab:live", ...hAfter];
+    return [...hBefore, "tab:live", ...hAfter];
   }
-  return ["health", `tab:${tab}:${lang}`];
+  return [...hBefore, `tab:${tab}:${lang}`, ...hAfter];
 }
 function memoKey(unit) {
   const [prefix, tab, lang] = unit.split(":");
@@ -5363,7 +5415,7 @@ function pendingUnit(state, tab, device) {
   const lang = wantedLang(state);
   return unitsFor(tab, lang).find((u) => !isDone(u) && !failed[u]) || null;
 }
-async function runUnit(unit) {
+async function runUnit(unit, opts) {
   if (unit === "country") {
     const row = await countryRow(20);
     countryCards = row ? row.items.map(cardOf) : [];
@@ -5374,11 +5426,12 @@ async function runUnit(unit) {
     if (out === "error" || out === "wait") throw new Error("\xEDndice: " + out);
   } else if (unit === "health") {
     const n = await healthCheck();
+    pickedNow = false;
     console.log("[dbg] health online=" + n);
-  } else if (unit === "autopick") await autoPick();
+  } else if (unit === "autopick") await autoPick(opts);
   else if (unit === "pick") pickServers = await serverList();
-  else if (unit === "lfeed") await loadLiveFeed();
-  else if (unit.startsWith("hfeed:")) await loadHomeFeed(unit.slice("hfeed:".length));
+  else if (unit === "lfeed") await loadLiveFeed(opts);
+  else if (unit.startsWith("hfeed:")) await loadHomeFeed(unit.slice("hfeed:".length), opts);
   else if (unit.startsWith("hplan:")) await loadHomePlan(unit.slice("hplan:".length));
   else if (unit.startsWith("hhero:")) {
     await loadHomeHero(unit.slice("hhero:".length));
@@ -5496,6 +5549,7 @@ async function screen(ctx) {
     return { type: "Column", padding: 16, children: [{ type: "settings", key: "classicForm" }] };
   }
 }
+var FIRST_RUN_BUDGET_MS = 16e3;
 var cardsOf = (items) => (Array.isArray(items) ? items : []).filter((i) => i && typeof i.id === "string" && typeof i.ref === "string").slice(0, CHANNELS_CAP).map(cardOf);
 var bump = (state) => ({ n: (state.n || 0) + 1 });
 var homeSeed = Math.random() * 2147483647 | 0;
@@ -5607,11 +5661,22 @@ var events = {
     if (!unit) return null;
     const failed = { ...state.failed || {} };
     const t0 = Date.now();
+    const until = unit === "autopick" ? t0 + FIRST_RUN_BUDGET_MS : 0;
     console.log("[dbg] tick start tab=" + tab + " wantedLang=" + wantedLang(state) + " storedLang=" + String(getStored(LANG_KEY)) + " unit=" + unit + " plan=[" + unitsFor(tab, wantedLang(state)).join(",") + "] feedLangs=[" + [...homeFeedData.keys()].join(",") + "] tried=[" + [...homeFeedTried].join(",") + "] server=" + serverKey() + " healthReady=" + healthReady());
     try {
-      await runUnit(unit);
+      await runUnit(unit, { until });
     } catch (_) {
       failed[unit] = true;
+    }
+    if (unit === "autopick" && serverChosen()) {
+      const next = pendingUnit({ ...state, failed }, tab, device);
+      if (next && (next === "lfeed" || next.startsWith("hfeed:"))) {
+        try {
+          await runUnit(next, { until });
+        } catch (_) {
+          failed[next] = true;
+        }
+      }
     }
     console.log("[dbg] unit " + unit + " tab=" + tab + " " + (Date.now() - t0) + "ms" + (failed[unit] ? " FAILED" : ""));
     cacheKey = serverKey();
