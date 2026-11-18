@@ -471,14 +471,32 @@ export async function selectServer(i) {
 }
 
 // ---- first run: the server picked by a race -------------------------------------------------------------------------
-const RACE_SIZE = 3;
+// A rolling race: RACE_PARALLEL probes in flight, at most one per host, and a failed one is replaced at once by the next
+// account in the order, until one answers well or the race's deadline.
+const RACE_PARALLEL = 3;
 const RACE_TIMEOUT_MS = 4000;
+// The race's deadline, from its start. Every probe's timeout is clipped to it, so no request of the race outlives it (Kino
+// holds a call until every request it started settles). Why 9 s: the first run's tick has 16 s of Kino's 20 s screen call;
+// the bootstrap takes 1-2.5 s and the feed that follows the pick in the same tick keeps RACE_RESERVE_MS, so 2.5 + 9 + 4 =
+// 15.5 s. 9 s is two full waves of 3 hanging accounts (2 x 4 s) plus a margin: at least the published one-by-one pick's 6
+// tries even when every one hangs, and many more when they fail fast (a dead account answers auth 0 in about 1 s).
+const RACE_WINDOW_MS = 9000;
 // The race leaves this much of the caller's deadline to the feed that follows it in the same call.
 const RACE_RESERVE_MS = 4000;
+// No probe starts with less than this left before the race's deadline (a good account answers in about 1-2 s).
 const RACE_MIN_MS = 1500;
+// Kino allows 60 requests per call: the race (20) with the bootstrap (4), a health check chained after it (MAX_SERVERS),
+// the index's names (1) and the feed (4) stays under it.
+const RACE_MAX_PROBES = 20;
+// How long the answers of a health check stay good for the first run's automatic pick (the same tick, or the next one).
+const PICK_ANSWERS_MS = 2 * 60 * 1000;
+// Kino's answers that mean no answer from the host at all (its other accounts are skipped for the rest of that race), and
+// those that mean no more requests in this call.
+const HOST_SILENT = new Set(["timeout", "network", "host_not_allowed"]);
+const CALL_SPENT = new Set(["rate_limited", "invalid_request"]);
 
 // The picker's order spread over hosts (one account per host first, then the rest in order): one host down cannot sink a
-// whole race, and no host gets more than RACE_SIZE (3) of the race's requests, under Kino's 4 per host.
+// whole race.
 function spreadHosts(items) {
   const seen = new Set();
   const first = [];
@@ -490,46 +508,120 @@ function spreadHosts(items) {
   return [...first, ...rest];
 }
 
+// The first run's pick: [it] (an item of itemsWithHealth) becomes the active and chosen server, with the categories its probe
+// brought. Never throws (storage refused: the pick still answers).
+function takePick(st, it, data) {
+  const srv = st.list[it.i];
+  try {
+    st.idx = it.i; st.ok = true; st.okAt = Date.now(); st.chosen = keyOf(srv);
+    writeSrvs(st);
+    rememberProbeCats(srv, data);
+  } catch (_) { /* storage refused */ }
+  return { ok: true, host: hostOf(srv), label: labelOf(srv), index: it.i + 1, total: st.list.length };
+}
+
+// A server already chosen (by the person, or an earlier pick): kept as it is, no request.
+function keptPick(st) {
+  const srv = st.list[st.idx];
+  return { ok: true, kept: true, host: hostOf(srv), label: labelOf(srv), index: st.idx + 1, total: st.list.length };
+}
+
 /**
- * The first run's pick, without a health check first: the first RACE_SIZE Spanish accounts of the picker's order (any
- * language only when the list has no Spanish one; dead and blocked accounts, and after a fresh check the offline ones, are
- * never in it) are probed at once, each with a short timeout, and the first that answers well becomes the chosen server.
- * A late answer only records what it learned (an account alive, or dead for a day); it never changes the pick. A dead
- * account cannot win: its answer throws in callServer.
- * opts.until: the caller's deadline (ms since the epoch); the race keeps RACE_RESERVE_MS of it. Never throws.
- * `{ ok: true, host, label, index, total }` or `{ ok: false }`.
+ * The first run's pick, without a health check first. The candidates are the picker's order (Spanish first; dead and
+ * blocked accounts, and after a fresh check the offline ones, are never in it), spread over hosts within each language
+ * group. Up to RACE_PARALLEL probes run at once, at most one per host, each with a 4 s timeout clipped to the race's
+ * deadline (RACE_WINDOW_MS from its start, keeping RACE_RESERVE_MS of opts.until for the feed); as soon as one fails the next
+ * candidate starts. A host that gave no answer at all is skipped for the rest of the race.
+ * The first good answer wins, except that an account in another language never wins while a Spanish one is still in flight:
+ * it waits for that one (at most its timeout). A dead account cannot win: its answer throws in callServer, which remembers it
+ * dead for a day, exactly as everywhere else. Once the race is over a late answer only records what it learned; it never
+ * moves the pick. A chosen server is never raced: it is kept, with no request. Never throws.
+ * `{ ok: true, host, label, index, total }`, `{ ok: false }`, or `{ ok: false, late: true }` when opts.until left no time
+ * to race (nothing was sent).
  */
 export async function raceFirstServer(opts = {}) {
   const until = opts.until || Date.now() + HEALTH_DEADLINE_MS;
   let st;
   try { st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS }); } catch (e) { lastErr = errText(e); return { ok: false }; }
-  const timeoutMs = Math.min(RACE_TIMEOUT_MS, until - Date.now() - RACE_RESERVE_MS);
-  if (timeoutMs < RACE_MIN_MS) return { ok: false };
+  if (st.chosen) return keptPick(st);
+  const end = Math.min(Date.now() + RACE_WINDOW_MS, until - RACE_RESERVE_MS);
+  if (end - Date.now() < RACE_MIN_MS) return { ok: false, late: true };
   const items = itemsWithHealth(st);
-  // Only Spanish accounts race while there is one: a faster account in another language must not win over them.
-  const es = items.filter((x) => x.es);
-  const cands = spreadHosts(es.length ? es : items).slice(0, RACE_SIZE);
-  if (!cands.length) return { ok: false };
+  const queue = [...spreadHosts(items.filter((x) => x.es)), ...spreadHosts(items.filter((x) => !x.es))];
+  if (!queue.length) return { ok: false };
+  const hostname = (it) => hostnameOf(st.list[it.i]) || it.host;
   return new Promise((done) => {
-    let pending = cands.length;
-    let won = false;
-    for (const it of cands) {
-      const srv = st.list[it.i];
-      callServer(srv, PROBE, {}, { timeoutMs }).then((data) => {
-        if (won) return;
-        won = true;
-        try {
-          st.idx = it.i; st.ok = true; st.okAt = Date.now(); st.chosen = keyOf(srv);
-          writeSrvs(st);
-          rememberProbeCats(srv, data);
-        } catch (_) { /* storage refused: the pick still answers */ }
-        done({ ok: true, host: hostOf(srv), label: labelOf(srv), index: it.i + 1, total: st.list.length });
+    const flying = new Map(); // hostname -> the candidate whose probe is in flight there (one per host)
+    const silent = new Set(); // hosts that gave no answer at all in this race
+    let sent = 0;
+    let best = null; // the best good answer so far: { it, data }
+    let over = false;
+    let spent = false; // Kino refused more requests in this call
+    const finish = (out) => { over = true; done(out); };
+    const step = () => {
+      if (over) return;
+      if (best && (best.it.es || ![...flying.values()].some((x) => x.es))) return finish(takePick(st, best.it, best.data));
+      while (!best && !spent && flying.size < RACE_PARALLEL && sent < RACE_MAX_PROBES && end - Date.now() >= RACE_MIN_MS) {
+        const k = queue.findIndex((x) => !flying.has(hostname(x)) && !silent.has(hostname(x)));
+        if (k < 0) break;
+        start(queue.splice(k, 1)[0]);
+      }
+      if (!flying.size) finish({ ok: false });
+    };
+    const start = (it) => {
+      const h = hostname(it);
+      flying.set(h, it);
+      sent++;
+      // After the race a late answer only records (in callServer) the account alive or dead.
+      callServer(st.list[it.i], PROBE, {}, { timeoutMs: Math.min(RACE_TIMEOUT_MS, end - Date.now()) }).then((data) => {
+        flying.delete(h);
+        if (over) return;
+        if (!best || (it.es && !best.it.es)) best = { it, data };
+        step();
       }, (e) => {
+        flying.delete(h);
+        if (over) return;
         lastErr = errText(e);
-        if (--pending === 0 && !won) done({ ok: false });
+        const code = e && e.code;
+        if (CALL_SPENT.has(code)) spent = true;
+        else if (HOST_SILENT.has(code)) silent.add(h);
+        step();
       });
-    }
+    };
+    step();
   });
+}
+
+// The answers of the last health check of this runtime, kept only while no server is chosen (the first run's automatic pick
+// reads them): { at, answers: Map(key -> VOD categories) }.
+let pickAnswers = null;
+
+/**
+ * The first run's automatic pick when the race found no account (a slow network, or every account it reached was dead or
+ * silent): the best account of the picker's order (Spanish first) that answered the health check just run in this
+ * runtime, with no new request (its answer is seconds old, and it may have taken longer than the race's 4 s). Without that
+ * check's answers (the check is from before this runtime), a race over the check's online list. A chosen server is never
+ * changed. Never throws. As raceFirstServer.
+ */
+export async function autoPickServer(opts = {}) {
+  const memo = pickAnswers && Date.now() - pickAnswers.at < PICK_ANSWERS_MS ? pickAnswers : null;
+  pickAnswers = null;
+  // The check just ran and nothing answered it (or it could not even get the list): nothing to pick, and no request.
+  if (memo && !memo.answers.size) return { ok: false };
+  let st;
+  try { st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS }); } catch (e) { lastErr = errText(e); return { ok: false }; }
+  if (st.chosen) return keptPick(st);
+  if (memo) {
+    const it = itemsWithHealth(st).find((x) => memo.answers.has(keyOf(st.list[x.i])));
+    return it ? takePick(st, it, memo.answers.get(keyOf(st.list[it.i]))) : { ok: false };
+  }
+  return raceFirstServer(opts);
+}
+
+/** The server list is cached and fresh: the picker's list needs no request. */
+export function serverListFresh() {
+  const st = readSrvs();
+  return !!(st && Array.isArray(st.list) && st.list.length && st.ts && st.v === SRVS_V && Date.now() - st.ts < CACHE_TTL_MS);
 }
 
 // ---- chequeo de salud: para que el selector muestre solo los servidores que responden ----------------
@@ -654,10 +746,12 @@ function indexHomeIdx(st, map) {
 // the accounts of the index's panel (0 extra requests to the servers). When the active server is down it jumps to one that
 // answered: same panel, then same country, then by priority. The jump never touches `chosen` (backHome returns there). One
 // run at a time; never throws (without even a list, it stores an empty check so the "Verificando" screen cannot hang).
-export async function healthCheck() {
+// opts.until: an earlier deadline (ms since the epoch), for the first run's tick that picks a server and loads its feed after
+// the check. While no server is chosen, the answers stay in memory for that pick (autoPickServer).
+export async function healthCheck(opts = {}) {
   if (healthRunning) return 0;
   healthRunning = true;
-  const until = Date.now() + HEALTH_DEADLINE_MS;
+  const until = Math.min(Date.now() + HEALTH_DEADLINE_MS, opts.until || Infinity);
   try {
     const st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS });
     const list = st.list || [];
@@ -678,6 +772,7 @@ export async function healthCheck() {
         answered.add(s.url);
       } catch (_) { /* down */ }
     });
+    pickAnswers = st.chosen ? null : { at: Date.now(), answers };
     const online = list.filter((s) => answered.has(s.url)).map((s) => s.url);
     const now = Date.now();
     put(HEALTH_KEY, JSON.stringify({ ts: now, online: list.filter((s) => answered.has(s.url) || unprobed.has(s.url)).map((s) => s.url) }));
@@ -702,6 +797,8 @@ export async function healthCheck() {
     return online.length;
   } catch (_) {
     try { put(HEALTH_KEY, JSON.stringify({ ts: Date.now(), online: [] })); } catch (__) { /* nada */ }
+    const prev = readSrvs();
+    pickAnswers = prev && prev.chosen ? null : { at: Date.now(), answers: new Map() };
     return 0;
   } finally { healthRunning = false; }
 }

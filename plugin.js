@@ -3355,10 +3355,15 @@ async function selectServer(i) {
   }
   return { ok: false, host: hostOf(st.list[start]), label: labelOf2(st.list[start]), index: start + 1, total: n };
 }
-var RACE_SIZE = 3;
+var RACE_PARALLEL = 3;
 var RACE_TIMEOUT_MS = 4e3;
+var RACE_WINDOW_MS = 9e3;
 var RACE_RESERVE_MS = 4e3;
 var RACE_MIN_MS = 1500;
+var RACE_MAX_PROBES = 20;
+var PICK_ANSWERS_MS = 2 * 60 * 1e3;
+var HOST_SILENT = /* @__PURE__ */ new Set(["timeout", "network", "host_not_allowed"]);
+var CALL_SPENT = /* @__PURE__ */ new Set(["rate_limited", "invalid_request"]);
 function spreadHosts(items) {
   const seen = /* @__PURE__ */ new Set();
   const first = [];
@@ -3372,6 +3377,23 @@ function spreadHosts(items) {
   }
   return [...first, ...rest];
 }
+function takePick(st, it, data) {
+  const srv = st.list[it.i];
+  try {
+    st.idx = it.i;
+    st.ok = true;
+    st.okAt = Date.now();
+    st.chosen = keyOf(srv);
+    writeSrvs(st);
+    rememberProbeCats(srv, data);
+  } catch (_) {
+  }
+  return { ok: true, host: hostOf(srv), label: labelOf2(srv), index: it.i + 1, total: st.list.length };
+}
+function keptPick(st) {
+  const srv = st.list[st.idx];
+  return { ok: true, kept: true, host: hostOf(srv), label: labelOf2(srv), index: st.idx + 1, total: st.list.length };
+}
 async function raceFirstServer(opts = {}) {
   const until = opts.until || Date.now() + HEALTH_DEADLINE_MS;
   let st;
@@ -3381,36 +3403,78 @@ async function raceFirstServer(opts = {}) {
     lastErr = errText(e);
     return { ok: false };
   }
-  const timeoutMs = Math.min(RACE_TIMEOUT_MS, until - Date.now() - RACE_RESERVE_MS);
-  if (timeoutMs < RACE_MIN_MS) return { ok: false };
+  if (st.chosen) return keptPick(st);
+  const end = Math.min(Date.now() + RACE_WINDOW_MS, until - RACE_RESERVE_MS);
+  if (end - Date.now() < RACE_MIN_MS) return { ok: false, late: true };
   const items = itemsWithHealth(st);
-  const es = items.filter((x) => x.es);
-  const cands = spreadHosts(es.length ? es : items).slice(0, RACE_SIZE);
-  if (!cands.length) return { ok: false };
+  const queue = [...spreadHosts(items.filter((x) => x.es)), ...spreadHosts(items.filter((x) => !x.es))];
+  if (!queue.length) return { ok: false };
+  const hostname = (it) => hostnameOf2(st.list[it.i]) || it.host;
   return new Promise((done) => {
-    let pending = cands.length;
-    let won = false;
-    for (const it of cands) {
-      const srv = st.list[it.i];
-      callServer(srv, PROBE, {}, { timeoutMs }).then((data) => {
-        if (won) return;
-        won = true;
-        try {
-          st.idx = it.i;
-          st.ok = true;
-          st.okAt = Date.now();
-          st.chosen = keyOf(srv);
-          writeSrvs(st);
-          rememberProbeCats(srv, data);
-        } catch (_) {
-        }
-        done({ ok: true, host: hostOf(srv), label: labelOf2(srv), index: it.i + 1, total: st.list.length });
+    const flying = /* @__PURE__ */ new Map();
+    const silent = /* @__PURE__ */ new Set();
+    let sent = 0;
+    let best = null;
+    let over = false;
+    let spent = false;
+    const finish = (out) => {
+      over = true;
+      done(out);
+    };
+    const step2 = () => {
+      if (over) return;
+      if (best && (best.it.es || ![...flying.values()].some((x) => x.es))) return finish(takePick(st, best.it, best.data));
+      while (!best && !spent && flying.size < RACE_PARALLEL && sent < RACE_MAX_PROBES && end - Date.now() >= RACE_MIN_MS) {
+        const k = queue.findIndex((x) => !flying.has(hostname(x)) && !silent.has(hostname(x)));
+        if (k < 0) break;
+        start(queue.splice(k, 1)[0]);
+      }
+      if (!flying.size) finish({ ok: false });
+    };
+    const start = (it) => {
+      const h = hostname(it);
+      flying.set(h, it);
+      sent++;
+      callServer(st.list[it.i], PROBE, {}, { timeoutMs: Math.min(RACE_TIMEOUT_MS, end - Date.now()) }).then((data) => {
+        flying.delete(h);
+        if (over) return;
+        if (!best || it.es && !best.it.es) best = { it, data };
+        step2();
       }, (e) => {
+        flying.delete(h);
+        if (over) return;
         lastErr = errText(e);
-        if (--pending === 0 && !won) done({ ok: false });
+        const code = e && e.code;
+        if (CALL_SPENT.has(code)) spent = true;
+        else if (HOST_SILENT.has(code)) silent.add(h);
+        step2();
       });
-    }
+    };
+    step2();
   });
+}
+var pickAnswers = null;
+async function autoPickServer(opts = {}) {
+  const memo3 = pickAnswers && Date.now() - pickAnswers.at < PICK_ANSWERS_MS ? pickAnswers : null;
+  pickAnswers = null;
+  if (memo3 && !memo3.answers.size) return { ok: false };
+  let st;
+  try {
+    st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS });
+  } catch (e) {
+    lastErr = errText(e);
+    return { ok: false };
+  }
+  if (st.chosen) return keptPick(st);
+  if (memo3) {
+    const it = itemsWithHealth(st).find((x) => memo3.answers.has(keyOf(st.list[x.i])));
+    return it ? takePick(st, it, memo3.answers.get(keyOf(st.list[it.i]))) : { ok: false };
+  }
+  return raceFirstServer(opts);
+}
+function serverListFresh() {
+  const st = readSrvs();
+  return !!(st && Array.isArray(st.list) && st.list.length && st.ts && st.v === SRVS_V && Date.now() - st.ts < CACHE_TTL_MS);
 }
 var HEALTH_KEY = "health:v1";
 var HEALTH_TTL_MS = 30 * 60 * 1e3;
@@ -3516,10 +3580,10 @@ function indexHomeIdx(st, map) {
   }
   return i >= 0 && usable(st.list[i]) ? i : -1;
 }
-async function healthCheck() {
+async function healthCheck(opts = {}) {
   if (healthRunning) return 0;
   healthRunning = true;
-  const until = Date.now() + HEALTH_DEADLINE_MS;
+  const until = Math.min(Date.now() + HEALTH_DEADLINE_MS, opts.until || Infinity);
   try {
     const st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS });
     const list = st.list || [];
@@ -3544,6 +3608,7 @@ async function healthCheck() {
       } catch (_) {
       }
     });
+    pickAnswers = st.chosen ? null : { at: Date.now(), answers };
     const online = list.filter((s) => answered.has(s.url)).map((s) => s.url);
     const now = Date.now();
     put(HEALTH_KEY, JSON.stringify({ ts: now, online: list.filter((s) => answered.has(s.url) || unprobed.has(s.url)).map((s) => s.url) }));
@@ -3574,6 +3639,8 @@ async function healthCheck() {
       put(HEALTH_KEY, JSON.stringify({ ts: Date.now(), online: [] }));
     } catch (__) {
     }
+    const prev = readSrvs();
+    pickAnswers = prev && prev.chosen ? null : { at: Date.now(), answers: /* @__PURE__ */ new Map() };
     return 0;
   } finally {
     healthRunning = false;
@@ -5073,6 +5140,8 @@ var found = null;
 var liveFound = null;
 var pickServers = null;
 var cacheKey = null;
+var raceTried = false;
+var deferred = /* @__PURE__ */ new Set();
 var autoPickTried = false;
 var pickedNow = false;
 var SRVCHOSEN_KEY2 = "srvChosen:v1";
@@ -5354,18 +5423,34 @@ function feedTabFor(tab, lang) {
   const t = tab === "movies" ? f.movies : tab === "series" ? f.series : null;
   return t && Array.isArray(t.rows) && t.rows.length ? t : null;
 }
-async function autoPick(opts) {
-  autoPickTried = true;
+async function race(opts) {
   const r = await raceFirstServer(opts).catch(() => ({ ok: false }));
+  if (r && r.late && !deferred.has("race")) {
+    deferred.add("race");
+    return;
+  }
+  raceTried = true;
   if (r && r.ok) {
-    pickedNow = true;
+    pickedNow = !r.kept;
+    markServerChosen();
+    cacheKey = serverKey();
+  }
+}
+async function autoPick(opts) {
+  const r = await autoPickServer(opts).catch(() => ({ ok: false }));
+  if (r && r.late && !deferred.has("autopick")) {
+    deferred.add("autopick");
+    return;
+  }
+  autoPickTried = true;
+  if (r && r.ok) {
     markServerChosen();
     cacheKey = serverKey();
   }
 }
 var dailyHealth = () => panelsStale() ? ["health"] : [];
 function unitsFor(tab, lang) {
-  if (!serverChosen()) return autoPickTried ? ["health", "pick"] : ["autopick"];
+  if (!serverChosen()) return raceTried ? ["health", "autopick", "pick"] : ["race"];
   const hBefore = pickedNow ? [] : ["health"];
   const hAfter = pickedNow ? ["health"] : [];
   if (tab === "home") {
@@ -5397,6 +5482,7 @@ function isDone(unit) {
   if (unit === "recent") return recentCards !== null;
   if (unit === "index") return !indexNeeded();
   if (unit === "health") return healthReady();
+  if (unit === "race") return raceTried;
   if (unit === "autopick") return autoPickTried;
   if (unit === "pick") return pickServers !== null;
   if (unit === "lfeed") return liveFeedTried;
@@ -5416,6 +5502,7 @@ function pendingUnit(state, tab, device) {
   return unitsFor(tab, lang).find((u) => !isDone(u) && !failed[u]) || null;
 }
 async function runUnit(unit, opts) {
+  const until = opts && opts.until || 0;
   if (unit === "country") {
     const row = await countryRow(20);
     countryCards = row ? row.items.map(cardOf) : [];
@@ -5425,10 +5512,11 @@ async function runUnit(unit, opts) {
     console.log("[dbg] index step -> " + out);
     if (out === "error" || out === "wait") throw new Error("\xEDndice: " + out);
   } else if (unit === "health") {
-    const n = await healthCheck();
+    const n = await healthCheck(until ? { until: until - FIRST_FEED_RESERVE_MS } : {});
     pickedNow = false;
     console.log("[dbg] health online=" + n);
-  } else if (unit === "autopick") await autoPick(opts);
+  } else if (unit === "race") await race(opts);
+  else if (unit === "autopick") await autoPick(opts);
   else if (unit === "pick") pickServers = await serverList();
   else if (unit === "lfeed") await loadLiveFeed(opts);
   else if (unit.startsWith("hfeed:")) await loadHomeFeed(unit.slice("hfeed:".length), opts);
@@ -5484,9 +5572,11 @@ var dbgLastView = "";
 function mainView(ctx) {
   const state = ctx.state || {};
   if (!serverChosen()) {
-    if (!autoPickTried) return verifyingView({ device: ctx.device });
-    if (!healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
-    return firstPickView({ servers: pickServers, failed: !!(state.failed && state.failed.pick), device: ctx.device });
+    const f = state.failed || {};
+    if (!raceTried) return verifyingView({ device: ctx.device });
+    if (!healthReady() && !f.health) return verifyingView({ device: ctx.device });
+    if (!autoPickTried && !f.autopick) return verifyingView({ device: ctx.device });
+    return firstPickView({ servers: pickServers, failed: !!f.pick, device: ctx.device });
   }
   const tab = tabOf2(state, ctx.route);
   const lang = wantedLang(state);
@@ -5498,7 +5588,7 @@ function mainView(ctx) {
       console.log("[dbg] view tab=" + tab + " lang=" + lang + " data=" + (data ? data.stale ? "SNAPSHOT" : "rails=" + (data.rails || []).length : "NULL(skeleton)") + " feedForLang=" + homeFeedData.has(lang) + " movieFeedTab=" + !!feedTabFor("movies", lang));
     }
   }
-  if (!data && !healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
+  if (!data && !healthReady() && !pickedNow && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
   const failed = unitsFor(tab, lang).some((u) => state.failed && state.failed[u]);
   return browseView({
     tab,
@@ -5550,6 +5640,17 @@ async function screen(ctx) {
   }
 }
 var FIRST_RUN_BUDGET_MS = 16e3;
+var FIRST_FEED_RESERVE_MS = 4e3;
+var FIRST_FEED_MIN_MS = 2500;
+var FIRST_HEALTH_MIN_MS = 1e4;
+function fitsFirstRun(unit, until) {
+  const left = until - Date.now();
+  if (serverChosen()) return (unit === "lfeed" || unit.startsWith("hfeed:")) && left >= FIRST_FEED_MIN_MS;
+  if (unit === "health") return left >= FIRST_HEALTH_MIN_MS;
+  if (unit === "autopick") return true;
+  if (unit === "pick") return serverListFresh();
+  return false;
+}
 var cardsOf = (items) => (Array.isArray(items) ? items : []).filter((i) => i && typeof i.id === "string" && typeof i.ref === "string").slice(0, CHANNELS_CAP).map(cardOf);
 var bump = (state) => ({ n: (state.n || 0) + 1 });
 var homeSeed = Math.random() * 2147483647 | 0;
@@ -5657,28 +5758,25 @@ var events = {
   },
   async tick({ state, device }) {
     const tab = tabOf2(state);
-    const unit = pendingUnit(state, tab, device);
+    let unit = pendingUnit(state, tab, device);
     if (!unit) return null;
     const failed = { ...state.failed || {} };
     const t0 = Date.now();
-    const until = unit === "autopick" ? t0 + FIRST_RUN_BUDGET_MS : 0;
+    const until = serverChosen() ? 0 : t0 + FIRST_RUN_BUDGET_MS;
     console.log("[dbg] tick start tab=" + tab + " wantedLang=" + wantedLang(state) + " storedLang=" + String(getStored(LANG_KEY)) + " unit=" + unit + " plan=[" + unitsFor(tab, wantedLang(state)).join(",") + "] feedLangs=[" + [...homeFeedData.keys()].join(",") + "] tried=[" + [...homeFeedTried].join(",") + "] server=" + serverKey() + " healthReady=" + healthReady());
-    try {
-      await runUnit(unit, { until });
-    } catch (_) {
-      failed[unit] = true;
-    }
-    if (unit === "autopick" && serverChosen()) {
-      const next = pendingUnit({ ...state, failed }, tab, device);
-      if (next && (next === "lfeed" || next.startsWith("hfeed:"))) {
-        try {
-          await runUnit(next, { until });
-        } catch (_) {
-          failed[next] = true;
-        }
+    for (; ; ) {
+      const t1 = Date.now();
+      try {
+        await runUnit(unit, { until });
+      } catch (_) {
+        failed[unit] = true;
       }
+      console.log("[dbg] unit " + unit + " tab=" + tab + " " + (Date.now() - t1) + "ms" + (failed[unit] ? " FAILED" : ""));
+      if (!until) break;
+      const next = pendingUnit({ ...state, failed }, tab, device);
+      if (!next || next === unit || !fitsFirstRun(next, until)) break;
+      unit = next;
     }
-    console.log("[dbg] unit " + unit + " tab=" + tab + " " + (Date.now() - t0) + "ms" + (failed[unit] ? " FAILED" : ""));
     cacheKey = serverKey();
     return { state: { ...bump(state), failed } };
   },

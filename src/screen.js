@@ -75,7 +75,9 @@ let found = null;
 let liveFound = null;
 let pickServers = null; // lista para el selector de servidor (respaldo si el auto-elegido no responde)
 let cacheKey = null;
-let autoPickTried = false; // primera instalación: ya se intentó elegir servidor automáticamente (en español, sin que la persona elija)
+let raceTried = false; // first run: the race for a server ran (Spanish first, without the person choosing)
+const deferred = new Set(); // first run: the race or the automatic pick once found no time left in its tick (next tick)
+let autoPickTried = false; // first run, the race found none: the automatic pick over the health check's online list ran
 let pickedNow = false; // the first run's race just picked the server: the health check comes after the first content, once
 
 // La persona ya eligió servidor al menos una vez: se recuerda para no volver a mostrar el selector inicial (se cambia con 🌐).
@@ -348,14 +350,24 @@ function feedTabFor(tab, lang) {
 }
 
 // First run: the server is picked automatically, Spanish first (most of the audience), without the person choosing or seeing
-// the picker, and without a health check first: the top 3 Spanish accounts of the picker's order race (cat.raceFirstServer;
-// dead and blocked accounts never take part) and the first that answers well is chosen. Its feed follows in the same tick
-// (`tick`), and the health check runs after the first content. If none of the 3 answers (no internet, a slow network), the
-// plan falls back to the health check and the manual picker. The 🌐 changes the server later.
-async function autoPick(opts) {
-  autoPickTried = true;
+// the picker, and without a health check first: the accounts of the picker's order race, 3 at a time, a failed one replaced
+// at once by the next (cat.raceFirstServer; dead and blocked accounts never take part), and the first that answers well is
+// chosen. Its feed follows in the same tick (`tick`), and the health check runs after the first content. If the race finds
+// none (no internet, a slow network, every account it reached dead or silent), the health check and then the automatic pick
+// over the accounts that answered it (`autopick`); only if that finds none either, the manual picker. The 🌐 changes the
+// server later.
+async function race(opts) {
   const r = await cat.raceFirstServer(opts).catch(() => ({ ok: false }));
-  if (r && r.ok) { pickedNow = true; markServerChosen(); cacheKey = cat.serverKey(); }
+  if (r && r.late && !deferred.has("race")) { deferred.add("race"); return; } // no time left in this tick: the next one races
+  raceTried = true;
+  if (r && r.ok) { pickedNow = !r.kept; markServerChosen(); cacheKey = cat.serverKey(); }
+}
+
+async function autoPick(opts) {
+  const r = await cat.autoPickServer(opts).catch(() => ({ ok: false }));
+  if (r && r.late && !deferred.has("autopick")) { deferred.add("autopick"); return; }
+  autoPickTried = true;
+  if (r && r.ok) { markServerChosen(); cacheKey = cat.serverKey(); }
 }
 
 // With the feed painted the servers are not probed, except once a day, last, to keep the panel map and the index's server
@@ -363,9 +375,9 @@ async function autoPick(opts) {
 const dailyHealth = () => (cat.panelsStale() ? ["health"] : []);
 
 function unitsFor(tab, lang) {
-  // First run: the race picks the server (autopick, Spanish first); if none of its accounts answered, the health check and
-  // then the manual picker.
-  if (!serverChosen()) return autoPickTried ? ["health", "pick"] : ["autopick"];
+  // First run: the race picks the server (Spanish first); if it found none, the health check, the automatic pick over the
+  // accounts that answered it, and only then the manual picker.
+  if (!serverChosen()) return raceTried ? ["health", "autopick", "pick"] : ["race"];
   // Right after the race the picked server has just answered: the health check goes after the content, not before it.
   const hBefore = pickedNow ? [] : ["health"];
   const hAfter = pickedNow ? ["health"] : [];
@@ -410,6 +422,7 @@ function isDone(unit) {
   if (unit === "recent") return recentCards !== null;
   if (unit === "index") return !indexNeeded();
   if (unit === "health") return cat.healthReady();
+  if (unit === "race") return raceTried;
   if (unit === "autopick") return autoPickTried;
   if (unit === "pick") return pickServers !== null;
   if (unit === "lfeed") return liveFeedTried;
@@ -430,8 +443,10 @@ function pendingUnit(state, tab, device) {
   return unitsFor(tab, lang).find((u) => !isDone(u) && !failed[u]) || null;
 }
 
-// opts.until: a deadline (ms since the epoch) for the units the first run's tick runs (autopick and the feed after it).
+// opts.until: a deadline (ms since the epoch) for the units the first run's tick runs (the race, or the health check and the
+// automatic pick, then the feed); the health check leaves FIRST_FEED_RESERVE_MS of it to the pick's feed.
 async function runUnit(unit, opts) {
+  const until = (opts && opts.until) || 0;
   if (unit === "country") {
     const row = await cat.countryRow(20);
     countryCards = row ? row.items.map(cardOf) : [];
@@ -442,7 +457,8 @@ async function runUnit(unit, opts) {
     console.log("[dbg] index step -> " + out);
     if (out === "error" || out === "wait") throw new Error("índice: " + out);
   }
-  else if (unit === "health") { const n = await cat.healthCheck(); pickedNow = false; console.log("[dbg] health online=" + n); }
+  else if (unit === "health") { const n = await cat.healthCheck(until ? { until: until - FIRST_FEED_RESERVE_MS } : {}); pickedNow = false; console.log("[dbg] health online=" + n); }
+  else if (unit === "race") await race(opts);
   else if (unit === "autopick") await autoPick(opts);
   else if (unit === "pick") pickServers = await cat.serverList();
   else if (unit === "lfeed") await loadLiveFeed(opts);
@@ -511,12 +527,14 @@ const tabOf = (state, route) => {
 let dbgLastView = "";
 function mainView(ctx) {
   const state = ctx.state || {};
-  // Primera instalación: mientras se auto-elige el servidor (en español), un breve "Verificando…". Si no encontró ninguno, se
-  // muestra el selector manual como respaldo. El 🌐 del header permite cambiar de servidor cuando se quiera.
+  // First run: "Verificando…" while the race, or the health check and the automatic pick over its answers, can still choose
+  // a server (Spanish first); the manual picker only when none of them found one. The 🌐 in the header changes it later.
   if (!serverChosen()) {
-    if (!autoPickTried) return verifyingView({ device: ctx.device });
-    if (!cat.healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
-    return firstPickView({ servers: pickServers, failed: !!(state.failed && state.failed.pick), device: ctx.device });
+    const f = state.failed || {};
+    if (!raceTried) return verifyingView({ device: ctx.device });
+    if (!cat.healthReady() && !f.health) return verifyingView({ device: ctx.device });
+    if (!autoPickTried && !f.autopick) return verifyingView({ device: ctx.device });
+    return firstPickView({ servers: pickServers, failed: !!f.pick, device: ctx.device });
   }
   const tab = tabOf(state, ctx.route);
   const lang = wantedLang(state);
@@ -526,7 +544,9 @@ function mainView(ctx) {
   // Arranque rápido: con un servidor ya elegido, si hay Home que mostrar (feed pre-armado o snapshot de la última sesión),
   // se pinta YA, sin esperar a "Verificando servidores…". El chequeo sigue corriendo por detrás (unitsFor) y la verificación
   // real del servidor ocurre antes de reproducir (resolve). Solo se muestra "Verificando…" cuando no hay nada que pintar.
-  if (!data && !cat.healthReady() && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
+  // Right after the first run's race picked the server (pickedNow) it already answered: the Home's loading layout, not
+  // "Verificando…", while its rows load.
+  if (!data && !cat.healthReady() && !pickedNow && !(state.failed && state.failed.health)) return verifyingView({ device: ctx.device });
   const failed = unitsFor(tab, lang).some((u) => state.failed && state.failed[u]);
   return browseView({
     tab, data, recent: recentCards || [], country: countryCards || [],
@@ -571,8 +591,28 @@ export async function screen(ctx) {
   }
 }
 
-// The first run's tick (the race, then the picked server's feed) stays inside Kino's 20 s screen call.
+// The first run's tick (the race, or the health check and the automatic pick, then the picked server's feed or the picker)
+// stays inside Kino's 20 s screen call.
 const FIRST_RUN_BUDGET_MS = 16000;
+// The first run's health check ends this long before the tick's deadline, for the automatic pick's feed after it.
+const FIRST_FEED_RESERVE_MS = 4000;
+// The picked server's feed runs in the same tick only with this much time left (its requests take ~250 ms each); else it
+// runs in the next tick, without a deadline, so a tight deadline never costs the feed.
+const FIRST_FEED_MIN_MS = 2500;
+// The fallback's health check follows a failed race in the same tick only with this much left (the check keeps 6 s or
+// more, the feed its 4 s); else it gets the next tick to itself.
+const FIRST_HEALTH_MIN_MS = 10000;
+
+// Whether first-run unit [unit] still fits in this tick (deadline [until]). Running it in the same tick spares Kino's wait
+// after a slow tick (twice what that tick took) between the race, the health check, the automatic pick and the feed.
+function fitsFirstRun(unit, until) {
+  const left = until - Date.now();
+  if (serverChosen()) return (unit === "lfeed" || unit.startsWith("hfeed:")) && left >= FIRST_FEED_MIN_MS;
+  if (unit === "health") return left >= FIRST_HEALTH_MIN_MS;
+  if (unit === "autopick") return true; // the health check's answers: no request (a race over its list checks its own time)
+  if (unit === "pick") return cat.serverListFresh(); // the cached list: no request
+  return false;
+}
 
 const cardsOf = (items) => (Array.isArray(items) ? items : []).filter((i) => i && typeof i.id === "string" && typeof i.ref === "string").slice(0, CHANNELS_CAP).map(cardOf);
 const bump = (state) => ({ n: (state.n || 0) + 1 });
@@ -671,20 +711,24 @@ const events = {
   },
   async tick({ state, device }) {
     const tab = tabOf(state);
-    const unit = pendingUnit(state, tab, device);
+    let unit = pendingUnit(state, tab, device);
     if (!unit) return null;
     const failed = { ...(state.failed || {}) };
     const t0 = Date.now();
-    const until = unit === "autopick" ? t0 + FIRST_RUN_BUDGET_MS : 0;
+    // First run (no server chosen yet): the units that choose one, then its feed (or the picker), run in this one tick while
+    // they fit in its 16 s (fitsFirstRun), so the first content paints right after the pick instead of after another
+    // (stretched) wait.
+    const until = serverChosen() ? 0 : t0 + FIRST_RUN_BUDGET_MS;
     console.log("[dbg] tick start tab=" + tab + " wantedLang=" + wantedLang(state) + " storedLang=" + String(getStored(LANG_KEY)) + " unit=" + unit + " plan=[" + unitsFor(tab, wantedLang(state)).join(",") + "] feedLangs=[" + [...homeFeedData.keys()].join(",") + "] tried=[" + [...homeFeedTried].join(",") + "] server=" + cat.serverKey() + " healthReady=" + cat.healthReady());
-    try { await runUnit(unit, { until }); } catch (_) { failed[unit] = true; }
-    // The server was just picked: its feed loads in this same tick, so the first content paints right after the race
-    // instead of after another (stretched) wait.
-    if (unit === "autopick" && serverChosen()) {
+    for (;;) {
+      const t1 = Date.now();
+      try { await runUnit(unit, { until }); } catch (_) { failed[unit] = true; }
+      console.log("[dbg] unit " + unit + " tab=" + tab + " " + (Date.now() - t1) + "ms" + (failed[unit] ? " FAILED" : ""));
+      if (!until) break;
       const next = pendingUnit({ ...state, failed }, tab, device);
-      if (next && (next === "lfeed" || next.startsWith("hfeed:"))) { try { await runUnit(next, { until }); } catch (_) { failed[next] = true; } }
+      if (!next || next === unit || !fitsFirstRun(next, until)) break;
+      unit = next;
     }
-    console.log("[dbg] unit " + unit + " tab=" + tab + " " + (Date.now() - t0) + "ms" + (failed[unit] ? " FAILED" : ""));
     cacheKey = cat.serverKey();
     return { state: { ...bump(state), failed } };
   },
