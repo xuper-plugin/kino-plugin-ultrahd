@@ -1,8 +1,10 @@
 // The guide burst (cache study #7). Kino asks `guide` for up to 50 channels per call as native En vivo lists them, and calls
 // to a plugin run one at a time, so the 50 programme requests the guide sent at once (each through api(): its own backHome
 // probe and the walk to other accounts) held En vivo's categories behind them 2.4-4.4 s on a Redmi (25-51 panel requests).
-// Now: the first 12 channels, on the active server only, 4 at a time (Kino's requests per host), all within 3 s; and api() calls
-// that run together share one backHome probe.
+// Kino stores an answer, empty included, for every channel of the call for 30 min and never asks it again meanwhile, so the
+// guide answers every channel: on the active server only, 4 at a time (Kino's requests per host), 2.5 s each, none started
+// with less than 0.5 s left of the call's 3.5 s; a server that timed out before answering anything is asked no more. And
+// api() calls that run together share one backHome probe.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { installKino, res, kinoError, param, fresh, virtualNet } from "./helpers/fake-kino.mjs";
@@ -28,7 +30,9 @@ function world({ prefix, active = 0, chosen = 0, epgMs = 250, hangIds = [], stor
     peak = Math.max(peak, live);
     const done = (out) => { live--; return out; };
     let p;
-    if (e.action === "get_short_epg" && hangIds.includes(e.id)) p = net.request(init.timeoutMs).then(() => kinoError("timeout", "the request took too long"));
+    // Kino ends a request at its timeoutMs: a hanging channel, or one slower than the time it was given.
+    const late = e.action === "get_short_epg" && (hangIds.includes(e.id) || (init && init.timeoutMs && epgMs >= init.timeoutMs));
+    if (late) p = net.request(init.timeoutMs).then(() => kinoError("timeout", "the request took too long"));
     else if (e.action === "get_short_epg") p = net.request(epgMs).then(() => res(200, { epg_listings: [{ title: btoa("Noticias"), description: "", start_timestamp: String(Math.floor(net.now() / 1000) - 600), stop_timestamp: String(Math.floor(net.now() / 1000) + 1800) }] }));
     else if (e.action === "get_vod_categories") p = net.request(500).then(() => res(200, [{ category_id: "1", category_name: "ACCION" }, { category_id: "2", category_name: "DRAMA" }, { category_id: "3", category_name: "TERROR" }]));
     else p = net.request(400).then(() => res(200, [{ stream_id: 1, name: "Uno", container_extension: "mp4" }]));
@@ -46,39 +50,72 @@ function world({ prefix, active = 0, chosen = 0, epgMs = 250, hangIds = [], stor
 
 const window = (net) => ({ from: net.now() - 2 * H, to: net.now() + 22 * H });
 
-test("guide: 50 channels asked, the first 12 answered from the active server, 4 at a time, all within 3 s; nothing else is sent", async () => {
+// Every programme request ends by the call's 3.5 s and has 2.5 s at most.
+const inBudget = (log, t0) => log.every((e) => e.timeoutMs <= 2500 && e.t - t0 + e.timeoutMs <= 3500);
+const channels = (n) => Array.from({ length: n }, (_, i) => "live-" + (500 + i));
+const answeredIds = (out) => new Set(out.map((e) => e.channelId));
+
+test("guide: 40 channels at 250 ms each: all 40 answered from the active server, 4 at a time, in 2.5 s; nothing else is sent", async () => {
   const w = world({ prefix: "g1" });
   const cat = await fresh("catalog.js");
-  const ids = Array.from({ length: 50 }, (_, i) => "live-" + (500 + i));
+  const ids = channels(40);
   const t0 = w.net.now();
   const { out, held } = await w.call(cat.guide({ channelIds: ids, ...window(w.net) }));
-  assert.equal(w.log.length, 12, "12 programme requests, no probe, no walk");
+  assert.equal(w.log.length, 40, "one programme request per channel, no probe, no walk");
   assert.ok(w.log.every((e) => e.action === "get_short_epg" && e.host === "g1a.example"));
-  assert.ok(w.log.every((e) => e.t - t0 + e.timeoutMs === 3000), "each request ends by the call's 3 s: " + JSON.stringify(w.log.map((e) => [e.t - t0, e.timeoutMs])));
-  assert.deepEqual(w.log.map((e) => e.id), ids.slice(0, 12).map((x) => x.slice(5)), "the channels Kino lists first");
+  assert.ok(inBudget(w.log, t0), JSON.stringify(w.log.map((e) => [e.t - t0, e.timeoutMs])));
+  assert.deepEqual(w.log.map((e) => e.id), ids.map((x) => x.slice(5)), "in the order Kino lists them");
   assert.equal(w.peak(), 4, "4 in flight at most");
-  assert.equal(held, 3 * 250, "three waves: the call holds Kino's queue 0.75 s (50 at Kino's 4 per host: 13 waves, 3.25 s)");
-  assert.equal(new Set(out.map((e) => e.channelId)).size, 12);
+  assert.equal(held, 10 * 250, "ten waves of 4: the call holds Kino's queue 2.5 s");
+  assert.equal(answeredIds(out).size, 40, "no channel left for Kino to store empty for 30 min");
   assert.equal(out[0].title, "Noticias");
 });
 
-test("guide: a channel whose programme never comes holds the call 3 s at most, and no other account is asked", async () => {
+test("guide: Kino's whole chunk of 50: the last two start 3 s in and finish, so every channel is answered, in 3.25 s", async () => {
+  const w = world({ prefix: "g5" });
+  const cat = await fresh("catalog.js");
+  const t0 = w.net.now();
+  const { out, held } = await w.call(cat.guide({ channelIds: channels(60), ...window(w.net) }));
+  assert.equal(w.log.length, 50, "Kino's chunk is 50: never more requests than that");
+  assert.ok(inBudget(w.log, t0));
+  assert.deepEqual(w.log.slice(-2).map((e) => [e.t - t0, e.timeoutMs]), [[3000, 500], [3000, 500]], "the slowest few finish, not dropped");
+  assert.equal(held, 3250);
+  assert.equal(answeredIds(out).size, 50);
+});
+
+test("guide: a slow server: no request starts with less than 0.5 s left, and the call ends by 3.5 s", async () => {
+  const w = world({ prefix: "g6", epgMs: 900 });
+  const cat = await fresh("catalog.js");
+  const t0 = w.net.now();
+  const { out, held } = await w.call(cat.guide({ channelIds: channels(40), ...window(w.net) }));
+  assert.ok(inBudget(w.log, t0));
+  assert.ok(w.log.every((e) => e.t - t0 <= 3000), "none started past 3 s");
+  assert.ok(held <= 3500, `${held} ms`);
+  assert.equal(answeredIds(out).size, 12, "three waves answered at 0.9 s each; the fourth had 0.8 s for 0.9 s");
+});
+
+test("guide: a channel whose programme never comes costs its own 2.5 s; every other channel is still answered by 3.5 s", async () => {
   const w = world({ prefix: "g2", hangIds: ["503"] });
   const cat = await fresh("catalog.js");
-  const { out, held } = await w.call(cat.guide({ channelIds: Array.from({ length: 12 }, (_, i) => "live-" + (500 + i)), ...window(w.net) }));
-  assert.ok(held <= 3000 + 250, `${held} ms`);
-  assert.equal(new Set(out.map((e) => e.channelId)).size, 11);
+  const t0 = w.net.now();
+  const { out, held } = await w.call(cat.guide({ channelIds: channels(40), ...window(w.net) }));
+  assert.ok(inBudget(w.log, t0));
+  assert.ok(held <= 3500, `${held} ms`);
+  assert.equal(answeredIds(out).size, 39);
+  assert.ok(!answeredIds(out).has("live-503"));
   assert.ok(w.log.every((e) => e.host === "g2a.example"), "never another account (its stream ids are another panel's channels)");
 });
 
-test("guide: the active server stopped answering: the call holds Kino's queue 3 s, not one timeout per wave of 4", async () => {
-  const ids = Array.from({ length: 12 }, (_, i) => "live-" + (500 + i));
+test("guide: the active server stopped answering: one wave of 4, the call ends after one 2.5 s timeout", async () => {
+  const ids = channels(40);
   const w = world({ prefix: "g4", hangIds: ids.map((x) => x.slice(5)) });
   const cat = await fresh("catalog.js");
+  const t0 = w.net.now();
   const { out, held } = await w.call(cat.guide({ channelIds: ids, ...window(w.net) }));
   assert.deepEqual(out, []);
-  assert.equal(held, 3000, `${held} ms (three waves of 3 s each were 9 s)`);
-  assert.equal(w.log.length, 4, "no request started after the first wave's time ran out");
+  assert.ok(inBudget(w.log, t0));
+  assert.equal(held, 2500, `${held} ms (ten waves of 2.5 s would be 25 s, past Kino's 20 s guide limit)`);
+  assert.equal(w.log.length, 4, "no request started once the server timed out without answering anything");
 });
 
 test("api() calls run together share one backHome probe, with a short timeout", async () => {

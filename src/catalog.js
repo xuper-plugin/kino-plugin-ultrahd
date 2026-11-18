@@ -1728,30 +1728,43 @@ function b64text(s) {
   }
 }
 
-// Kino asks the guide for up to 50 channels per call (the first 40 of a category, as it lists them) and calls to a plugin
-// run one at a time: a guide call that sent 50 programme requests at once, each through api() (its own backHome probe, and
-// the walk to other accounts, whose stream ids are another panel's channels), held native En vivo's categories behind it
-// for 2.4-4.4 s (measured on a Redmi: 25-51 panel requests). Now the first GUIDE_MAX channels (the ones on screen first),
-// on the active server only, at most GUIDE_PARALLEL at once (Kino's requests per host), all within GUIDE_TIMEOUT_MS of the
-// call's start: one call holds the queue about a second, and GUIDE_TIMEOUT_MS when the server stopped answering (a timeout
-// per request was one per wave, 9 s for 12 channels). Kino keeps what it got for 30 min.
-const GUIDE_MAX = 12;
+// Kino asks the guide for up to 50 channels per call (native En vivo sends a category's first 40) and calls to a plugin run
+// one at a time: a guide call that sent 50 programme requests at once, each through api() (its own backHome probe, and the
+// walk to other accounts, whose stream ids are another panel's channels), held native En vivo's categories behind it for
+// 2.4-4.4 s (measured on a Redmi: 25-51 panel requests). Kino stores an answer for EVERY channel of the call for 30 min, an
+// empty one included (PluginLiveProvider.askGuide), and LiveViewModel never asks a channel it has an answer for again: a
+// channel left out shows no programme for 30 min. So every channel asked (up to GUIDE_MAX), on the active server only, at
+// most GUIDE_PARALLEL at once (Kino's requests per host), each within GUIDE_TRY_MS; no request starts with less than
+// GUIDE_MIN_MS left before GUIDE_END_MS from the call's start (the last ones start about 3 s in), and every one ends by then:
+// the few still in flight at 3 s finish instead of being dropped. 40 channels at 250 ms: 2.5 s. A server that timed out
+// before it answered anything is asked no more (nothing is coming): the call ends after one GUIDE_TRY_MS.
+const GUIDE_MAX = 50;
 const GUIDE_PARALLEL = 4;
-const GUIDE_TIMEOUT_MS = 3000;
-const GUIDE_MIN_MS = 500; // a programme request is not started with less than this left
+const GUIDE_TRY_MS = 2500;
+const GUIDE_END_MS = 3500;
+const GUIDE_MIN_MS = 500;
 export async function guide({ channelIds, from, to }) {
   const ids = (Array.isArray(channelIds) ? channelIds : []).slice(0, GUIDE_MAX);
   const st = readSrvs();
   const srv = st && Array.isArray(st.list) ? st.list[st.idx] : null;
   if (!srv || !usable(srv)) return [];
-  const until = Date.now() + GUIDE_TIMEOUT_MS;
+  const until = Date.now() + GUIDE_END_MS;
+  let answered = false;
+  let silent = false;
   const lists = await pool(ids, GUIDE_PARALLEL, async (cid) => {
     const streamId = String(cid).replace(/^live-/, "");
     if (!/^\d+$/.test(streamId)) return [];
     const left = until - Date.now();
-    if (left < GUIDE_MIN_MS) return [];
+    if (left < GUIDE_MIN_MS || silent) return [];
+    let data;
     try {
-      const data = await callServer(srv, "get_short_epg", { stream_id: streamId, limit: "20" }, { timeoutMs: left });
+      data = await callServer(srv, "get_short_epg", { stream_id: streamId, limit: "20" }, { timeoutMs: Math.min(GUIDE_TRY_MS, left) });
+      answered = true;
+    } catch (e) {
+      if (!answered && e && HOST_SILENT.has(e.code)) silent = true;
+      return [];
+    }
+    try {
       const rows = Array.isArray(data) ? data : (data && (data.epg_listings || data.listings || data.epg)) || [];
       return rows.map((e) => ({
         channelId: String(cid),
