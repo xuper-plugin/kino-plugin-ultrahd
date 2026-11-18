@@ -1123,21 +1123,56 @@ async function pool(list, limit, fn) {
   return out;
 }
 
+// ---- the category lists of the last minutes, in memory ----
+// One category's whole list is downloaded for every page Kino asks of it (browse, liveChannels), and again by the Home's
+// country row, a search, the section, the live failover: the same list within minutes. Kept LIST_MEMO_MS per account,
+// action and category (an account, not a panel: a panel's accounts carry different subsets of its channels, and the
+// failover must see what that very account lists), at most LIST_MEMO_ITEMS items over every list, the oldest dropped first.
+// The lists are shared, never changed by their readers.
+const LIST_MEMO_MS = 3 * 60 * 1000;
+const LIST_MEMO_ITEMS = 8000;
+const listMemo = new Map(); // "<account key>|<action>|<category id>" -> { ts, data }
+function memoList(k, action, categoryId) {
+  const id = k + "|" + action + "|" + categoryId;
+  const m = listMemo.get(id);
+  if (!m) return null;
+  if (Date.now() - m.ts >= LIST_MEMO_MS) { listMemo.delete(id); return null; }
+  return m.data;
+}
+function keepList(k, action, categoryId, data) {
+  if (!k || !Array.isArray(data) || data.length > LIST_MEMO_ITEMS) return;
+  const id = k + "|" + action + "|" + categoryId;
+  listMemo.delete(id);
+  listMemo.set(id, { ts: Date.now(), data });
+  let n = 0;
+  for (const m of listMemo.values()) n += m.data.length;
+  for (const [key, m] of listMemo) {
+    if (n <= LIST_MEMO_ITEMS) break;
+    n -= m.data.length;
+    listMemo.delete(key);
+  }
+}
+
 // Una categoría: vacía ([]) es válida; fallar lanza (se reintenta una vez, con respaldo de servidor dentro de api()).
 // [srv]: ask that server only (index results on the index's server), without the walk and without touching srvs: once, with
 // a short timeout (opts.timeoutMs, else EXPLICIT_TIMEOUT_MS), so resolve keeps time for the active server.
+// A list fetched in the last minutes from that account (the active one without [srv]) is served from memory.
 const EXPLICIT_TIMEOUT_MS = 4000;
 async function fetchCategory(action, categoryId, srv, opts) {
   const extra = { category_id: String(categoryId) };
+  const cached = memoList(srv ? keyOf(srv) : serverKey(), action, String(categoryId));
+  if (cached) return cached;
   if (srv) {
     const data = await callServer(srv, action, extra, { timeoutMs: (opts && opts.timeoutMs) || EXPLICIT_TIMEOUT_MS });
     if (!Array.isArray(data)) throw new Error("respuesta que no es lista");
+    keepList(keyOf(srv), action, String(categoryId), data);
     return data;
   }
   for (let attempt = 0; ; attempt++) {
     try {
       const data = await api(action, extra, opts);
       if (!Array.isArray(data)) throw new Error("respuesta que no es lista");
+      keepList(serverKey(), action, String(categoryId), data); // the account that answered (api() made it the active one)
       return data;
     } catch (e) {
       if (attempt >= 1 || (opts && opts.until) || (e && (e.code === "rate_limited" || e.dead))) throw e;
@@ -1324,9 +1359,10 @@ export async function browse(ref, cursor) {
   const start = (page - 1) * PER_PAGE;
   const [kindPrefix, catId, flag] = String(ref || "").split(":");
   if (kindPrefix === "lcat" && /^\d+$/.test(catId || "")) {
-    const out = await liveChannels({ categoryId: catId });
+    // The whole category, page by page (it stopped at liveChannels' first page): the list itself comes from memory.
+    const out = await liveChannels({ categoryId: catId, cursor: String(start) });
     const all = out.items.map((i) => ({ id: i.id, ref: i.ref, title: i.title, kind: "live", poster: i.logo, ...(i.adult ? { adult: true } : {}) }));
-    return { items: all.slice(start, start + PER_PAGE), next: all.length > start + PER_PAGE ? String(page + 1) : undefined };
+    return { items: all.slice(0, PER_PAGE), next: all.length > PER_PAGE || out.next ? String(page + 1) : undefined };
   }
   const kind = kindPrefix === "vod" ? "vod" : kindPrefix === "series" ? "series" : null;
   if (!kind || !/^\d+$/.test(catId || "")) return { items: [] };
@@ -1484,7 +1520,8 @@ export async function episodes(ref) {
 
 // ---- live -----------------------------------------------------------------------
 
-const LIVE_PAGE = 200;
+// Kino asks liveChannels for pages of up to 500 channels (10 at first): 200 meant 2.5 times the pages for a big category.
+const LIVE_PAGE = 500;
 const LIVE_CATS_TTL_MS = 10 * 60 * 1000;
 let liveCatsMemo = null;
 
@@ -1545,12 +1582,18 @@ export async function liveChannels({ categoryId, cursor }) {
   if (adult && !showAdult()) return { items: [] };
   const all = await fetchCategory("get_live_streams", String(categoryId || ""));
   const start = Math.max(0, parseInt(cursor, 10) || 0);
-  // Shown titles over the whole category (not the page): a channel looks the same on every page.
-  const shown = shownTitles(all, categoryKey(catNameOf(categoryId)));
+  // Shown titles over the whole category (not the page): a channel looks the same on every page. Worked out once per list
+  // (the next pages get the same list from memory).
+  const catKey = categoryKey(catNameOf(categoryId));
+  const seen = shownMemo.get(all);
+  const shown = seen && seen.cat === catKey && seen.lang === langNow() ? seen.shown : shownTitles(all, catKey);
+  if (!seen || seen.shown !== shown) shownMemo.set(all, { cat: catKey, lang: langNow(), shown });
   const items = [];
   for (let i = start; i < Math.min(all.length, start + LIVE_PAGE); i++) { const it = liveItem(all[i], categoryId, adult, shown[i]); if (it) items.push(it); }
   return { items, next: all.length > start + LIVE_PAGE ? String(start + LIVE_PAGE) : undefined };
 }
+
+const shownMemo = new WeakMap(); // a category list -> its shown titles { cat, lang, shown }
 
 // The shown titles of one list of panel streams (`[{ name }]`) whose category's country or region is [catKey].
 const shownTitles = (streams, catKey) => channelTitles(streams.map((s) => (s && s.name) || ""), { cat: catKey, lang: langNow() });
@@ -1874,6 +1917,9 @@ const failover = createLiveFailover({
   cachedCats,
   catsAt: cachedCatsAt,
   storeCats: rememberLiveCats,
+  // The category lists of the last minutes (listMemo), shared with the screen's and Kino's listings.
+  cachedList: (srv, catId) => memoList(keyOf(srv), "get_live_streams", String(catId)),
+  keepList: (srv, catId, data) => keepList(keyOf(srv), "get_live_streams", String(catId), data),
   callServer,
   playUrl: (srv, id, format) => `${srv.url}/live/${srv.username}/${srv.password}/${id}.${format || liveFormat()}`,
   label: niceLabel,

@@ -273,6 +273,25 @@ test("live items carry an enriched ref; resolve plays it with no request, and a 
   assert.equal(w.store.get("srvs"), before, "the active server, the choice and the list are untouched");
 });
 
+test("the failover's category lists are the screen's: a list it fetched serves En vivo on that account with no request", async () => {
+  const w = world({ probe: { a1: "509" } });
+  const cat = await fresh("catalog.js");
+  await cat.healthCheck();
+  setActive(w, "a1", { chosen: keyOf(srvOf("a1")) });
+  const ref = "live:201583~2956~es.dazn~es.hd.dazn.1";
+  await cat.resolve(ref);
+  const moved = await cat.resolve(ref); // a cut: the failover checks a2's list of 2956 and moves the channel there
+  assert.ok(moved.url.startsWith(SRV.a2.url + "/live/"), moved.url);
+  const checked = w.log.filter((e) => e.n === "a2" && e.action === "get_live_streams" && e.cat === "2956");
+  assert.equal(checked.length, 1, "the failover asked a2 for the category once");
+  // a2 becomes the active server within the next minutes: En vivo lists 2956 from that same answer.
+  setActive(w, "a2", { chosen: keyOf(srvOf("a2")) });
+  w.log.length = 0;
+  const page = await cat.liveChannels({ categoryId: "2956" });
+  assert.ok(page.items.some((i) => i.id === "live-201583"));
+  assert.ok(!w.log.some((e) => e.action === "get_live_streams"), "no second download: " + JSON.stringify(w.log));
+});
+
 test("the 'no server' message follows Kino's language tag", async () => {
   const w = world({ probe: { a1: "509", a2: "509", c: "509", n: "509" }, lang: "en-US" });
   const cat = await fresh("catalog.js");

@@ -2280,7 +2280,11 @@ function createLiveFailover(deps) {
     const key = keyOf(srv) + "|" + catId;
     const m = lists.get(key);
     if (m && fresh(m.ts, LIST_MS)) return m.list;
-    const data = await call(ctx, srv, "get_live_streams", { category_id: String(catId) });
+    let data = typeof deps.cachedList === "function" ? deps.cachedList(srv, catId) : null;
+    if (!Array.isArray(data)) {
+      data = await call(ctx, srv, "get_live_streams", { category_id: String(catId) });
+      if (Array.isArray(data) && typeof deps.keepList === "function") deps.keepList(srv, catId, data);
+    }
     if (!Array.isArray(data)) return null;
     const list = data.map((s) => ({ stream_id: String(s && s.stream_id || ""), name: String(s && s.name || "") }));
     lists.delete(key);
@@ -3921,18 +3925,48 @@ async function pool(list, limit, fn) {
   }));
   return out;
 }
+var LIST_MEMO_MS = 3 * 60 * 1e3;
+var LIST_MEMO_ITEMS = 8e3;
+var listMemo = /* @__PURE__ */ new Map();
+function memoList(k, action2, categoryId) {
+  const id = k + "|" + action2 + "|" + categoryId;
+  const m = listMemo.get(id);
+  if (!m) return null;
+  if (Date.now() - m.ts >= LIST_MEMO_MS) {
+    listMemo.delete(id);
+    return null;
+  }
+  return m.data;
+}
+function keepList(k, action2, categoryId, data) {
+  if (!k || !Array.isArray(data) || data.length > LIST_MEMO_ITEMS) return;
+  const id = k + "|" + action2 + "|" + categoryId;
+  listMemo.delete(id);
+  listMemo.set(id, { ts: Date.now(), data });
+  let n = 0;
+  for (const m of listMemo.values()) n += m.data.length;
+  for (const [key, m] of listMemo) {
+    if (n <= LIST_MEMO_ITEMS) break;
+    n -= m.data.length;
+    listMemo.delete(key);
+  }
+}
 var EXPLICIT_TIMEOUT_MS = 4e3;
 async function fetchCategory(action2, categoryId, srv, opts) {
   const extra = { category_id: String(categoryId) };
+  const cached = memoList(srv ? keyOf(srv) : serverKey(), action2, String(categoryId));
+  if (cached) return cached;
   if (srv) {
     const data = await callServer(srv, action2, extra, { timeoutMs: opts && opts.timeoutMs || EXPLICIT_TIMEOUT_MS });
     if (!Array.isArray(data)) throw new Error("respuesta que no es lista");
+    keepList(keyOf(srv), action2, String(categoryId), data);
     return data;
   }
   for (let attempt = 0; ; attempt++) {
     try {
       const data = await api(action2, extra, opts);
       if (!Array.isArray(data)) throw new Error("respuesta que no es lista");
+      keepList(serverKey(), action2, String(categoryId), data);
       return data;
     } catch (e) {
       if (attempt >= 1 || opts && opts.until || e && (e.code === "rate_limited" || e.dead)) throw e;
@@ -4090,9 +4124,9 @@ async function browse(ref, cursor) {
   const start = (page - 1) * PER_PAGE;
   const [kindPrefix, catId, flag] = String(ref || "").split(":");
   if (kindPrefix === "lcat" && /^\d+$/.test(catId || "")) {
-    const out = await liveChannels({ categoryId: catId });
+    const out = await liveChannels({ categoryId: catId, cursor: String(start) });
     const all2 = out.items.map((i) => ({ id: i.id, ref: i.ref, title: i.title, kind: "live", poster: i.logo, ...i.adult ? { adult: true } : {} }));
-    return { items: all2.slice(start, start + PER_PAGE), next: all2.length > start + PER_PAGE ? String(page + 1) : void 0 };
+    return { items: all2.slice(0, PER_PAGE), next: all2.length > PER_PAGE || out.next ? String(page + 1) : void 0 };
   }
   const kind = kindPrefix === "vod" ? "vod" : kindPrefix === "series" ? "series" : null;
   if (!kind || !/^\d+$/.test(catId || "")) return { items: [] };
@@ -4229,7 +4263,7 @@ async function episodes(ref) {
   eps.sort((a, b) => a.season - b.season || a.number - b.number);
   return { series: seriesInfo, episodes: eps };
 }
-var LIVE_PAGE = 200;
+var LIVE_PAGE = 500;
 var LIVE_CATS_TTL_MS = 10 * 60 * 1e3;
 var liveCatsMemo = null;
 async function liveCats(opts) {
@@ -4277,7 +4311,10 @@ async function liveChannels({ categoryId, cursor }) {
   if (adult && !showAdult()) return { items: [] };
   const all = await fetchCategory("get_live_streams", String(categoryId || ""));
   const start = Math.max(0, parseInt(cursor, 10) || 0);
-  const shown = shownTitles(all, categoryKey(catNameOf(categoryId)));
+  const catKey = categoryKey(catNameOf(categoryId));
+  const seen = shownMemo.get(all);
+  const shown = seen && seen.cat === catKey && seen.lang === langNow() ? seen.shown : shownTitles(all, catKey);
+  if (!seen || seen.shown !== shown) shownMemo.set(all, { cat: catKey, lang: langNow(), shown });
   const items = [];
   for (let i = start; i < Math.min(all.length, start + LIVE_PAGE); i++) {
     const it = liveItem(all[i], categoryId, adult, shown[i]);
@@ -4285,6 +4322,7 @@ async function liveChannels({ categoryId, cursor }) {
   }
   return { items, next: all.length > start + LIVE_PAGE ? String(start + LIVE_PAGE) : void 0 };
 }
+var shownMemo = /* @__PURE__ */ new WeakMap();
 var shownTitles = (streams, catKey) => channelTitles(streams.map((s) => s && s.name || ""), { cat: catKey, lang: langNow() });
 var SHOWN_ONLY = /·|\b(?:4k|8k|uhd|fhd|hd|sd|hevc)\b/;
 var nameHas = (s, q) => {
@@ -4597,6 +4635,9 @@ var failover = createLiveFailover({
   cachedCats,
   catsAt: cachedCatsAt,
   storeCats: rememberLiveCats,
+  // The category lists of the last minutes (listMemo), shared with the screen's and Kino's listings.
+  cachedList: (srv, catId) => memoList(keyOf(srv), "get_live_streams", String(catId)),
+  keepList: (srv, catId, data) => keepList(keyOf(srv), "get_live_streams", String(catId), data),
   callServer,
   playUrl: (srv, id, format) => `${srv.url}/live/${srv.username}/${srv.password}/${id}.${format || liveFormat()}`,
   label: niceLabel,

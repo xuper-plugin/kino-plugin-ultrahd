@@ -69,6 +69,8 @@ export const isBad = (v) => v === "refused" || v === "dead" || v === "missing" |
  * request, any age); catsAt(srv) -> when those were fetched (ms) | null; storeCats(srv, data) keeps a refresh as that
  * server's categories; callServer(srv, action, extra, { timeoutMs }); playUrl(srv, id, format?); label(srv); host(srv);
  * online() -> Set of urls | null; flag(srv); priority(srv); seed(); now(); unavailable() / notFound() -> Error.
+ * Optional: cachedList(srv, catId) -> the raw `get_live_streams` list of that account and category the plugin fetched in
+ * the last minutes, or null (no request); keepList(srv, catId, data) keeps one this module fetched there.
  */
 export function createLiveFailover(deps) {
   const now = () => deps.now();
@@ -153,7 +155,11 @@ export function createLiveFailover(deps) {
     const key = keyOf(srv) + "|" + catId;
     const m = lists.get(key);
     if (m && fresh(m.ts, LIST_MS)) return m.list;
-    const data = await call(ctx, srv, "get_live_streams", { category_id: String(catId) });
+    let data = typeof deps.cachedList === "function" ? deps.cachedList(srv, catId) : null;
+    if (!Array.isArray(data)) {
+      data = await call(ctx, srv, "get_live_streams", { category_id: String(catId) });
+      if (Array.isArray(data) && typeof deps.keepList === "function") deps.keepList(srv, catId, data);
+    }
     if (!Array.isArray(data)) return null;
     const list = data.map((s) => ({ stream_id: String((s && s.stream_id) || ""), name: String((s && s.name) || "") }));
     lists.delete(key);
