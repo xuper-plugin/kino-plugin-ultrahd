@@ -4,7 +4,9 @@ name: Home pre-armado
 # secret, and publishes it in two places (contract in scripts/feed-set.mjs):
 # - the orphan `data` branch: the COMPLETE current set, force-pushed on every run, no history. A key that failed this run
 #   keeps its last good files until they are 3 days old (the readers' limit), then they are dropped. data-meta.json (plain,
-#   no secrets) lists each file's builtAt. The plugin from 0.8.6 reads this branch first and falls back to `main`.
+#   no secrets) lists each file's builtAt and size. The plugin from 0.8.6 reads this branch first and falls back to `main`.
+#   Next to each feed, this branch also carries its v2 copy, <path>.v2.enc.json: the same content compressed (gzip) before
+#   it is sealed, which the plugin after 0.8.6 reads first. v2 copies never go to `main`.
 # - `main`: a copy for installed versions that read only `main` (0.8.5 and older; they drop a feed past 72 h). A file is
 #   rewritten there only once its `main` copy is older than 36 h, so `main` gets one feed commit every 1.5-2 days instead of
 #   one per run. When no installed version reads `main` any more, add --main-every-h 0 to the build step.
@@ -90,6 +92,7 @@ jobs:
           while read -r op path; do
             case "$path" in
               *..*) echo "unexpected path in the main plan: $path"; exit 1 ;;
+              *.v2.enc.json) echo "a v2 copy never goes to main: $path"; exit 1 ;;
               home/*.enc.json|live/*.enc.json) ;;
               *) echo "unexpected path in the main plan: $path"; exit 1 ;;
             esac
