@@ -4,7 +4,7 @@
 import * as cat from "./catalog.js";
 import { recentEntriesAll, rememberCard } from "./recent.js";
 import { say, twin } from "./i18n.js";
-import { put } from "./store.js";
+import { put, jsonSize } from "./store.js";
 import { indexStep, indexNeeded, idxRefFor, findKey } from "./titleIndex.js";
 import { enrichTmdb, tmdbAvailable } from "./tmdbLazy.js";
 import { LANG_ORDER, isLang } from "./names.js";
@@ -49,6 +49,7 @@ const TAB_KEY = "browseTab";
 const LANG_KEY = "browseLang";
 const HIST_KEY = "searchHist:v1";
 const HIST_MAX = 24;
+const HIST_MAX_BYTES = 10 * 1024 - 100;
 const CHANNELS_CAP = 60;
 const RAILS_PER_TAB = 12;
 const RAIL_ITEMS = 20;
@@ -117,20 +118,22 @@ function resetCaches() {
 // memoria, se pintan las del snapshot (marcadas como viejas); el `tick` recarga por detrás y las reemplaza por las frescas.
 const HOME_SNAP_PREFIX = "homeSnap:";
 const SNAP_V = 3;
-const SNAP_MAX = 10 * 1024; // por pestaña; 4 pestañas caben en el presupuesto de la clase homeSnap (40 KB)
+const SNAP_MAX = 10 * 1024 - 100; // por pestaña, as Kino counts the store (jsonSize, its key included): 4 fit homeSnap's 40 KB
 const slimCard = (c) => ({ id: c.id, ref: c.ref, title: c.title, ...(c.kind ? { kind: c.kind } : {}), ...(c.poster ? { poster: c.poster } : {}) });
 const snapKey = (tab, lang) => HOME_SNAP_PREFIX + "v" + SNAP_V + ":" + cat.serverKey() + ":" + tab + ":" + (lang || "-");
 const slimRail = (r, per) => ({ id: r.id, title: r.title, ref: r.ref, items: (r.items || []).slice(0, per).map(slimCard) });
 // Snapshot compacto de una pestaña (filas ya en forma de tarjeta) para pintar al instante al reabrir, aun antes de bajar el feed.
+// Without a time in it: the same rows give the same text, which store.put does not write again (each cold open loads the
+// same feed and wrote its three snapshots, six rewrites of the whole store).
 function writeTabSnap(tab, lang, slides, rails) {
   try {
     if (!rails || !rails.length) return;
     // Se recorta hasta caber: menos ítems por fila y, si hace falta, menos filas. Tarjetas slim (lo que una fila necesita).
     for (const maxRails of [rails.length, 10, 8, 6]) {
       for (let per = 10; per >= 5; per -= 2) {
-        const slim = { v: SNAP_V, at: Date.now(), slides: (slides || []).slice(0, FEATURED).map(slimCard), rails: rails.slice(0, maxRails).map((r) => slimRail(r, per)) };
+        const slim = { v: SNAP_V, slides: (slides || []).slice(0, FEATURED).map(slimCard), rails: rails.slice(0, maxRails).map((r) => slimRail(r, per)) };
         const text = JSON.stringify(slim);
-        if (text.length <= SNAP_MAX) { put(snapKey(tab, lang), text); return; }
+        if (jsonSize(text) <= SNAP_MAX) { put(snapKey(tab, lang), text); return; }
       }
     }
   } catch (_) { /* almacenamiento lleno: sin snapshot */ }
@@ -176,7 +179,11 @@ function rememberFound(cards) {
   try {
     const slimmed = cards.filter((c) => c.adult !== true).slice(0, 12).map(({ id, ref, title, kind, poster }) => ({ id, ref, title, kind, ...(poster ? { poster } : {}) }));
     const ids = new Set(slimmed.map((c) => c.id));
-    put(histKey(), JSON.stringify({ v: 1, e: [...slimmed, ...readHistory().filter((c) => !ids.has(c.id))].slice(0, HIST_MAX) }));
+    let e = [...slimmed, ...readHistory().filter((c) => !ids.has(c.id))].slice(0, HIST_MAX);
+    let text = JSON.stringify({ v: 1, e });
+    // Its class holds 10 KB as Kino counts the store: the oldest cards go first.
+    while (jsonSize(text) > HIST_MAX_BYTES && e.length > 1) { e = e.slice(0, -1); text = JSON.stringify({ v: 1, e }); }
+    put(histKey(), text);
   } catch (_) { /* sin historial */ }
 }
 

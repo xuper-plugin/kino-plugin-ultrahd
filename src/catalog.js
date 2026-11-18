@@ -4,7 +4,7 @@
 
 import { fetchHomeFeed } from "./homeFeed.js";
 import { noteRecent } from "./recent.js";
-import { put } from "./store.js";
+import { put, jsonSize } from "./store.js";
 import { indexFitsServer, indexSource, indexCategoryNames, indexSearch, indexStep, indexReady, indexStale, resolveIdxRef, indexLabel, cleanTitle, findKey, parseIdxRef } from "./titleIndex.js";
 import { enrichTmdb } from "./tmdbLazy.js";
 import { LANG_ORDER, langLabel, displayTitle, titleCase, countryMatch, COUNTRY_PHRASES, cleanCategoryName } from "./names.js";
@@ -266,7 +266,19 @@ function rememberProbeCats(srv, data) {
   if (!k || !Array.isArray(data) || !data.length) return;
   const list = data.map((c) => ({ category_id: String(c.category_id || ""), category_name: String(c.category_name || "").trim() }));
   if (serverKey() === k) catMemo[PROBE_KIND] = { key: k, ts: Date.now(), list };
-  put("cats:" + PROBE_KIND + ":" + k, JSON.stringify({ ts: Date.now(), l: list.map((c) => [c.category_id, c.category_name]) }));
+  putCats(PROBE_KIND, k, list);
+}
+
+// [list] kept as server [k]'s categories of [kind]. The same list stored less than CATS_REWRITE_MS ago is not written again
+// (each write rewrites the whole store): a check or a probe brings the same list many times a day.
+const CATS_REWRITE_MS = 60 * 60 * 1000;
+function putCats(kind, k, list) {
+  const l = list.map((c) => [c.category_id, c.category_name]);
+  try {
+    const o = JSON.parse(kino.storage.get("cats:" + kind + ":" + k) || "null");
+    if (o && Array.isArray(o.l) && Date.now() - o.ts < CATS_REWRITE_MS && JSON.stringify(o.l) === JSON.stringify(l)) return;
+  } catch (_) { /* written below */ }
+  put("cats:" + kind + ":" + k, JSON.stringify({ ts: Date.now(), l }));
 }
 
 // El servidor "de casa" es el que generó el índice de títulos (sus ids y categorías son los del índice); si no se sabe, el primero.
@@ -323,6 +335,7 @@ function walkOrder(st) {
 // opts.until: a deadline (ms since the epoch) for a caller that must answer by then (Kino's Home row): each request gets the
 // time left as its timeout, the walk stops when less than a second is left, and there is no backHome probe nor a second
 // pass with a fresh server list.
+const OK_WRITE_MS = 10 * 60 * 1000;
 async function api(action, extra = {}, opts = {}) {
   const until = opts.until || 0;
   let last = "";
@@ -336,7 +349,9 @@ async function api(action, extra = {}, opts = {}) {
       if (until && left < 1000) break;
       try {
         const data = await callServer(st.list[i], action, extra, until ? { timeoutMs: left } : undefined);
-        if (i !== st.idx || !st.ok || Date.now() - (st.okAt || 0) > 5000) {
+        // srvs is rewritten (with the whole store) only when the active server changes, or to refresh okAt every 10 min;
+        // when it last answered is kept in memory meanwhile (aliveAt, read by serverStatus).
+        if (i !== st.idx || !st.ok || Date.now() - (st.okAt || 0) > OK_WRITE_MS) {
           st.idx = i;
           st.ok = true;
           st.okAt = Date.now();
@@ -395,14 +410,17 @@ function flagInfo(s) {
 const niceLabel = (srv) => { const fi = flagInfo(labelOf(srv)); return fi ? (fi.code ? `${fi.code.toUpperCase()} · ${fi.name}` : fi.name) : labelOf(srv); };
 
 // Nunca expone usuario ni contraseña: solo el host y la posición en la lista.
+// When the active server of [st] last answered: stored okAt, or later in this runtime (api() writes okAt every 10 min only).
+const okAtOf = (st) => Math.max(Number(st && st.okAt) || 0, (st && st.list && aliveAt.get(keyOf(st.list[st.idx]))) || 0);
+
 export async function serverStatus() {
   const cached = readSrvs();
   // Si ya hubo una respuesta buena de este servidor, se informa sin otra petición (el servicio puede tardar y el estado caducaba).
-  if (cached && cached.ok && cached.list && cached.list[cached.idx] && Date.now() - (cached.okAt || 0) < 20000) return { ok: true, host: hostOf(cached.list[cached.idx]), index: cached.idx + 1, total: cached.list.length, at: cached.okAt };
+  if (cached && cached.ok && cached.list && cached.list[cached.idx] && Date.now() - okAtOf(cached) < 20000) return { ok: true, host: hostOf(cached.list[cached.idx]), index: cached.idx + 1, total: cached.list.length, at: okAtOf(cached) };
   try {
     await api(PROBE);
     const st = readSrvs();
-    return { ok: true, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: st.list.length, at: st.okAt };
+    return { ok: true, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: st.list.length, at: okAtOf(st) };
   } catch (e) {
     lastErr = errText(e);
     const st = readSrvs();
@@ -970,13 +988,16 @@ function infoCache() {
 }
 
 function saveFicha(itemId, ficha) {
+  infoCache()[itemId] = ficha;
+}
+
+function writeFichas() {
   const map = infoCache();
-  map[itemId] = ficha;
   const ids = Object.keys(map);
   if (ids.length > INFO_MAX) for (const old of ids.slice(0, ids.length - INFO_MAX)) delete map[old];
-  // Presupuesto de las fichas: se recortan las más antiguas hasta caber.
+  // Presupuesto de las fichas: se recortan las más antiguas hasta caber (as Kino counts the store: jsonSize).
   let text = JSON.stringify(map);
-  while (text.length > 26 * 1024 && Object.keys(map).length > 1) {
+  while (jsonSize(text) > 26 * 1024 && Object.keys(map).length > 1) {
     delete map[Object.keys(map)[0]];
     text = JSON.stringify(map);
   }
@@ -1090,6 +1111,7 @@ export async function enrichFeatured(kind, items, max = 6) {
       if (e && e.code === "rate_limited") limited = true; /* el destacado se queda sin fondo */
     }
   });
+  if (saved) writeFichas(); // one write for all of them (it was one per ficha, each rewriting the whole store)
   return saved;
 }
 
@@ -1208,7 +1230,7 @@ async function categoryList(kind, srv, opts) {
   const list = (Array.isArray(data) ? data : []).map((c) => ({ category_id: String(c.category_id || ""), category_name: String(c.category_name || "").trim() }));
   const now = srv ? key : serverKey();
   if (!srv) catMemo[kind] = { key: now, ts: Date.now(), list };
-  put("cats:" + kind + ":" + now, JSON.stringify({ ts: Date.now(), l: list.map((c) => [c.category_id, c.category_name]) }));
+  putCats(kind, now, list);
   return list;
 }
 
@@ -1743,10 +1765,14 @@ const AVAIL_MAX_BYTES = 15 * 1024; // its storage class holds 16 KB: the oldest 
 
 function readAvail() { try { const o = JSON.parse(kino.storage.get(AVAIL_KEY) || "{}"); return o && typeof o === "object" ? o : {}; } catch (_) { return {}; } }
 // Apunta si el servidor [k] tiene (ext = su extensión) o no (ext = null) la película [id].
+// A fact learnt less than AVAIL_SAME_MS ago (same server, same answer) is not written again: every play of a title wrote it.
+const AVAIL_SAME_MS = 60 * 60 * 1000;
 function recordAvail(id, k, ext) {
   if (!id || !k) return;
   const all = readAvail();
   const t = all[id] && typeof all[id] === "object" ? all[id] : {};
+  const was = t[k];
+  if (was && Date.now() - (was.ts || 0) < AVAIL_SAME_MS && (ext ? was.has === 1 && was.ext === ext : was.has === 0)) return;
   t[k] = ext ? { has: 1, ext, ts: Date.now() } : { has: 0, ts: Date.now() };
   t._ts = Date.now();
   all[id] = t;
@@ -1754,7 +1780,7 @@ function recordAvail(id, k, ext) {
   const keys = Object.keys(all).sort((a, b) => (all[a]._ts || 0) - (all[b]._ts || 0));
   let drop = 0;
   let text = JSON.stringify(all);
-  while (text.length > AVAIL_MAX_BYTES && drop < keys.length - 1) {
+  while (jsonSize(text) > AVAIL_MAX_BYTES && drop < keys.length - 1) {
     const cut = Math.max(1, Math.ceil((keys.length - drop) / 10));
     for (const old of keys.slice(drop, drop + cut)) delete all[old];
     drop += cut;
@@ -1887,7 +1913,7 @@ function rememberLiveCats(srv, data) {
   if (!k || !Array.isArray(data) || !data.length) return;
   const list = data.map((c) => ({ category_id: String(c.category_id || ""), category_name: String(c.category_name || "").trim() }));
   if (serverKey() === k) catMemo.live = { key: k, ts: Date.now(), list };
-  put("cats:live:" + k, JSON.stringify({ ts: Date.now(), l: list.map((c) => [c.category_id, c.category_name]) }));
+  putCats("live", k, list);
 }
 
 // The server list for a live resolve: the cached one (even past its 6 h), never a failover walk; the bootstrap only on a

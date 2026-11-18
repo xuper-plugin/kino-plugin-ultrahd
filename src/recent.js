@@ -1,5 +1,5 @@
 // Películas reproducidas, por servidor (los stream_id cambian de un servidor a otro).
-import { put } from "./store.js";
+import { put, jsonSize } from "./store.js";
 const KEY = "recent:v1";
 export const MAX_RECENT = 12;
 const MAX_TOTAL = 36;
@@ -16,7 +16,7 @@ function readAll() {
 function writeAll(list) {
   let kept = list.slice(0, MAX_TOTAL);
   let text = JSON.stringify(kept);
-  while (text.length > 26 * 1024 && kept.length > 1) {
+  while (jsonSize(text) > 26 * 1024 && kept.length > 1) {
     kept = kept.slice(0, -1);
     text = JSON.stringify(kept);
   }

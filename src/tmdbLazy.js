@@ -4,7 +4,7 @@
 // devuelve lo que hay y el resto queda para la próxima (Kino ya guarda en su caché lo que llegó a pedirse).
 import { findKey, cleanTitle, idOf, dataOf } from "./titleIndex.js";
 import { displayTitle } from "./names.js";
-import { get as sget, put } from "./store.js";
+import { get as sget, put, jsonSize } from "./store.js";
 
 const DAY_MS = 86400000;
 const RETRY_DAYS = 14;
@@ -48,7 +48,7 @@ function readMap() {
 function writeMap(map) {
   let ids = Object.keys(map);
   let text = JSON.stringify(map);
-  while (text.length > MAP_MAX_BYTES && ids.length > 1) { delete map[ids.shift()]; text = JSON.stringify(map); }
+  while (jsonSize(text) > MAP_MAX_BYTES && ids.length > 1) { delete map[ids.shift()]; text = JSON.stringify(map); }
   put(MAP_KEY, text);
 }
 

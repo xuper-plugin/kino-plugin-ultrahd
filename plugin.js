@@ -24,6 +24,8 @@ var CLASSES = {
 };
 var ORDER = ["servers", "prefs", "health", "panels", "acct", "live", "avail", "cats", "hero", "hist", "recent", "idx", "tmdb", "homeSnap", "misc"];
 var IDX = "_idx";
+var TOUCH_MS = 60 * 60 * 1e3;
+var IDX_REFRESH_MS = 10 * 60 * 1e3;
 var classOf = (key) => ORDER.find((c) => CLASSES[c].match(key));
 function utf8Len(s) {
   let n = 0;
@@ -39,84 +41,153 @@ function utf8Len(s) {
   }
   return n;
 }
-var sizeOf = (key, value) => utf8Len(key) + utf8Len(value);
-function readIndex() {
-  try {
-    const o = JSON.parse(kino.storage.get(IDX) || "null");
-    return o && typeof o === "object" && !Array.isArray(o) ? o : {};
-  } catch (_) {
-    return {};
+function jsonSize(s) {
+  const str = String(s);
+  let n = utf8Len(str) + 2;
+  for (let i = 0; i < str.length; i++) {
+    const c = str.charCodeAt(i);
+    if (c === 34 || c === 92 || c === 47 || c === 9 || c === 10 || c === 13 || c === 8 || c === 12) n += 1;
+    else if (c < 32) n += 5;
   }
+  return n;
 }
-function writeIndex(idx) {
+var sizeOf = (key, value) => jsonSize(key) + jsonSize(value) + 2;
+var mem = null;
+function load() {
+  let storage = null;
   try {
-    kino.storage.set(IDX, JSON.stringify(idx));
+    storage = kino.storage;
   } catch (_) {
+    storage = null;
   }
+  if (mem && mem.storage === storage) return mem;
+  let raw = {};
+  try {
+    const o = JSON.parse(storage.get(IDX) || "null");
+    if (o && typeof o === "object" && !Array.isArray(o)) raw = o;
+  } catch (_) {
+    raw = {};
+  }
+  mem = { storage, idx: {}, dirty: false, keys: false, at: 0 };
+  for (const k of Object.keys(raw)) {
+    const e = raw[k];
+    if (Array.isArray(e) && Number.isFinite(e[0]) && Number.isFinite(e[1])) mem.idx[k] = [e[0], e[1]];
+    else mem.idx[k] = [Number(e) || 0, -1];
+  }
+  return mem;
 }
-function entries() {
+function sync(m) {
   let keys = [];
   try {
-    keys = kino.storage.keys();
+    keys = m.storage.keys();
   } catch (_) {
-    return [];
+    return m;
   }
-  const idx = readIndex();
-  const out = [];
+  const present = new Set(keys);
+  for (const k of Object.keys(m.idx)) if (!present.has(k)) {
+    delete m.idx[k];
+    m.dirty = true;
+    m.keys = true;
+  }
   for (const k of keys) {
     if (k === IDX) continue;
+    const e = m.idx[k];
+    if (e && e[1] >= 0) continue;
     let v = null;
     try {
-      v = kino.storage.get(k);
+      v = m.storage.get(k);
     } catch (_) {
       v = null;
     }
     if (v === null || v === void 0) continue;
-    out.push({ key: k, klass: classOf(k), bytes: sizeOf(k, v), ts: Number(idx[k]) || 0 });
+    if (!e) m.keys = true;
+    m.idx[k] = [e ? e[0] : 0, sizeOf(k, v)];
+    m.dirty = true;
   }
-  return out;
+  return m;
 }
-function evict(list, idx, key) {
+var idxText = (m) => JSON.stringify(m.idx);
+function flush() {
   try {
-    kino.storage.remove(key);
+    const m = mem;
+    if (!m || !m.dirty) return;
+    if (!m.keys && m.at && Date.now() - m.at < IDX_REFRESH_MS) return;
+    let same = false;
+    try {
+      same = m.storage === kino.storage;
+    } catch (_) {
+      same = false;
+    }
+    if (!same) return;
+    m.storage.set(IDX, idxText(m));
+    m.dirty = false;
+    m.keys = false;
+    m.at = Date.now();
   } catch (_) {
   }
-  delete idx[key];
+}
+function entries(m) {
+  return Object.keys(m.idx).map((k) => ({ key: k, klass: classOf(k), bytes: m.idx[k][1], ts: m.idx[k][0] }));
+}
+function evict(m, list, key) {
+  try {
+    m.storage.remove(key);
+  } catch (_) {
+  }
+  delete m.idx[key];
+  m.dirty = true;
+  m.keys = true;
   const i = list.findIndex((e) => e.key === key);
   if (i >= 0) list.splice(i, 1);
 }
 function put(key, value) {
   try {
+    const text2 = String(value);
     const klass = classOf(key);
-    const need = sizeOf(key, value);
+    const need = sizeOf(key, text2);
     if (need > CLASSES[klass].budget) return false;
-    const idx = readIndex();
-    const list = entries().filter((e) => e.key !== key);
+    const m = sync(load());
+    let stored = null;
+    try {
+      stored = m.storage.get(key);
+    } catch (_) {
+      stored = null;
+    }
+    if (stored === text2) {
+      const e = m.idx[key];
+      if (!e || e[1] !== need || Date.now() - e[0] > TOUCH_MS) {
+        m.idx[key] = [Date.now(), need];
+        m.dirty = true;
+      }
+      return true;
+    }
+    const list = entries(m).filter((e) => e.key !== key);
     const oldest = (pred) => list.filter(pred).sort((a, b) => a.ts - b.ts)[0];
     let used = list.filter((e) => e.klass === klass).reduce((n, e) => n + e.bytes, 0);
     while (used + need > CLASSES[klass].budget) {
       const victim = oldest((e) => e.klass === klass);
       if (!victim) return false;
       used -= victim.bytes;
-      evict(list, idx, victim.key);
+      evict(m, list, victim.key);
     }
-    let total = list.reduce((n, e) => n + e.bytes, 0) + need + 512;
+    let total = list.reduce((n, e) => n + e.bytes, 0) + need + 2 + 32 * (list.length + 1) + 512;
     while (total > SOFT_CAP) {
       const victim = oldest((e) => !CLASSES[e.klass].keep && e.klass !== klass) || oldest((e) => !CLASSES[e.klass].keep);
       if (!victim) return false;
-      total -= victim.bytes;
-      evict(list, idx, victim.key);
+      total -= victim.bytes + 32;
+      evict(m, list, victim.key);
     }
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        kino.storage.set(key, value);
-        idx[key] = Date.now();
-        writeIndex(idx);
+        m.storage.set(key, text2);
+        if (!m.idx[key]) m.keys = true;
+        m.idx[key] = [Date.now(), need];
+        m.dirty = true;
         return true;
       } catch (_) {
         const victim = oldest((e) => !CLASSES[e.klass].keep);
         if (!victim) return false;
-        evict(list, idx, victim.key);
+        evict(m, list, victim.key);
       }
     }
     return false;
@@ -231,17 +302,17 @@ async function fetchFeedFile(serverKey2, name, until) {
         console.log("[dbg] homefeed: VIEJO " + Math.round((Date.now() - d.at) / 36e5) + " h");
         return null;
       }
-      const home2 = tabOf({ slides: d.slides, rows: d.rows });
-      if (!home2) {
+      const home3 = tabOf({ slides: d.slides, rows: d.rows });
+      if (!home3) {
         console.log("[dbg] homefeed: tabOf(home) vacio");
         return null;
       }
-      console.log("[dbg] homefeed: OK key=" + serverKey2 + " lang=" + d.lang + " home=" + home2.rows.length + " movies=" + (d.movies && d.movies.rows ? d.movies.rows.length : 0) + " series=" + (d.series && d.series.rows ? d.series.rows.length : 0) + " " + kb + "KB");
+      console.log("[dbg] homefeed: OK key=" + serverKey2 + " lang=" + d.lang + " home=" + home3.rows.length + " movies=" + (d.movies && d.movies.rows ? d.movies.rows.length : 0) + " series=" + (d.series && d.series.rows ? d.series.rows.length : 0) + " " + kb + "KB");
       return {
         lang: typeof d.lang === "string" ? d.lang : null,
         langs: Array.isArray(d.langs) ? d.langs : [],
-        slides: home2.slides,
-        rows: home2.rows,
+        slides: home3.slides,
+        rows: home3.rows,
         movies: tabOf(d.movies),
         // null en feeds v1
         series: tabOf(d.series)
@@ -281,7 +352,7 @@ function readAll() {
 function writeAll(list) {
   let kept = list.slice(0, MAX_TOTAL);
   let text2 = JSON.stringify(kept);
-  while (text2.length > 26 * 1024 && kept.length > 1) {
+  while (jsonSize(text2) > 26 * 1024 && kept.length > 1) {
     kept = kept.slice(0, -1);
     text2 = JSON.stringify(kept);
   }
@@ -1005,7 +1076,7 @@ async function indexCategoryNames(opts = {}) {
 async function resolveIdxRef(ref, fetchCategory2, moreCats) {
   const p = parseIdxRef(ref);
   if (!p) throw kino.error("not_found", "ref desconocido");
-  const action2 = p.kind === "movies" ? "get_vod_streams" : "get_series";
+  const action3 = p.kind === "movies" ? "get_vod_streams" : "get_series";
   let failed = 0;
   let tried = 0;
   const seen = /* @__PURE__ */ new Set();
@@ -1015,7 +1086,7 @@ async function resolveIdxRef(ref, fetchCategory2, moreCats) {
     tried++;
     let data;
     try {
-      data = await fetchCategory2(action2, cat);
+      data = await fetchCategory2(action3, cat);
     } catch (_) {
       failed++;
       return null;
@@ -1106,7 +1177,7 @@ function readMap() {
 function writeMap(map) {
   let ids = Object.keys(map);
   let text2 = JSON.stringify(map);
-  while (text2.length > MAP_MAX_BYTES && ids.length > 1) {
+  while (jsonSize(text2) > MAP_MAX_BYTES && ids.length > 1) {
     delete map[ids.shift()];
     text2 = JSON.stringify(map);
   }
@@ -2266,11 +2337,11 @@ function createLiveFailover(deps) {
     ctx.probes.push(v);
     return v;
   }
-  async function call(ctx, srv, action2, extra) {
+  async function call(ctx, srv, action3, extra) {
     if (!room(ctx, 2500)) return null;
     spend(ctx);
     try {
-      return await deps.callServer(srv, action2, extra || {}, { timeoutMs: Math.max(1e3, Math.min(5e3, ctx.until - now() - 1500)) });
+      return await deps.callServer(srv, action3, extra || {}, { timeoutMs: Math.max(1e3, Math.min(5e3, ctx.until - now() - 1500)) });
     } catch (e) {
       if (e && e.code === "rate_limited") ctx.left = 0;
       return null;
@@ -2498,7 +2569,7 @@ function createLiveFailover(deps) {
     }
     return out;
   }
-  async function resolve2(ref) {
+  async function resolve3(ref) {
     const t0 = now();
     let r = parseLiveRef(ref);
     if (!r) throw deps.notFound();
@@ -2564,7 +2635,7 @@ function createLiveFailover(deps) {
     if (cur) return answer(st, cur, P, r, pkey, byKey, map, rank, null);
     throw deps.unavailable();
   }
-  return { resolve: resolve2 };
+  return { resolve: resolve3 };
 }
 
 // src/channelTitle.js
@@ -3115,13 +3186,13 @@ function hasChosenServer() {
   const st = migrate(readSrvs());
   return !!(st && st.chosen);
 }
-function badAnswer(action2, data) {
+function badAnswer(action3, data) {
   if (data === null || typeof data !== "object") return true;
   if (!Array.isArray(data)) {
     const auth = data.user_info && data.user_info.auth;
     return auth !== void 0 && String(auth) === "0";
   }
-  return data.length === 0 && action2.endsWith("_categories");
+  return data.length === 0 && action3.endsWith("_categories");
 }
 var hostnameOf2 = (srv) => {
   try {
@@ -3131,8 +3202,8 @@ var hostnameOf2 = (srv) => {
   }
 };
 var aliveAt = /* @__PURE__ */ new Map();
-async function callServer(srv, action2, extra, opts) {
-  const params = new URLSearchParams({ username: srv.username, password: srv.password, ...action2 ? { action: action2 } : {}, ...extra });
+async function callServer(srv, action3, extra, opts) {
+  const params = new URLSearchParams({ username: srv.username, password: srv.password, ...action3 ? { action: action3 } : {}, ...extra });
   let r;
   try {
     r = await kino.fetch(`${srv.url}/player_api.php?${params}`, {
@@ -3159,7 +3230,7 @@ async function callServer(srv, action2, extra, opts) {
     noteDead(srv);
     throw Object.assign(new Error("cuenta no v\xE1lida"), { dead: true });
   }
-  if (action2 ? badAnswer(action2, data) : !(data && typeof data === "object" && !Array.isArray(data) && data.user_info)) throw new Error("respuesta inv\xE1lida");
+  if (action3 ? badAnswer(action3, data) : !(data && typeof data === "object" && !Array.isArray(data) && data.user_info)) throw new Error("respuesta inv\xE1lida");
   noteAlive(srv);
   aliveAt.set(keyOf(srv), Date.now());
   return data;
@@ -3169,7 +3240,17 @@ function rememberProbeCats(srv, data) {
   if (!k || !Array.isArray(data) || !data.length) return;
   const list = data.map((c) => ({ category_id: String(c.category_id || ""), category_name: String(c.category_name || "").trim() }));
   if (serverKey() === k) catMemo[PROBE_KIND] = { key: k, ts: Date.now(), list };
-  put("cats:" + PROBE_KIND + ":" + k, JSON.stringify({ ts: Date.now(), l: list.map((c) => [c.category_id, c.category_name]) }));
+  putCats(PROBE_KIND, k, list);
+}
+var CATS_REWRITE_MS = 60 * 60 * 1e3;
+function putCats(kind, k, list) {
+  const l = list.map((c) => [c.category_id, c.category_name]);
+  try {
+    const o = JSON.parse(kino.storage.get("cats:" + kind + ":" + k) || "null");
+    if (o && Array.isArray(o.l) && Date.now() - o.ts < CATS_REWRITE_MS && JSON.stringify(o.l) === JSON.stringify(l)) return;
+  } catch (_) {
+  }
+  put("cats:" + kind + ":" + k, JSON.stringify({ ts: Date.now(), l }));
 }
 function homeIdx(st) {
   const i = st.list.findIndex((s) => indexFitsServer(s.url));
@@ -3213,7 +3294,8 @@ function walkOrder(st) {
   const same = p ? ring.filter((i) => i !== st.idx && panelOf(keyOf(st.list[i]), map) === p) : [];
   return [st.idx, ...same, ...ring.filter((i) => i !== st.idx && !same.includes(i))].filter((i) => usable(st.list[i]));
 }
-async function api(action2, extra = {}, opts = {}) {
+var OK_WRITE_MS = 10 * 60 * 1e3;
+async function api(action3, extra = {}, opts = {}) {
   const until = opts.until || 0;
   let last = "";
   for (let pass = 0; pass < (until ? 1 : 2); pass++) {
@@ -3230,8 +3312,8 @@ async function api(action2, extra = {}, opts = {}) {
       const left = until ? until - Date.now() : 0;
       if (until && left < 1e3) break;
       try {
-        const data = await callServer(st.list[i], action2, extra, until ? { timeoutMs: left } : void 0);
-        if (i !== st.idx || !st.ok || Date.now() - (st.okAt || 0) > 5e3) {
+        const data = await callServer(st.list[i], action3, extra, until ? { timeoutMs: left } : void 0);
+        if (i !== st.idx || !st.ok || Date.now() - (st.okAt || 0) > OK_WRITE_MS) {
           st.idx = i;
           st.ok = true;
           st.okAt = Date.now();
@@ -3245,7 +3327,7 @@ async function api(action2, extra = {}, opts = {}) {
       }
     }
   }
-  throw kino.error("unavailable", "ning\xFAn servidor respondi\xF3 (" + action2 + "): " + last, { userMessage: "Error al contactar el servidor." });
+  throw kino.error("unavailable", "ning\xFAn servidor respondi\xF3 (" + action3 + "): " + last, { userMessage: "Error al contactar el servidor." });
 }
 async function activeServer() {
   let st = await loadServers(false);
@@ -3286,13 +3368,14 @@ var niceLabel = (srv) => {
   const fi = flagInfo(labelOf2(srv));
   return fi ? fi.code ? `${fi.code.toUpperCase()} \xB7 ${fi.name}` : fi.name : labelOf2(srv);
 };
+var okAtOf = (st) => Math.max(Number(st && st.okAt) || 0, st && st.list && aliveAt.get(keyOf(st.list[st.idx])) || 0);
 async function serverStatus() {
   const cached = readSrvs();
-  if (cached && cached.ok && cached.list && cached.list[cached.idx] && Date.now() - (cached.okAt || 0) < 2e4) return { ok: true, host: hostOf(cached.list[cached.idx]), index: cached.idx + 1, total: cached.list.length, at: cached.okAt };
+  if (cached && cached.ok && cached.list && cached.list[cached.idx] && Date.now() - okAtOf(cached) < 2e4) return { ok: true, host: hostOf(cached.list[cached.idx]), index: cached.idx + 1, total: cached.list.length, at: okAtOf(cached) };
   try {
     await api(PROBE);
     const st = readSrvs();
-    return { ok: true, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: st.list.length, at: st.okAt };
+    return { ok: true, host: hostOf(st.list[st.idx]), index: st.idx + 1, total: st.list.length, at: okAtOf(st) };
   } catch (e) {
     lastErr = errText(e);
     const st = readSrvs();
@@ -3790,12 +3873,14 @@ function infoCache() {
   return map;
 }
 function saveFicha(itemId, ficha) {
+  infoCache()[itemId] = ficha;
+}
+function writeFichas() {
   const map = infoCache();
-  map[itemId] = ficha;
   const ids = Object.keys(map);
   if (ids.length > INFO_MAX) for (const old of ids.slice(0, ids.length - INFO_MAX)) delete map[old];
   let text2 = JSON.stringify(map);
-  while (text2.length > 26 * 1024 && Object.keys(map).length > 1) {
+  while (jsonSize(text2) > 26 * 1024 && Object.keys(map).length > 1) {
     delete map[Object.keys(map)[0]];
     text2 = JSON.stringify(map);
   }
@@ -3898,6 +3983,7 @@ async function enrichFeatured(kind, items, max = 6) {
       if (e && e.code === "rate_limited") limited = true;
     }
   });
+  if (saved) writeFichas();
   return saved;
 }
 function genreOf(name) {
@@ -3928,8 +4014,8 @@ async function pool(list, limit, fn) {
 var LIST_MEMO_MS = 3 * 60 * 1e3;
 var LIST_MEMO_ITEMS = 8e3;
 var listMemo = /* @__PURE__ */ new Map();
-function memoList(k, action2, categoryId) {
-  const id = k + "|" + action2 + "|" + categoryId;
+function memoList(k, action3, categoryId) {
+  const id = k + "|" + action3 + "|" + categoryId;
   const m = listMemo.get(id);
   if (!m) return null;
   if (Date.now() - m.ts >= LIST_MEMO_MS) {
@@ -3938,9 +4024,9 @@ function memoList(k, action2, categoryId) {
   }
   return m.data;
 }
-function keepList(k, action2, categoryId, data) {
+function keepList(k, action3, categoryId, data) {
   if (!k || !Array.isArray(data) || data.length > LIST_MEMO_ITEMS) return;
-  const id = k + "|" + action2 + "|" + categoryId;
+  const id = k + "|" + action3 + "|" + categoryId;
   listMemo.delete(id);
   listMemo.set(id, { ts: Date.now(), data });
   let n = 0;
@@ -3952,21 +4038,21 @@ function keepList(k, action2, categoryId, data) {
   }
 }
 var EXPLICIT_TIMEOUT_MS = 4e3;
-async function fetchCategory(action2, categoryId, srv, opts) {
+async function fetchCategory(action3, categoryId, srv, opts) {
   const extra = { category_id: String(categoryId) };
-  const cached = memoList(srv ? keyOf(srv) : serverKey(), action2, String(categoryId));
+  const cached = memoList(srv ? keyOf(srv) : serverKey(), action3, String(categoryId));
   if (cached) return cached;
   if (srv) {
-    const data = await callServer(srv, action2, extra, { timeoutMs: opts && opts.timeoutMs || EXPLICIT_TIMEOUT_MS });
+    const data = await callServer(srv, action3, extra, { timeoutMs: opts && opts.timeoutMs || EXPLICIT_TIMEOUT_MS });
     if (!Array.isArray(data)) throw new Error("respuesta que no es lista");
-    keepList(keyOf(srv), action2, String(categoryId), data);
+    keepList(keyOf(srv), action3, String(categoryId), data);
     return data;
   }
   for (let attempt = 0; ; attempt++) {
     try {
-      const data = await api(action2, extra, opts);
+      const data = await api(action3, extra, opts);
       if (!Array.isArray(data)) throw new Error("respuesta que no es lista");
-      keepList(serverKey(), action2, String(categoryId), data);
+      keepList(serverKey(), action3, String(categoryId), data);
       return data;
     } catch (e) {
       if (attempt >= 1 || opts && opts.until || e && (e.code === "rate_limited" || e.dead)) throw e;
@@ -3995,7 +4081,7 @@ async function categoryList(kind, srv, opts) {
   const list = (Array.isArray(data) ? data : []).map((c) => ({ category_id: String(c.category_id || ""), category_name: String(c.category_name || "").trim() }));
   const now = srv ? key : serverKey();
   if (!srv) catMemo[kind] = { key: now, ts: Date.now(), list };
-  put("cats:" + kind + ":" + now, JSON.stringify({ ts: Date.now(), l: list.map((c) => [c.category_id, c.category_name]) }));
+  putCats(kind, now, list);
   return list;
 }
 function categoriesCached(kind) {
@@ -4138,7 +4224,7 @@ async function browse(ref, cursor) {
   return { items: all.slice(start, start + PER_PAGE), next: all.length > start + PER_PAGE ? String(page + 1) : void 0 };
 }
 async function searchKind(kind, cats, q, limit, seen, { maxCats, deadline }) {
-  const action2 = kind === "vod" ? "get_vod_streams" : "get_series";
+  const action3 = kind === "vod" ? "get_vod_streams" : "get_series";
   const items = [];
   let failed = 0;
   let capped = false;
@@ -4152,7 +4238,7 @@ async function searchKind(kind, cats, q, limit, seen, { maxCats, deadline }) {
     scanned += slice.length;
     const batch = await Promise.all(slice.map(async (cat) => {
       try {
-        const data = await fetchCategory(action2, cat.id);
+        const data = await fetchCategory(action3, cat.id);
         return { cat, hits: data.filter((x) => String(x.name || x.title || "").toLowerCase().includes(q)) };
       } catch (e) {
         if (e && e.code === "rate_limited") capped = true;
@@ -4451,17 +4537,20 @@ function readAvail() {
     return {};
   }
 }
+var AVAIL_SAME_MS = 60 * 60 * 1e3;
 function recordAvail(id, k, ext) {
   if (!id || !k) return;
   const all = readAvail();
   const t = all[id] && typeof all[id] === "object" ? all[id] : {};
+  const was = t[k];
+  if (was && Date.now() - (was.ts || 0) < AVAIL_SAME_MS && (ext ? was.has === 1 && was.ext === ext : was.has === 0)) return;
   t[k] = ext ? { has: 1, ext, ts: Date.now() } : { has: 0, ts: Date.now() };
   t._ts = Date.now();
   all[id] = t;
   const keys = Object.keys(all).sort((a, b) => (all[a]._ts || 0) - (all[b]._ts || 0));
   let drop = 0;
   let text2 = JSON.stringify(all);
-  while (text2.length > AVAIL_MAX_BYTES && drop < keys.length - 1) {
+  while (jsonSize(text2) > AVAIL_MAX_BYTES && drop < keys.length - 1) {
     const cut = Math.max(1, Math.ceil((keys.length - drop) / 10));
     for (const old of keys.slice(drop, drop + cut)) delete all[old];
     drop += cut;
@@ -4600,7 +4689,7 @@ function rememberLiveCats(srv, data) {
   if (!k || !Array.isArray(data) || !data.length) return;
   const list = data.map((c) => ({ category_id: String(c.category_id || ""), category_name: String(c.category_name || "").trim() }));
   if (serverKey() === k) catMemo.live = { key: k, ts: Date.now(), list };
-  put("cats:live:" + k, JSON.stringify({ ts: Date.now(), l: list.map((c) => [c.category_id, c.category_name]) }));
+  putCats("live", k, list);
 }
 async function liveServers() {
   const st = readSrvs();
@@ -4667,7 +4756,7 @@ async function resolveIdxOnHome(idxRef, { force = false, until = Date.now() + ID
   }
   const homeI = indexHomeIdx(st, map);
   if (homeI < 0 || homeI === st.idx) return null;
-  const home2 = st.list[homeI];
+  const home3 = st.list[homeI];
   let down = false;
   const onHome = async (ask) => {
     const left = until - Date.now();
@@ -4682,10 +4771,10 @@ async function resolveIdxOnHome(idxRef, { force = false, until = Date.now() + ID
   try {
     const direct = await resolveIdxRef(
       idxRef,
-      (action2, cat) => onHome((o) => fetchCategory(action2, cat, home2, o)),
-      (kind, wanted) => onHome((o) => serverCats(kind, wanted, home2, o))
+      (action3, cat) => onHome((o) => fetchCategory(action3, cat, home3, o)),
+      (kind, wanted) => onHome((o) => serverCats(kind, wanted, home3, o))
     );
-    return direct ? { srv: home2, direct } : null;
+    return direct ? { srv: home3, direct } : null;
   } catch (_) {
     return null;
   }
@@ -5261,6 +5350,7 @@ var TAB_KEY = "browseTab";
 var LANG_KEY = "browseLang";
 var HIST_KEY = "searchHist:v1";
 var HIST_MAX = 24;
+var HIST_MAX_BYTES = 10 * 1024 - 100;
 var CHANNELS_CAP = 60;
 var RAILS_PER_TAB = 12;
 var RAIL_ITEMS = 20;
@@ -5327,7 +5417,7 @@ function resetCaches() {
 }
 var HOME_SNAP_PREFIX = "homeSnap:";
 var SNAP_V = 3;
-var SNAP_MAX = 10 * 1024;
+var SNAP_MAX = 10 * 1024 - 100;
 var slimCard = (c) => ({ id: c.id, ref: c.ref, title: c.title, ...c.kind ? { kind: c.kind } : {}, ...c.poster ? { poster: c.poster } : {} });
 var snapKey = (tab, lang) => HOME_SNAP_PREFIX + "v" + SNAP_V + ":" + serverKey() + ":" + tab + ":" + (lang || "-");
 var slimRail = (r, per) => ({ id: r.id, title: r.title, ref: r.ref, items: (r.items || []).slice(0, per).map(slimCard) });
@@ -5336,9 +5426,9 @@ function writeTabSnap(tab, lang, slides, rails) {
     if (!rails || !rails.length) return;
     for (const maxRails of [rails.length, 10, 8, 6]) {
       for (let per = 10; per >= 5; per -= 2) {
-        const slim2 = { v: SNAP_V, at: Date.now(), slides: (slides || []).slice(0, FEATURED).map(slimCard), rails: rails.slice(0, maxRails).map((r) => slimRail(r, per)) };
+        const slim2 = { v: SNAP_V, slides: (slides || []).slice(0, FEATURED).map(slimCard), rails: rails.slice(0, maxRails).map((r) => slimRail(r, per)) };
         const text2 = JSON.stringify(slim2);
-        if (text2.length <= SNAP_MAX) {
+        if (jsonSize(text2) <= SNAP_MAX) {
           put(snapKey(tab, lang), text2);
           return;
         }
@@ -5403,25 +5493,31 @@ function rememberFound(cards) {
   try {
     const slimmed = cards.filter((c) => c.adult !== true).slice(0, 12).map(({ id, ref, title: title2, kind, poster }) => ({ id, ref, title: title2, kind, ...poster ? { poster } : {} }));
     const ids = new Set(slimmed.map((c) => c.id));
-    put(histKey(), JSON.stringify({ v: 1, e: [...slimmed, ...readHistory().filter((c) => !ids.has(c.id))].slice(0, HIST_MAX) }));
+    let e = [...slimmed, ...readHistory().filter((c) => !ids.has(c.id))].slice(0, HIST_MAX);
+    let text2 = JSON.stringify({ v: 1, e });
+    while (jsonSize(text2) > HIST_MAX_BYTES && e.length > 1) {
+      e = e.slice(0, -1);
+      text2 = JSON.stringify({ v: 1, e });
+    }
+    put(histKey(), text2);
   } catch (_) {
   }
 }
 var railCards = (rails) => rails.map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items.map(cardOf) }));
 var channelCard = (i) => ({ id: i.id, ref: i.ref, title: i.title, kind: "live", poster: i.logo, ...i.adult ? { adult: true } : {} });
-async function loadVodTab(tab, lang, { home: home2 = false, offset = 0 } = {}) {
+async function loadVodTab(tab, lang, { home: home3 = false, offset = 0 } = {}) {
   const kind = tab === "movies" ? "vod" : "series";
-  const maxRails = home2 ? tab === "movies" ? 7 : 4 : RAILS_PER_TAB;
-  const info = await loadRailsInfo(kind, maxRails, RAIL_ITEMS, { lang, home: home2, offset });
-  const wantFeatured = home2 && tab === "series" ? 0 : FEATURED;
+  const maxRails = home3 ? tab === "movies" ? 7 : 4 : RAILS_PER_TAB;
+  const info = await loadRailsInfo(kind, maxRails, RAIL_ITEMS, { lang, home: home3, offset });
+  const wantFeatured = home3 && tab === "series" ? 0 : FEATURED;
   const featured = info.rails.flatMap((r) => r.items).filter((i) => i.overview).slice(0, wantFeatured);
   if (featured.length) await enrichFeatured(kind, featured, wantFeatured);
   const rails = info.rails.map((r) => ({ ...r, items: r.items.map(withFicha) }));
-  const key = `${home2 ? "home-" : ""}${tab}:${lang}`;
+  const key = `${home3 ? "home-" : ""}${tab}:${lang}`;
   const prev = offset > 0 ? memo2.get(key) : null;
   const have = new Set(prev ? prev.rails.map((r) => r.id) : []);
   const fresh = railCards(rails).filter((r) => !have.has(r.id));
-  memo2.set(key, { slides: prev ? prev.slides : slidesOf(rails), rails: prev ? [...prev.rails, ...fresh] : fresh, langs: info.langs, lang: info.lang, partial: info.failed > 0, hasMore: !home2 && !!info.hasMore, next: info.next, cats: prev ? prev.cats : info.cats });
+  memo2.set(key, { slides: prev ? prev.slides : slidesOf(rails), rails: prev ? [...prev.rails, ...fresh] : fresh, langs: info.langs, lang: info.lang, partial: info.failed > 0, hasMore: !home3 && !!info.hasMore, next: info.next, cats: prev ? prev.cats : info.cats });
 }
 var HOME_MOVIES = 7;
 var HOME_SERIES = 4;
@@ -6178,19 +6274,42 @@ async function section2(arg) {
   const hero2 = heroOf(rows);
   return { tabs: SECTION_TABS.map((t) => ({ id: t.id, label: english ? t.en : t.label })), tab, ...hero2 ? { hero: hero2 } : {}, rows };
 }
+
+// src/plugin.js
+var once = (fn) => async (...args) => {
+  try {
+    return await fn(...args);
+  } finally {
+    flush();
+  }
+};
+var home2 = once(home);
+var browse2 = once(browse);
+var search2 = once(search);
+var episodes2 = once(episodes);
+var resolve2 = once(resolve);
+var liveCategories2 = once(liveCategories);
+var liveChannels2 = once(liveChannels);
+var liveSearch2 = once(liveSearch);
+var guide2 = once(guide);
+var settingsStatus2 = once(settingsStatus);
+var action2 = once(action);
+var screen2 = once(screen);
+var screenEvent2 = once(screenEvent);
+var section3 = once(section2);
 export {
-  action,
-  browse,
-  episodes,
-  guide,
-  home,
-  liveCategories,
-  liveChannels,
-  liveSearch,
-  resolve,
-  screen,
-  screenEvent,
-  search,
-  section2 as section,
-  settingsStatus
+  action2 as action,
+  browse2 as browse,
+  episodes2 as episodes,
+  guide2 as guide,
+  home2 as home,
+  liveCategories2 as liveCategories,
+  liveChannels2 as liveChannels,
+  liveSearch2 as liveSearch,
+  resolve2 as resolve,
+  screen2 as screen,
+  screenEvent2 as screenEvent,
+  search2 as search,
+  section3 as section,
+  settingsStatus2 as settingsStatus
 };
