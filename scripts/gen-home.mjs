@@ -1,13 +1,19 @@
-// Genera, por cada servidor, un Home pre-armado (plan + filas + hero) y lo escribe en home/<serverKey>.json.
-// Lo corre un Action dos veces al día; el plugin baja el JSON de su servidor y pinta el Home al instante.
-// Reusa EXACTAMENTE las funciones del catálogo (mismo resultado que la carga en vivo), a través del kit.
-//   KINO_TMDB_KEY=... node scripts/gen-home.mjs [--servers N] [--out home]
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+// Builds, for each account of the service, a prebuilt Home (plan + rows + hero per tab, one feed per Spanish variant) and
+// the first screen of En vivo, sealed with FEED_KEY. The Action (.github/workflows/home.yml) runs it 3 times a day; En vivo
+// is rebuilt about once a day (LIVE_TTL_MS). It writes the COMPLETE current set into --out: what it built now plus the
+// previous set's files carried forward (scripts/feed-set.mjs); the Action force-pushes that to the `data` branch and copies
+// what --main still needs for installed versions that read only `main`. The plugin pulls its account's file and paints at once.
+// Reuses EXACTLY the catalog's functions (same result as the live load), through the kit.
+//   FEED_KEY=<64 hex> [KINO_TMDB_KEY=...] node scripts/gen-home.mjs --out <empty dir> [--prev <previous set>]
+//     [--main <main checkout> --main-plan <file>] [--main-every-h 36] [--only <host>] [--servers N] [--max-panel-requests N]
+// Nothing here touches git: a run with --out in a temp dir and a throwaway FEED_KEY is a dry run.
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import * as feedSet from "./feed-set.mjs";
 
 // Al re-crear el kino por servidor, un kino.sleep pendiente del servidor anterior (rate-limit de TMDB) puede rechazar tarde:
 // es inofensivo (una espera de un servidor ya terminado), no debe tumbar el build.
@@ -18,10 +24,24 @@ const { createKino } = await import(pathToFileURL(join(root, "sdk", "kino-shim.m
 const { validateManifest } = await import(pathToFileURL(join(root, "sdk", "contract.mjs")).href);
 const checked = validateManifest(readFileSync(join(root, "kino-plugin.json"), "utf8"));
 
-const arg = (name, def) => { const i = process.argv.indexOf("--" + name); return i >= 0 ? process.argv[i + 1] : def; };
+const arg = (name, def) => feedSet.argOf(process.argv, name, def);
+const dirArg = (name) => { const v = arg(name, ""); return v ? resolve(process.cwd(), v) : null; };
 const MAX_SERVERS = parseInt(arg("servers", "99"), 10);
-const OUT_DIR = join(root, arg("out", "home"));
-const LIVE_DIR = join(root, arg("live", "live"));
+const OUT = dirArg("out");
+const PREV = dirArg("prev");
+const MAIN = dirArg("main");
+const MAIN_PLAN = dirArg("main-plan");
+const ONLY = arg("only", "").trim().toLowerCase();
+const MAIN_EVERY_MS = arg("main-every-h", "") !== "" ? Number(arg("main-every-h")) * 3600000 : feedSet.MAIN_EVERY_MS;
+const SUBDIRS = ["home", "live"];
+if (!OUT || !Number.isFinite(MAIN_EVERY_MS)) {
+  console.error("usage: node scripts/gen-home.mjs --out <empty dir> [--prev <dir>] [--main <dir> --main-plan <file>] [--main-every-h H] [--only <host>] [--servers N] [--max-panel-requests N]");
+  process.exit(2);
+}
+// --out holds exactly this run's set (the Action publishes it as is), so it must start with no feeds in it.
+if (feedSet.feedPaths(OUT, SUBDIRS).length) { console.error("--out already holds feeds: give it an empty directory"); process.exit(2); }
+const OUT_DIR = join(OUT, "home");
+const LIVE_DIR = join(OUT, "live");
 const LIVE_TTL_MS = 20 * 60 * 60 * 1000; // En vivo se rehornea ~1x/día: si el archivo tiene < 20 h, se conserva (menos carga a los servidores)
 const LIVE_RAILS = 12;
 const HOME_MOVIES = 7, HOME_SERIES = 4, RAIL_ITEMS = 20, FEATURED = 6;
@@ -34,9 +54,30 @@ const PER_LANG = ["es-419", "es-ES"]; // variantes de español con feed propio (
 const tmp = mkdtempSync(join(tmpdir(), "uhd-gen-"));
 // Mismo storage para todas las instancias (comparte servidores/categorías, sin re-bootstrap); kino nuevo por servidor para
 // RESETEAR los límites del shim (rate-limit de kino.tmdb, presupuestos), que si no se agotan tras un par de servidores.
-const kinoOpts = { storageFile: join(tmp, "s.json"), cookiesFile: join(tmp, "c.json"), secretsFile: join(tmp, "x.json"), config: {}, env: process.env };
-const freshKino = () => { globalThis.kino = createKino(checked.manifest, kinoOpts).kino; };
+// Requests are counted (totals only, never URLs) so the log shows what each phase spends against the harness cap.
+// --max-panel-requests N (local runs): past N, a panel request fails like a dead panel, so a test never hammers a panel.
+const counter = { all: 0, panel: 0 };
+const MAX_PANEL = parseInt(arg("max-panel-requests", "0"), 10) || 0;
+const countingFetch = (url, init) => {
+  const isPanel = String(url && url.href ? url.href : url).includes("/player_api.php");
+  if (isPanel && MAX_PANEL && counter.panel >= MAX_PANEL) return Promise.reject(new Error("--max-panel-requests reached"));
+  counter.all++;
+  if (isPanel) counter.panel++;
+  return fetch(url, init);
+};
+const kinoOpts = { storageFile: join(tmp, "s.json"), cookiesFile: join(tmp, "c.json"), secretsFile: join(tmp, "x.json"), config: {}, env: process.env, fetchImpl: countingFetch };
+let harness = null;
+const freshKino = () => { harness = createKino(checked.manifest, kinoOpts); globalThis.kino = harness.kino; };
 freshKino();
+// The harness allows 60 requests per "call" and counts them per instance: in Kino every plugin call gets its own 60, but
+// one account's build here is several calls in a row (default feed, each Spanish variant, En vivo). Without a reset the
+// later phases ran out (Ultra HD's En vivo died for 19 of 20 accounts once the Spanish variants came in, 2026-11-13).
+// Each phase starts with a full budget; the returned function says what that phase spent.
+const phase = () => {
+  harness.resetBudget();
+  const all = counter.all, panel = counter.panel;
+  return () => `${counter.all - all} requests, ${counter.panel - panel} to the panel`;
+};
 const cat = await import(pathToFileURL(join(root, "src", "catalog.js")).href);
 const sv = await import(pathToFileURL(join(root, "src", "screenView.js")).href);
 const { enrichTmdb } = await import(pathToFileURL(join(root, "src", "tmdbLazy.js")).href);
@@ -148,59 +189,103 @@ function openEnc(text) {
   } catch (_) { return null; }
 }
 
-// Rehornea En vivo solo si el archivo falta o tiene >= 20 h (así, con el Action cada 4 h, En vivo se actualiza ~1x/día).
-function liveIsFresh(key) {
+// The `at` sealed in [dir]/[path] when it opens with this key and belongs to the key its name says; else null.
+const atIn = (dir) => (path) => {
   try {
-    const p = openEnc(readFileSync(join(LIVE_DIR, key + ".enc.json"), "utf8"));
-    return !!(p && p.serverKey === key && Date.now() - (p.at || 0) < LIVE_TTL_MS);
-  } catch (_) { return false; }
+    const d = openEnc(readFileSync(join(dir, path), "utf8"));
+    return d && d.serverKey === feedSet.keyOfPath(path) && typeof d.at === "number" ? d.at : null;
+  } catch (_) { return null; }
+};
+
+// En vivo is rebuilt only when the previous set's file is missing or >= 20 h old (about once a day at 3 runs a day); a
+// fresh one is carried forward as it is.
+function liveIsFresh(key) {
+  if (!PREV) return false;
+  const at = atIn(PREV)(`live/${key}.enc.json`);
+  return at !== null && Date.now() - at < LIVE_TTL_MS;
 }
 
 mkdirSync(OUT_DIR, { recursive: true });
 mkdirSync(LIVE_DIR, { recursive: true });
 const list = await cat.serverList();
-const total = Math.min((list.items || []).length, MAX_SERVERS);
-console.log(`servidores a procesar: ${total} de ${(list.items || []).length}`);
+const items = list.items || [];
+const hostIs = (h) => { const x = String(h || "").toLowerCase(); return x === ONLY || x.split(":")[0] === ONLY; };
+// --only <host>: just that host's accounts (a local dry run against one server). Otherwise the first MAX_SERVERS, as always.
+const order = ONLY
+  ? items.filter((x) => hostIs(x.host)).map((x) => x.i).slice(0, MAX_SERVERS)
+  : Array.from({ length: Math.min(items.length, MAX_SERVERS) }, (_, i) => i);
+if (ONLY && !order.length) console.log(`--only ${ONLY}: no account on that host (hosts: ${[...new Set(items.map((x) => x.host))].join(", ")})`);
+console.log(`servidores a procesar: ${order.length} de ${items.length}`);
 let ok = 0, empty = 0, fail = 0;
-const index = [];
 const builtKeys = new Set();
-for (let i = 0; i < total; i++) {
+const written = new Map(); // relative path -> the `at` sealed in it, for each feed this run wrote
+const superseded = new Set(); // paths that no longer apply: a Spanish variant the account does not have (or that is its default)
+const put = (path, obj) => {
+  const enc = seal(obj);
+  writeFileSync(join(OUT, path), enc);
+  written.set(path, obj.at);
+  return enc;
+};
+for (const i of order) {
   const t0 = performance.now();
   try {
     freshKino(); // resetea los límites del shim para este servidor
     const sel = await cat.selectServer(i);
     if (!sel.ok) { console.log(`#${i + 1} (${ms(t0)} ms): servidor no responde, se salta`); fail++; continue; }
+    if (ONLY && !hostIs(sel.host)) { console.log(`#${i + 1}: answered from another host (${sel.host}), skipped`); continue; }
     const key = cat.serverKey();
     if (builtKeys.has(key)) { console.log(`#${i + 1} ${key}: ya generado (mismo servidor), se salta`); continue; }
     builtKeys.add(key);
+    let spent = phase();
     const home = await buildServer();
-    if (!home) { console.log(`#${i + 1} ${key} (${ms(t0)} ms): sin contenido`); empty++; continue; }
-    const enc = seal(home);
-    writeFileSync(join(OUT_DIR, key + ".enc.json"), enc);
+    if (!home) { console.log(`#${i + 1} ${key} (${ms(t0)} ms): sin contenido (${spent()})`); empty++; continue; }
+    const enc = put(`home/${key}.enc.json`, home);
+    const homeSpent = spent();
     // Un feed por variante de español: es-419 (Latino) y es-ES (España) tienen su propio catálogo; el feed por defecto es "es"
     // (unión de ambos). El plugin pide <key>.<lang>.enc.json según el idioma elegido y cae al por defecto si no existe.
     for (const L of PER_LANG) {
-      if (L === home.lang || !(home.langs || []).includes(L)) continue;
+      const variant = `home/${key}.${L}.enc.json`;
+      if (L === home.lang || !(home.langs || []).includes(L)) { superseded.add(variant); continue; }
+      spent = phase();
       try {
         const h = await buildServer(L);
         if (h && h.lang === L && h.rows.length) {
-          const e = seal(h);
-          writeFileSync(join(OUT_DIR, key + "." + L + ".enc.json"), e);
-          console.log(`   ${L}: ${h.rows.length} filas, ${Math.round(e.length / 1024)} KB -> ${key}.${L}.enc.json`);
-        } else console.log(`   ${L}: sin contenido propio`);
-      } catch (e) { console.log(`   ${L}: error ${e && e.message}`); }
+          const e = put(variant, h);
+          console.log(`   ${L}: ${h.rows.length} filas, ${Math.round(e.length / 1024)} KB -> ${key}.${L}.enc.json (${spent()})`);
+        } else console.log(`   ${L}: sin contenido propio (${spent()})`);
+      } catch (e) { console.log(`   ${L}: error ${feedSet.cleanError(e)} (${spent()})`); }
     }
-    index.push({ serverKey: key, at: home.at, rows: home.rows.length, slides: home.slides.length, bytes: enc.length });
-    console.log(`#${i + 1} ${key} (${ms(t0)} ms): ${home.rows.length} filas, ${home.slides.length} slides, ${Math.round(enc.length / 1024)} KB -> ${key}.enc.json`);
+    console.log(`#${i + 1} ${key} (${ms(t0)} ms): ${home.rows.length} filas, ${home.slides.length} slides, ${Math.round(enc.length / 1024)} KB -> ${key}.enc.json (${homeSpent})`);
     ok++;
-    // En vivo: ~1x/día. Si el archivo es reciente, se conserva (no se toca); si no, se rehornea.
+    // En vivo: ~1x/día. Si el archivo es reciente, se conserva (pasa tal cual al conjunto nuevo); si no, se rehornea.
     if (liveIsFresh(key)) { console.log(`   en vivo: reciente, se conserva`); }
     else {
-      const live = await buildLive().catch(() => null);
-      if (live) { writeFileSync(join(LIVE_DIR, key + ".enc.json"), seal(live)); console.log(`   en vivo: ${live.rails.length} filas -> live/${key}.enc.json`); }
-      else console.log(`   en vivo: sin canales`);
+      spent = phase();
+      try {
+        const live = await buildLive();
+        if (live) { put(`live/${key}.enc.json`, live); console.log(`   en vivo: ${live.rails.length} filas -> live/${key}.enc.json (${spent()})`); }
+        else console.log(`   en vivo: sin canales (${spent()})`);
+      } catch (e) { console.log(`   en vivo: error ${feedSet.cleanError(e)} (${spent()})`); }
     }
-  } catch (e) { console.log(`#${i + 1} (${ms(t0)} ms): error ${e && e.message}`); fail++; }
+  } catch (e) { console.log(`#${i + 1} (${ms(t0)} ms): error ${feedSet.cleanError(e)}`); fail++; }
 }
-writeFileSync(join(OUT_DIR, "index.json"), JSON.stringify({ v: SCHEMA, at: Date.now(), servers: index }));
-console.log(`\nlisto: ${ok} ok, ${empty} vacíos, ${fail} fallos. Índice: ${index.length} servidores.`);
+console.log(`\nlisto: ${ok} ok, ${empty} vacíos, ${fail} fallos.`);
+if (!ok) console.log("::warning::no account was built in this run; only the previous set's younger feeds are kept");
+
+// The complete current set: what this run wrote plus the previous set's files carried forward (scripts/feed-set.mjs).
+const now = Date.now();
+const prevPaths = PREV ? feedSet.feedPaths(PREV, SUBDIRS) : [];
+const { carry, drop } = feedSet.carryPlan({ prevPaths, written, superseded, atOf: PREV ? atIn(PREV) : () => null, now });
+feedSet.copyFeeds(PREV, OUT, carry.map((c) => c.path));
+const set = new Map([...written, ...carry.map((c) => [c.path, c.at])]);
+const carried = new Set(carry.map((c) => c.path));
+writeFileSync(join(OUT, feedSet.META), JSON.stringify(feedSet.metaOf({ set, carried, now }), null, 1) + "\n");
+const why = (w) => drop.filter((d) => d.why === w).length;
+console.log(`set: ${set.size} files (${written.size} built, ${carry.length} carried forward); dropped ${drop.length} (${why("expired")} expired, ${why("superseded")} superseded, ${why("unreadable")} unreadable)`);
+
+// What `main` still needs for the installed versions that read only `main`.
+if (MAIN) {
+  const plan = feedSet.mainPlan({ set, mainPaths: feedSet.feedPaths(MAIN, SUBDIRS), mainAtOf: atIn(MAIN), superseded, now, everyMs: MAIN_EVERY_MS });
+  if (MAIN_PLAN) writeFileSync(MAIN_PLAN, feedSet.planLines(plan).map((l) => l + "\n").join(""));
+  console.log(`main: ${plan.write.length} to rewrite, ${plan.remove.length} to remove (copies older than ${Math.round(MAIN_EVERY_MS / 3600000)} h are rewritten)`);
+}

@@ -1,10 +1,17 @@
 name: Home pre-armado
 
-# Genera, por servidor, un Home pre-armado (plan + filas + hero) y lo publica en home/<serverKey>.json. El plugin lo baja
-# y pinta su Home al instante (si falta o está viejo, cae a la carga en vivo progresiva).
+# Builds each account's prebuilt Home (and its En vivo first screen) with scripts/gen-home.mjs, sealed with the FEED_KEY
+# secret, and publishes it in two places (contract in scripts/feed-set.mjs):
+# - the orphan `data` branch: the COMPLETE current set, force-pushed on every run, no history. A key that failed this run
+#   keeps its last good files until they are 3 days old (the readers' limit), then they are dropped. data-meta.json (plain,
+#   no secrets) lists each file's builtAt. The plugin from 0.8.6 reads this branch first and falls back to `main`.
+# - `main`: a copy for installed versions that read only `main` (0.8.5 and older; they drop a feed past 72 h). A file is
+#   rewritten there only once its `main` copy is older than 36 h, so `main` gets one feed commit every 1.5-2 days instead of
+#   one per run. When no installed version reads `main` any more, add --main-every-h 0 to the build step.
 on:
   schedule:
-    - cron: "0 0,4,8,12,16,20 * * *"  # 6 veces al día (cada 4h)
+    # 3 a day, off the hour (GitHub delays and drops on-the-hour schedules the most): 22:23, 06:23 and 14:23 in Colombia.
+    - cron: "23 3,11,19 * * *"
   workflow_dispatch:
 
 permissions:
@@ -18,6 +25,8 @@ jobs:
   home:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    env:
+      DATA_BRANCH: data
     steps:
       - uses: actions/checkout@v4
 
@@ -25,23 +34,76 @@ jobs:
         with:
           node-version: 20
 
-      - name: Generar el Home de cada servidor
+      - name: Fetch the previous set (data branch)
+        run: |
+          set +e
+          git ls-remote --exit-code --heads origin "$DATA_BRANCH" > /dev/null 2>&1
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            git fetch -q --depth 1 origin "$DATA_BRANCH"
+            mkdir -p "$RUNNER_TEMP/prev"
+            git archive FETCH_HEAD | tar -x -C "$RUNNER_TEMP/prev"
+            echo "PREV=$RUNNER_TEMP/prev" >> "$GITHUB_ENV"
+          elif [ "$rc" -eq 2 ]; then
+            echo "no $DATA_BRANCH branch yet: the previous set is main's"
+            echo "PREV=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+          else
+            echo "could not query the $DATA_BRANCH branch (network)"; exit 1
+          fi
+
+      - name: Build the feeds of every account
         env:
           KINO_TMDB_KEY: ${{ secrets.KINO_TMDB_KEY }}
           FEED_KEY: ${{ secrets.FEED_KEY }}
-        run: node scripts/gen-home.mjs
+        run: node scripts/gen-home.mjs --out "$RUNNER_TEMP/feeds" --prev "$PREV" --main . --main-plan "$RUNNER_TEMP/main-plan.txt"
 
-      - name: Publicar si cambió algo
+      - name: Publish the complete set on the data branch
+        env:
+          TOKEN: ${{ github.token }}
         run: |
-          # quita los .json planos viejos por servidor (ahora se publica solo .enc.json); conserva index.json y los .enc.json
-          find home live -maxdepth 1 -name '*.json' ! -name '*.enc.json' ! -name 'index.json' -delete 2>/dev/null || true
-          git add -A home live
-          if git diff --cached --quiet; then
-            echo "sin cambios en home/ ni live/"
-            exit 0
+          cd "$RUNNER_TEMP/feeds"
+          if [ -z "$(find home live -name '*.enc.json' 2>/dev/null | head -n 1)" ]; then
+            echo "::warning::the set is empty: the $DATA_BRANCH branch is left as it was"; exit 0
           fi
+          git init -q -b "$DATA_BRANCH"
           git config user.name "xuper-plugin"
           git config user.email "335105665+xuper-plugin@users.noreply.github.com"
-          git commit -m "Home pre-armado: actualiza home/<serverKey>.enc.json"
-          git pull --rebase origin main
-          git push origin HEAD:main
+          git add -A
+          git commit -q -m "Feeds $(date -u +%Y-%m-%dT%H:%MZ)"
+          # A force-push of a one-commit branch needs no rebase: just try again after a network failure.
+          for attempt in 1 2 3 4; do
+            if git push -q --force "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$DATA_BRANCH"; then exit 0; fi
+            echo "push to $DATA_BRANCH failed (attempt $attempt)"; sleep $((attempt * 15))
+          done
+          exit 1
+
+      # Runs only after `data` was published, so `main` never holds a copy newer than `data`'s (the plugin asks `main` only
+      # for a file `data` lacks, never for a newer one).
+      - name: Keep main's copy for installed versions that read only main
+        run: |
+          while read -r op path; do
+            case "$path" in
+              *..*) echo "unexpected path in the main plan: $path"; exit 1 ;;
+              home/*.enc.json|live/*.enc.json) ;;
+              *) echo "unexpected path in the main plan: $path"; exit 1 ;;
+            esac
+            case "$op" in
+              write) mkdir -p "$(dirname "$path")"; cp "$RUNNER_TEMP/feeds/$path" "$path"; git add -- "$path" ;;
+              remove) git rm -q --ignore-unmatch -- "$path" ;;
+              *) echo "unexpected step in the main plan: $op"; exit 1 ;;
+            esac
+          done < "$RUNNER_TEMP/main-plan.txt"
+          git rm -q --ignore-unmatch home/index.json # no reader: the plugin never fetched it
+          if git diff --cached --quiet; then echo "main: nothing due this run"; exit 0; fi
+          git config user.name "xuper-plugin"
+          git config user.email "335105665+xuper-plugin@users.noreply.github.com"
+          git commit -q -m "Home pre-armado: main copy for installed versions"
+          # A release push may land meanwhile: rebase on it and try again (the feeds never touch the release's files).
+          for attempt in 1 2 3 4 5; do
+            if git push -q origin HEAD:main; then exit 0; fi
+            echo "push to main failed (attempt $attempt): rebasing on the new main"
+            sleep $((attempt * 10))
+            git pull -q --rebase origin main || { git rebase --abort || true; echo "the rebase failed"; exit 1; }
+          done
+          exit 1
