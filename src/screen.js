@@ -8,7 +8,7 @@ import { put, jsonSize } from "./store.js";
 import { indexStep, indexNeeded, idxRefFor, findKey } from "./titleIndex.js";
 import { enrichTmdb, tmdbAvailable } from "./tmdbLazy.js";
 import { LANG_ORDER, isLang } from "./names.js";
-import { fetchHomeFeed, fetchLiveFeed } from "./homeFeed.js";
+import { fetchHomeFeed, fetchLiveFeed, publishedFeeds, hasHomeFeed } from "./homeFeed.js";
 import { TAB_IDS, browseView, searchView, liveView, settingsView, verifyingView, firstPickView, cardOf, slidesOf } from "./screenView.js";
 import { PLUGIN_VERSION } from "./version.js";
 import { cleanRails } from "./channelTitle.js";
@@ -366,9 +366,13 @@ function feedTabFor(tab, lang) {
 // chosen. Its feed follows in the same tick (`tick`), and the health check runs after the first content. If the race finds
 // none (no internet, a slow network, every account it reached dead or silent), the health check and then the automatic pick
 // over the accounts that answered it (`autopick`); only if that finds none either, the manual picker. The 🌐 changes the
-// server later.
+// server later. Within the Spanish group the accounts with a Home feed for the person's language race first: the list of
+// published feeds (one small file, FEED_LIST_TIMEOUT_MS) is asked with the server list and never waited for.
+const FEED_LIST_TIMEOUT_MS = 2500;
 async function race(opts) {
-  const r = await cat.raceFirstServer(opts).catch(() => ({ ok: false }));
+  const lang = (opts && opts.lang) || LANG_ORDER[0];
+  const feeds = () => publishedFeeds({ timeoutMs: FEED_LIST_TIMEOUT_MS }).then((paths) => (paths ? (key) => hasHomeFeed(paths, key, lang) : null));
+  const r = await cat.raceFirstServer({ ...opts, feeds }).catch(() => ({ ok: false }));
   if (r && r.late && !deferred.has("race")) { deferred.add("race"); return; } // no time left in this tick: the next one races
   raceTried = true;
   if (r && r.ok) { pickedNow = !r.kept; markServerChosen(); cacheKey = cat.serverKey(); }
@@ -467,7 +471,8 @@ function pendingUnit(state, tab, device) {
 }
 
 // opts.until: a deadline (ms since the epoch) for the units the first run's tick runs (the race, or the health check and the
-// automatic pick, then the feed); the health check leaves FIRST_FEED_RESERVE_MS of it to the pick's feed.
+// automatic pick, then the feed); the health check leaves FIRST_FEED_RESERVE_MS of it to the pick's feed. opts.lang: the
+// language the screen shows (the race prefers the accounts with a Home feed in it).
 async function runUnit(unit, opts) {
   const until = (opts && opts.until) || 0;
   if (unit === "country") {
@@ -779,7 +784,7 @@ const events = {
     console.log("[dbg] tick start tab=" + tab + " wantedLang=" + wantedLang(state) + " storedLang=" + String(getStored(LANG_KEY)) + " unit=" + unit + " plan=[" + unitsFor(tab, wantedLang(state)).join(",") + "] feedLangs=[" + [...homeFeedData.keys()].join(",") + "] tried=[" + [...homeFeedTried].join(",") + "] server=" + cat.serverKey() + " healthReady=" + cat.healthReady());
     for (;;) {
       const t1 = Date.now();
-      try { await runUnit(unit, { until }); } catch (_) { failed[unit] = true; }
+      try { await runUnit(unit, { until, lang: wantedLang(state) }); } catch (_) { failed[unit] = true; }
       console.log("[dbg] unit " + unit + " tab=" + tab + " " + (Date.now() - t1) + "ms" + (failed[unit] ? " FAILED" : ""));
       const next = pendingUnit({ ...state, failed }, tab, device);
       if (!next || next === unit) break;

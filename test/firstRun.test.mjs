@@ -23,8 +23,10 @@ const { sealV2, withCrypto } = sealer();
 const feedOf = (key, at) => ({ v: 1, serverKey: key, at: at - 2 * H, lang: "es", langs: ["es"], slides: [], rows: [{ id: "vod-1", title: "Estrenos del feed", items: [{ id: "m1", ref: "vod:1", title: "Uno" }] }] });
 
 // accounts: [{ id, host, flag, does: "ok" | "dead" | "hang" | "refuse", ms }], in the service's order. An answer slower than
-// the request's timeoutMs is Kino's timeout at timeoutMs, as on a device.
-function world(accounts, { storage = {}, feeds = true, bootHangs = false } = {}) {
+// the request's timeoutMs is Kino's timeout at timeoutMs, as on a device. feeds: true (every account has a Home feed), false,
+// or the ids of the accounts that have one. meta: the producers' data-meta.json listing those feeds ("hang", "404", or
+// { ms, extra: { path: { builtAt } } }); without it data-meta.json answers 404 like any other missing file.
+function world(accounts, { storage = {}, feeds = true, bootHangs = false, meta = null } = {}) {
   const net = virtualNet({ start: Date.UTC(2026, 10, 17, 12) });
   Date.now = net.now;
   const srvOf = (a) => ({ url: `http://${a.host}`, username: "u" + a.id, password: "p" + a.id });
@@ -52,11 +54,20 @@ function world(accounts, { storage = {}, feeds = true, bootHangs = false } = {})
       if (bootHangs) return track(e, net.request((init && init.timeoutMs) || 15000).then(() => kinoError("timeout", "the request took too long")));
       return track(e, net.request(BOOT).then(() => res(200, { ok: true, servers_text: text })));
     }
+    if (u.hostname === "raw.githubusercontent.com" && meta && u.pathname === "/xuper-plugin/kino-plugin-ultrahd/data/data-meta.json") {
+      const e = { n: "meta", t, timeoutMs: init && init.timeoutMs };
+      log.push(e);
+      if (meta === "hang") return track(e, net.request((init && init.timeoutMs) || 15000).then(() => kinoError("timeout", "the request took too long")));
+      if (meta === "404") return track(e, net.request(150).then(() => res(404, "404: Not Found")));
+      const files = { ...(meta.extra || {}) };
+      for (const a of accounts) if (hasFeedFile(keyFor(a.id))) files[`home/${keyFor(a.id)}.v2.enc.json`] = files[`home/${keyFor(a.id)}.enc.json`] = { builtAt: net.now() - 2 * H };
+      return track(e, net.request(meta.ms || 200).then(() => res(200, { v: 1, at: net.now() - H, maxAgeMs: 72 * H, files })));
+    }
     if (u.hostname === "raw.githubusercontent.com") {
       const m = /\/kino-plugin-ultrahd\/data\/home\/([^/.]+)\.v2\.enc\.json$/.exec(u.pathname);
       const e = { n: "github", feed: m ? m[1] : null, t, timeoutMs: init && init.timeoutMs };
       log.push(e);
-      if (m && feeds) return track(e, net.request(250).then(() => res(200, sealV2(feedOf(m[1], net.now())))));
+      if (m && hasFeedFile(m[1])) return track(e, net.request(250).then(() => res(200, sealV2(feedOf(m[1], net.now())))));
       if (u.pathname.endsWith("/categories.json")) return track(e, net.request(300).then(() => res(200, INDEX)));
       return track(e, net.request(150).then(() => res(404, "404: Not Found")));
     }
@@ -81,6 +92,7 @@ function world(accounts, { storage = {}, feeds = true, bootHangs = false } = {})
   const k = installKino({ routes, storage });
   withCrypto(k.kino);
   const keyFor = (id) => keyOf(srvOf(accounts.find((a) => a.id === id)));
+  const hasFeedFile = (key) => feeds === true || (Array.isArray(feeds) && feeds.some((id) => keyFor(id) === key));
   const srvs = () => JSON.parse(k.store.get("srvs") || "null");
   const chosenId = () => { const st = srvs(); return st && st.chosen ? accounts.find((a) => keyFor(a.id) === st.chosen).id : null; };
   const probes = () => log.filter((e) => e.action);
@@ -283,8 +295,9 @@ test("the service's list does not answer: the health check tries it once more, t
   const w = world([{ id: "m1", host: "m1.example", flag: "🇲🇽", does: "ok", ms: 500 }], { bootHangs: true });
   const s = await screenOf(w);
   const held = await s.tick();
-  // The race's list request times out at 4 s; the health check (10+ s left) asks once more, 4 s; the pick has no answers.
-  assert.deepEqual(w.log.map((e) => [e.n, e.timeoutMs]), [["boot", 4000], ["boot", 4000]]);
+  // The race's list request times out at 4 s (the published feeds' list, asked with it, answers 404); the health check (10+ s
+  // left) asks once more, 4 s; the pick has no answers.
+  assert.deepEqual(w.log.map((e) => [e.n, e.timeoutMs]), [["boot", 4000], ["github", 2500], ["boot", 4000]]);
   assert.ok(held <= 2 * 4000 + 50, `${held} ms`);
   assert.equal(w.probes().length, 0);
   assert.ok(!(await s.view()).includes('"fpPage"'));
@@ -473,4 +486,80 @@ test("a list without a Spanish account: the picker's order races", async () => {
   await s.tick();
   assert.deepEqual(w.probes().map((e) => e.n).sort(), ["b1", "f1", "u1"]);
   assert.equal(w.chosenId(), "b1");
+});
+
+// ---- accounts with a Home feed race first (the producers' data-meta.json) ---------------------------------------------
+// The Redmi's fresh install of 2026-11-18: the race picked line.krishkaz.com, which has no Ultra HD Home feed, so the Home
+// was built from the panel (first content at 11.6-13.9 s instead of the feed's few seconds).
+
+const feedWorld = (opts) => world([
+  { id: "n1", host: "n1.example", flag: "🇲🇽", does: "ok", ms: 300 }, // no feed, the fastest
+  { id: "f1", host: "f1.example", flag: "🇲🇽", does: "ok", ms: 900 },
+  { id: "f2", host: "f2.example", flag: "🇪🇸", does: "ok", ms: 900 },
+  { id: "f3", host: "f3.example", flag: "🇨🇴", does: "ok", ms: 900 },
+  { id: "u1", host: "u1.example", flag: "🇺🇸", does: "ok", ms: 100 },
+], { feeds: ["f1", "f2", "f3", "u1"], ...opts });
+
+test("fresh install: within the Spanish group the accounts with a Home feed race first, and the feed paints in the first tick", async () => {
+  const w = feedWorld({ meta: { ms: 200 } });
+  const s = await screenOf(w);
+  await s.tick();
+  const meta = w.log.filter((e) => e.n === "meta");
+  assert.equal(meta.length, 1, "the published list, asked once");
+  assert.equal(meta[0].t, 0 + w.log[0].t, "together with the server list");
+  assert.equal(meta[0].timeoutMs, 2500);
+  assert.deepEqual(w.probes().map((e) => e.n).sort(), ["f1", "f2", "f3"], "the faster account without a feed never started");
+  assert.equal(w.chosenId(), "f1");
+  assert.ok((await s.view()).includes("Estrenos del feed"), "the Home from the feed, not built from the panel");
+});
+
+test("the same list without data-meta.json (404, or it hangs): today's order, and the race is not held by it", async () => {
+  for (const meta of ["404", "hang"]) {
+    const w = feedWorld({ meta });
+    const s = await screenOf(w);
+    await s.tick();
+    assert.equal(w.chosenId(), "n1", meta + ": the first good answer, as before");
+    assert.ok(w.probes().every((e) => e.t - w.log[0].t === BOOT), meta + ": the race started as soon as the server list came");
+    // The pick at BOOT + 300, then its feed's two 404s (data, main): a Home built from the panel, as before.
+    assert.equal(s.last.answered, BOOT + 300 + 2 * 150, `${meta}: the plugin answered after ${s.last.answered} ms`);
+    assert.ok(s.last.held <= 2500, `${meta}: Kino held the call ${s.last.held} ms (the list's own 2.5 s at most)`);
+  }
+});
+
+test("a published list that comes once the race started reorders only the accounts not tried yet", async () => {
+  const w = world([
+    { id: "x1", host: "x1.example", flag: "🇲🇽", does: "hang" },
+    { id: "x2", host: "x2.example", flag: "🇲🇽", does: "hang" },
+    { id: "x3", host: "x3.example", flag: "🇲🇽", does: "hang" },
+    { id: "n1", host: "n1.example", flag: "🇲🇽", does: "ok", ms: 300 },
+    { id: "f1", host: "f1.example", flag: "🇲🇽", does: "ok", ms: 300 },
+  ], { feeds: ["f1"], meta: { ms: 1500 } });
+  const s = await screenOf(w);
+  await s.tick();
+  assert.deepEqual(w.probes().slice(0, 3).map((e) => e.n), ["x1", "x2", "x3"], "the race did not wait for the list");
+  assert.ok(w.probes()[0].t < w.log.find((e) => e.n === "meta").end);
+  assert.equal(w.probes()[3].n, "f1", "once the list came, f1 took the next free slot");
+  assert.equal(w.chosenId(), "f1");
+});
+
+test("the published list: a v2 copy counts as its feed, one past the readers' 72 h does not, and the language's own file", async () => {
+  const { hasHomeFeed, publishedFeeds } = await fresh("homeFeed.js");
+  const net = virtualNet({ start: Date.UTC(2026, 10, 18, 0) });
+  Date.now = net.now;
+  const now = net.now();
+  const files = {
+    "home/aaa.v2.enc.json": { builtAt: now - H },
+    "home/bbb.enc.json": { builtAt: now - 73 * H, carried: true },
+    "home/ccc.es-419.enc.json": { builtAt: now - H },
+    "live/ddd.enc.json": { builtAt: now - H },
+  };
+  const k = installKino({ routes: [(url) => (url.includes("/data/data-meta.json") ? res(200, { v: 1, at: now, maxAgeMs: 72 * H, files }) : undefined)] });
+  const paths = await publishedFeeds({ timeoutMs: 2500 });
+  assert.equal(hasHomeFeed(paths, "aaa", "es"), true);
+  assert.equal(hasHomeFeed(paths, "bbb", "es"), false, "too old: the reader would drop it");
+  assert.equal(hasHomeFeed(paths, "ccc", "es"), false, "the default file is missing");
+  assert.equal(hasHomeFeed(paths, "ccc", "es-419"), true);
+  assert.equal(hasHomeFeed(paths, "ddd", "es"), false, "an En vivo feed is not a Home feed");
+  assert.equal(await publishedFeeds({ timeoutMs: 2500 }), paths, "asked once per runtime");
+  assert.equal(k.requests.length, 1);
 });

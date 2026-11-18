@@ -588,18 +588,33 @@ function keptPick(st) {
  * each within its timeout and the race's deadline. A dead account cannot win: its answer throws in callServer, which remembers it
  * dead for a day, exactly as everywhere else. Once the race is over a late answer only records what it learned; it never
  * moves the pick. A chosen server is never raced: it is kept, with no request. Never throws.
+ * opts.feeds: () => Promise of (serverKey) => whether that account has a Home feed for the person's language, or null. Asked
+ * together with the server list and never waited for: within the Spanish group the accounts with a feed race first (their
+ * Home comes from the feed, not built from the panel: about 10 s sooner on a Redmi); an answer that comes once the race
+ * started reorders only the accounts not tried yet, and a failure leaves the order as it was. The pick may still be an
+ * account without a feed (the first that answered well): its Home is built from the panel, as before.
  * `{ ok: true, host, label, index, total }`, `{ ok: false }`, or `{ ok: false, late: true }` when opts.until left no time
  * to race (nothing was sent).
  */
 export async function raceFirstServer(opts = {}) {
   const until = opts.until || Date.now() + HEALTH_DEADLINE_MS;
+  let hasFeed = null;
+  let reorder = () => {};
+  if (typeof opts.feeds === "function" && !hasChosenServer()) {
+    Promise.resolve().then(() => opts.feeds()).then((fn) => { if (typeof fn === "function") { hasFeed = fn; reorder(); } }, () => {});
+  }
   let st;
   try { st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS }); } catch (e) { lastErr = errText(e); return { ok: false }; }
   if (st.chosen) return keptPick(st);
   const end = Math.min(Date.now() + RACE_WINDOW_MS, until - RACE_RESERVE_MS);
   if (end - Date.now() < RACE_MIN_MS) return { ok: false, late: true };
-  const items = itemsWithHealth(st);
-  const queue = [...spreadHosts(items.filter((x) => x.es)), ...spreadHosts(items.filter((x) => !x.es))];
+  const withFeed = (x) => !!hasFeed && !!hasFeed(keyOf(st.list[x.i]));
+  // Spanish first, each group spread over hosts; within the Spanish group, the accounts with a feed first.
+  const ordered = (xs) => {
+    const es = xs.filter((x) => x.es);
+    return [...spreadHosts(es.filter(withFeed)), ...spreadHosts(es.filter((x) => !withFeed(x))), ...spreadHosts(xs.filter((x) => !x.es))];
+  };
+  const queue = ordered(itemsWithHealth(st));
   if (!queue.length) return { ok: false };
   const hostname = (it) => hostnameOf(st.list[it.i]) || it.host;
   return new Promise((done) => {
@@ -610,6 +625,7 @@ export async function raceFirstServer(opts = {}) {
     let over = false;
     let spent = false; // Kino refused more requests in this call
     const finish = (out) => { over = true; done(out); };
+    reorder = () => { if (!over) queue.splice(0, queue.length, ...ordered(queue)); };
     const esFlying = () => [...flying.values()].some((x) => x.es);
     const step = () => {
       if (over) return;

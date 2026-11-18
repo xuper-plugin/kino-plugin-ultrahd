@@ -94,6 +94,44 @@ async function fetchSealed(path, v, accept, until) {
   return b.d ? accept(b.d, b.kb) : null;
 }
 
+// The published set's list on `data` (scripts/feed-set.mjs metaOf; no secret): { v: 1, at, maxAgeMs, files: { "<path>":
+// { builtAt, carried? } } }, every feed of the set at its path ("home/<key>[.<lang>].enc.json", "live/<key>.enc.json", and
+// their ".v2.enc.json" copies). Asked once per runtime: the first run's race tries the accounts with a feed first.
+const META_FILE = "data-meta.json";
+let metaRun = null; // { of: the kino of the runtime that asked, p: its answer }
+
+/**
+ * The feeds published now, as their v1 paths (a v2 copy counts as its v1 path), minus any the readers would drop for age;
+ * null when the list could not be read (no `data` branch, a timeout, an answer that is not the list). Never throws.
+ * opts.timeoutMs: the request's timeout. One request per runtime, whatever it gave.
+ */
+export function publishedFeeds(opts = {}) {
+  if (!metaRun || metaRun.of !== kino) metaRun = { of: kino, p: readMeta(opts).catch(() => null) };
+  return metaRun.p;
+}
+
+async function readMeta(opts) {
+  const init = { headers: { Accept: "application/json" }, ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}) };
+  const r = await kino.fetch(`${REPO}${DATA_BRANCH}/${META_FILE}?v=${Math.floor(Date.now() / 3600000)}`, init);
+  if (!r.ok) return null;
+  const m = r.json();
+  if (!m || m.v !== 1 || !m.files || typeof m.files !== "object") return null;
+  const maxAge = Math.min(Number(m.maxAgeMs) || MAX_AGE_MS, MAX_AGE_MS);
+  const out = new Set();
+  for (const [path, f] of Object.entries(m.files)) {
+    const age = Date.now() - Number(f && f.builtAt);
+    if (age >= 0 && age < maxAge) out.add(path.replace(/\.v2\.enc\.json$/, ".enc.json"));
+  }
+  return out;
+}
+
+/** Whether [paths] (publishedFeeds) hold a Home feed fetchHomeFeed would read for server [key] in language [lang]. */
+export function hasHomeFeed(paths, key, lang) {
+  if (!paths || !key) return false;
+  if ((lang === "es-419" || lang === "es-ES") && paths.has(`home/${key}.${lang}.enc.json`)) return true;
+  return paths.has(`home/${key}.enc.json`);
+}
+
 // Deja una pestaña `{slides, rows}` solo con filas válidas (id/title/items), o null si no sirve.
 function tabOf(t) {
   if (!t || !Array.isArray(t.rows)) return null;

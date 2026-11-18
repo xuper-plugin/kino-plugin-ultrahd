@@ -288,6 +288,31 @@ async function fetchSealed(path, v, accept, until) {
   const b = await one(MAIN_BRANCH, path);
   return b.d ? accept(b.d, b.kb) : null;
 }
+var META_FILE = "data-meta.json";
+var metaRun = null;
+function publishedFeeds(opts = {}) {
+  if (!metaRun || metaRun.of !== kino) metaRun = { of: kino, p: readMeta(opts).catch(() => null) };
+  return metaRun.p;
+}
+async function readMeta(opts) {
+  const init = { headers: { Accept: "application/json" }, ...opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {} };
+  const r = await kino.fetch(`${REPO}${DATA_BRANCH}/${META_FILE}?v=${Math.floor(Date.now() / 36e5)}`, init);
+  if (!r.ok) return null;
+  const m = r.json();
+  if (!m || m.v !== 1 || !m.files || typeof m.files !== "object") return null;
+  const maxAge = Math.min(Number(m.maxAgeMs) || MAX_AGE_MS, MAX_AGE_MS);
+  const out = /* @__PURE__ */ new Set();
+  for (const [path, f] of Object.entries(m.files)) {
+    const age = Date.now() - Number(f && f.builtAt);
+    if (age >= 0 && age < maxAge) out.add(path.replace(/\.v2\.enc\.json$/, ".enc.json"));
+  }
+  return out;
+}
+function hasHomeFeed(paths, key, lang) {
+  if (!paths || !key) return false;
+  if ((lang === "es-419" || lang === "es-ES") && paths.has(`home/${key}.${lang}.enc.json`)) return true;
+  return paths.has(`home/${key}.enc.json`);
+}
 function tabOf(t) {
   if (!t || !Array.isArray(t.rows)) return null;
   const rows = t.rows.filter((r) => r && typeof r.id === "string" && typeof r.title === "string" && Array.isArray(r.items) && r.items.length);
@@ -3517,6 +3542,18 @@ function keptPick(st) {
 }
 async function raceFirstServer(opts = {}) {
   const until = opts.until || Date.now() + HEALTH_DEADLINE_MS;
+  let hasFeed = null;
+  let reorder = () => {
+  };
+  if (typeof opts.feeds === "function" && !hasChosenServer()) {
+    Promise.resolve().then(() => opts.feeds()).then((fn) => {
+      if (typeof fn === "function") {
+        hasFeed = fn;
+        reorder();
+      }
+    }, () => {
+    });
+  }
   let st;
   try {
     st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS });
@@ -3527,8 +3564,12 @@ async function raceFirstServer(opts = {}) {
   if (st.chosen) return keptPick(st);
   const end = Math.min(Date.now() + RACE_WINDOW_MS, until - RACE_RESERVE_MS);
   if (end - Date.now() < RACE_MIN_MS) return { ok: false, late: true };
-  const items = itemsWithHealth(st);
-  const queue = [...spreadHosts(items.filter((x) => x.es)), ...spreadHosts(items.filter((x) => !x.es))];
+  const withFeed = (x) => !!hasFeed && !!hasFeed(keyOf(st.list[x.i]));
+  const ordered = (xs) => {
+    const es = xs.filter((x) => x.es);
+    return [...spreadHosts(es.filter(withFeed)), ...spreadHosts(es.filter((x) => !withFeed(x))), ...spreadHosts(xs.filter((x) => !x.es))];
+  };
+  const queue = ordered(itemsWithHealth(st));
   if (!queue.length) return { ok: false };
   const hostname = (it) => hostnameOf2(st.list[it.i]) || it.host;
   return new Promise((done) => {
@@ -3541,6 +3582,9 @@ async function raceFirstServer(opts = {}) {
     const finish = (out) => {
       over = true;
       done(out);
+    };
+    reorder = () => {
+      if (!over) queue.splice(0, queue.length, ...ordered(queue));
     };
     const esFlying = () => [...flying.values()].some((x) => x.es);
     const step2 = () => {
@@ -5709,8 +5753,11 @@ function feedTabFor(tab, lang) {
   const t = tab === "movies" ? f.movies : tab === "series" ? f.series : null;
   return t && Array.isArray(t.rows) && t.rows.length ? t : null;
 }
+var FEED_LIST_TIMEOUT_MS = 2500;
 async function race(opts) {
-  const r = await raceFirstServer(opts).catch(() => ({ ok: false }));
+  const lang = opts && opts.lang || LANG_ORDER[0];
+  const feeds = () => publishedFeeds({ timeoutMs: FEED_LIST_TIMEOUT_MS }).then((paths) => paths ? (key) => hasHomeFeed(paths, key, lang) : null);
+  const r = await raceFirstServer({ ...opts, feeds }).catch(() => ({ ok: false }));
   if (r && r.late && !deferred.has("race")) {
     deferred.add("race");
     return;
@@ -6081,7 +6128,7 @@ var events = {
     for (; ; ) {
       const t1 = Date.now();
       try {
-        await runUnit(unit, { until });
+        await runUnit(unit, { until, lang: wantedLang(state) });
       } catch (_) {
         failed[unit] = true;
       }
