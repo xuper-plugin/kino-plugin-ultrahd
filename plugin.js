@@ -1112,16 +1112,6 @@ function writeMap(map) {
   }
   put(MAP_KEY, text2);
 }
-async function withTimeout(p, ms) {
-  if (typeof kino.sleep !== "function") return p;
-  let timer = null;
-  const gate = new Promise((res) => {
-    timer = kino.sleep(Math.max(50, ms)).then(() => res({ timeout: true }));
-  });
-  const out = await Promise.race([p.then((v) => ({ v })), gate]);
-  if (out.timeout) throw Object.assign(new Error("tiempo agotado"), { code: "timeout" });
-  return out.v;
-}
 async function queryOne(c) {
   const params = { query: c.name, language: "es-MX", include_adult: false };
   if (c.year) params[c.tv ? "first_air_date_year" : "year"] = c.year;
@@ -1195,7 +1185,7 @@ async function enrichTmdb(items, { max = 24, budgetMs = 2500 } = {}) {
         const c = work[next++];
         try {
           stats2.queries++;
-          const r = await withTimeout(queryOne(c), deadline - Date.now());
+          const r = await queryOne(c);
           const id = r.id;
           done.push([c, id, r.p]);
           if (id) {
@@ -3219,11 +3209,12 @@ function walkOrder(st) {
   const same = p ? ring.filter((i) => i !== st.idx && panelOf(keyOf(st.list[i]), map) === p) : [];
   return [st.idx, ...same, ...ring.filter((i) => i !== st.idx && !same.includes(i))].filter((i) => usable(st.list[i]));
 }
-async function api(action2, extra = {}) {
+async function api(action2, extra = {}, opts = {}) {
+  const until = opts.until || 0;
   let last = "";
-  for (let pass = 0; pass < 2; pass++) {
+  for (let pass = 0; pass < (until ? 1 : 2); pass++) {
     const st = await loadServers(pass === 1);
-    if (pass === 0) await backHome();
+    if (pass === 0 && !until) await backHome();
     const st2 = readSrvs();
     if (st2 && pass === 0) {
       st.idx = st2.idx;
@@ -3232,8 +3223,10 @@ async function api(action2, extra = {}) {
       st.homeAt = st2.homeAt;
     }
     for (const i of walkOrder(st)) {
+      const left = until ? until - Date.now() : 0;
+      if (until && left < 1e3) break;
       try {
-        const data = await callServer(st.list[i], action2, extra);
+        const data = await callServer(st.list[i], action2, extra, until ? { timeoutMs: left } : void 0);
         if (i !== st.idx || !st.ok || Date.now() - (st.okAt || 0) > 5e3) {
           st.idx = i;
           st.ok = true;
@@ -3938,11 +3931,11 @@ async function fetchCategory(action2, categoryId, srv, opts) {
   }
   for (let attempt = 0; ; attempt++) {
     try {
-      const data = await api(action2, extra);
+      const data = await api(action2, extra, opts);
       if (!Array.isArray(data)) throw new Error("respuesta que no es lista");
       return data;
     } catch (e) {
-      if (attempt >= 1 || e && (e.code === "rate_limited" || e.dead)) throw e;
+      if (attempt >= 1 || opts && opts.until || e && (e.code === "rate_limited" || e.dead)) throw e;
     }
   }
 }
@@ -3964,7 +3957,7 @@ async function categoryList(kind, srv, opts) {
     } catch (_) {
     }
   }
-  const data = srv ? await callServer(srv, CAT_ACTIONS[kind], {}, { timeoutMs: opts && opts.timeoutMs || EXPLICIT_TIMEOUT_MS }) : await api(CAT_ACTIONS[kind]);
+  const data = srv ? await callServer(srv, CAT_ACTIONS[kind], {}, { timeoutMs: opts && opts.timeoutMs || EXPLICIT_TIMEOUT_MS }) : await api(CAT_ACTIONS[kind], {}, opts);
   const list = (Array.isArray(data) ? data : []).map((c) => ({ category_id: String(c.category_id || ""), category_name: String(c.category_name || "").trim() }));
   const now = srv ? key : serverKey();
   if (!srv) catMemo[kind] = { key: now, ts: Date.now(), list };
@@ -4063,6 +4056,7 @@ async function oneRail(kind, catId, perRail, lang) {
     return null;
   }
 }
+var COUNTRY_ROW_MS = 3e3;
 async function home() {
   const dbgT = Date.now();
   console.log("[dbg] home() de Kino: inicio server=" + serverKey());
@@ -4070,7 +4064,7 @@ async function home() {
     const feed = await fetchHomeFeed(serverKey(), null);
     if (feed && feed.rows.length) {
       const rows2 = feed.rows.map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items }));
-      const live2 = await Promise.race([countryRow().catch(() => null), kino.sleep(3e3).then(() => null)]);
+      const live2 = isCountryCode(homeCountry()) ? await countryRow(20, { until: Date.now() + COUNTRY_ROW_MS }).catch(() => null) : null;
       if (live2) rows2.push({ id: live2.id, title: live2.title, genre: "tv", items: live2.items });
       indexStep({ budgetMs: 1500 }).catch(() => {
       });
@@ -4238,10 +4232,10 @@ async function episodes(ref) {
 var LIVE_PAGE = 200;
 var LIVE_CATS_TTL_MS = 10 * 60 * 1e3;
 var liveCatsMemo = null;
-async function liveCats() {
+async function liveCats(opts) {
   const key = serverKey();
   if (liveCatsMemo && key && liveCatsMemo.key === key && Date.now() - liveCatsMemo.ts < LIVE_CATS_TTL_MS) return liveCatsMemo.list;
-  const merged = mergeLive(await categoryList("live"), { showAdult: true });
+  const merged = mergeLive(await categoryList("live", null, opts), { showAdult: true });
   liveCatsMemo = { key: serverKey(), ts: Date.now(), list: merged };
   return merged;
 }
@@ -4346,15 +4340,16 @@ async function liveSearch(args) {
   return { items };
 }
 var isCountryCode = (cc) => COUNTRY_PHRASES.some(([, code]) => code === cc);
-async function countryRow(limit = 20) {
+async function countryRow(limit = 20, opts = {}) {
   const cc = homeCountry();
   if (!isCountryCode(cc)) return null;
-  const ranked = visibleLive(await liveCats()).filter((c) => c.country === cc).map((c) => ({ c, m: countryMatch(c.title) })).sort((a, b) => (a.m && a.m.exact ? 0 : a.m && a.m.starts ? 1 : 2) - (b.m && b.m.exact ? 0 : b.m && b.m.starts ? 1 : 2) || a.c.order - b.c.order).slice(0, 3);
+  const ranked = visibleLive(await liveCats(opts)).filter((c) => c.country === cc).map((c) => ({ c, m: countryMatch(c.title) })).sort((a, b) => (a.m && a.m.exact ? 0 : a.m && a.m.starts ? 1 : 2) - (b.m && b.m.exact ? 0 : b.m && b.m.starts ? 1 : 2) || a.c.order - b.c.order).slice(0, 3);
   const items = [];
   const seen = /* @__PURE__ */ new Set();
   for (const { c } of ranked) {
     if (items.length >= limit) break;
-    const data = await fetchCategory("get_live_streams", c.id).catch(() => []);
+    if (opts.until && opts.until - Date.now() < 1e3) break;
+    const data = await fetchCategory("get_live_streams", c.id, null, opts).catch(() => []);
     for (const s of data) {
       const it = liveItem(s, c.id, c.adult);
       if (!it || items.length >= limit || seen.has(it.id)) continue;

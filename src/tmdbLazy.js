@@ -52,16 +52,6 @@ function writeMap(map) {
   put(MAP_KEY, text);
 }
 
-async function withTimeout(p, ms) {
-  if (typeof kino.sleep !== "function") return p;
-  let timer = null;
-  const gate = new Promise((res) => { timer = kino.sleep(Math.max(50, ms)).then(() => res({ timeout: true })); });
-  const out = await Promise.race([p.then((v) => ({ v })), gate]);
-  void timer;
-  if (out.timeout) throw Object.assign(new Error("tiempo agotado"), { code: "timeout" });
-  return out.v;
-}
-
 async function queryOne(c) {
   const params = { query: c.name, language: "es-MX", include_adult: false };
   if (c.year) params[c.tv ? "first_air_date_year" : "year"] = c.year;
@@ -114,7 +104,9 @@ export async function enrichTmdb(items, { max = 24, budgetMs = 2500 } = {}) {
       queue.push(c);
     }
 
-    // 2) TMDB: concurrencia 3, tope por llamada y por tiempo
+    // 2) TMDB: concurrencia 3, tope por llamada y por tiempo. The time cap only stops new queries: a query is never raced
+    // against kino.sleep, because Kino holds a call until every pending binding settles, so that race held every call that
+    // asked TMDB for its whole budget (2.5 s) even when TMDB answered in a fraction of it. Kino's own limit bounds a query.
     const work = queue.slice(0, max);
     const done = [];
     let stop = false;
@@ -124,7 +116,7 @@ export async function enrichTmdb(items, { max = 24, budgetMs = 2500 } = {}) {
         const c = work[next++];
         try {
           stats.queries++;
-          const r = await withTimeout(queryOne(c), deadline - Date.now());
+          const r = await queryOne(c);
           const id = r.id;
           done.push([c, id, r.p]);
           if (id) { stats.found++; c.item.ids = { ...(c.item.ids || {}), tmdb: id }; if (r.p && !c.item.poster) c.item.poster = posterUrl(r.p); } else stats.missed++;
