@@ -15,7 +15,7 @@ const realNow = Date.now;
 test.afterEach(() => { Date.now = realNow; });
 
 // errIds: channels the panel answers with an HTTP error at once (it does not know them), before any other answer.
-function world({ prefix, active = 0, chosen = 0, epgMs = 250, hangIds = [], errIds = [], storage = {} } = {}) {
+function world({ prefix, active = 0, chosen = 0, epgMs = 250, hangIds = [], errIds = [], storage = {}, epgTitle = "Noticias" } = {}) {
   const net = virtualNet({ start: Date.UTC(2026, 10, 18, 0) });
   Date.now = net.now;
   const list = ["a", "b", "c"].map((id) => ({ url: `http://${prefix}${id}.example`, username: "u" + id, password: "p" + id, name: "🇲🇽" }));
@@ -35,7 +35,7 @@ function world({ prefix, active = 0, chosen = 0, epgMs = 250, hangIds = [], errI
     const late = e.action === "get_short_epg" && (hangIds.includes(e.id) || (init && init.timeoutMs && epgMs >= init.timeoutMs));
     if (late) p = net.request(init.timeoutMs).then(() => kinoError("timeout", "the request took too long"));
     else if (e.action === "get_short_epg" && errIds.includes(e.id)) p = net.request(100).then(() => res(500, "error"));
-    else if (e.action === "get_short_epg") p = net.request(epgMs).then(() => res(200, { epg_listings: [{ title: btoa("Noticias"), description: "", start_timestamp: String(Math.floor(net.now() / 1000) - 600), stop_timestamp: String(Math.floor(net.now() / 1000) + 1800) }] }));
+    else if (e.action === "get_short_epg") p = net.request(epgMs).then(() => res(200, { epg_listings: [{ title: btoa(epgTitle), description: "", start_timestamp: String(Math.floor(net.now() / 1000) - 600), stop_timestamp: String(Math.floor(net.now() / 1000) + 1800) }] }));
     else if (e.action === "get_vod_categories") p = net.request(500).then(() => res(200, [{ category_id: "1", category_name: "ACCION" }, { category_id: "2", category_name: "DRAMA" }, { category_id: "3", category_name: "TERROR" }]));
     else p = net.request(400).then(() => res(200, [{ stream_id: 1, name: "Uno", container_extension: "mp4" }]));
     p = p.then(done);
@@ -141,4 +141,11 @@ test("api() calls run together share one backHome probe, with a short timeout", 
   assert.equal(probes[0].host, "g3a.example");
   assert.equal(probes[0].timeoutMs, 4000);
   assert.equal(JSON.parse(w.store.get("srvs")).idx, 0, "back on the chosen server");
+});
+
+test("guide: a programme title the panel sent with HTML entities is shown decoded (Storm &amp; Alexis is Storm & Alexis)", async () => {
+  const w = world({ prefix: "g9", epgTitle: "Storm &amp; Alexis" });
+  const cat = await fresh("catalog.js");
+  const { out } = await w.call(cat.guide({ channelIds: channels(4), ...window(w.net) }));
+  assert.equal(out[0].title, "Storm & Alexis");
 });

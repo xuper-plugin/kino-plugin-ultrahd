@@ -117,7 +117,8 @@ const startsWithCountry = (rest) => {
 // HTML entities some panels leave in a name, once or twice escaped ("A&AMP;E", "A&amp;amp;E", "&#39;").
 const ENTITY = /&(amp|quot|apos|lt|gt|nbsp|#\d{1,6}|#x[0-9a-f]{1,5});/gi;
 const NAMED = { amp: "&", quot: "\"", apos: "'", lt: "<", gt: ">", nbsp: " " };
-function decodeEntities(text) {
+/** [text] with the HTML entities a panel left in it decoded (also programme titles of the guide). Pure. */
+export function decodeEntities(text) {
   let s = text;
   for (let i = 0; i < 3 && /&(?:[a-z]+|#x?[0-9a-f]+);/i.test(s); i++) {
     s = s.replace(ENTITY, (all, e) => {
