@@ -286,14 +286,23 @@ function backTarget(st) {
 }
 
 // Tras un fallo (o el salto del chequeo de salud) se pasó a otro servidor: se vuelve al elegido por la persona (o al de casa)
-// en cuanto responde. Se mira cada 5 min; nunca a uno muerto o bloqueado (cero peticiones).
-async function backHome() {
+// en cuanto responde. Se mira cada 5 min; nunca a uno muerto o bloqueado (cero peticiones). Not skipped when the last check
+// saw it down: that check is good for 6 h, and the person's server comes back as soon as it answers. One at a time: the
+// api() calls a call runs together (a pool of rails) share it, so a call sends one probe at most (each used to send its
+// own), with a short timeout.
+const BACK_HOME_TIMEOUT_MS = 4000;
+let backHomeRun = null;
+function backHome() {
+  if (!backHomeRun) backHomeRun = goBackHome().finally(() => { backHomeRun = null; });
+  return backHomeRun;
+}
+async function goBackHome() {
   const st = await loadServers(false);
   const target = backTarget(st);
   if (st.idx === target || Date.now() - (st.homeAt || 0) < 300000 || !usable(st.list[target])) return;
   st.homeAt = Date.now();
   try {
-    const data = await callServer(st.list[target], PROBE, {});
+    const data = await callServer(st.list[target], PROBE, {}, { timeoutMs: BACK_HOME_TIMEOUT_MS });
     st.idx = target; st.ok = true; st.okAt = Date.now();
     rememberProbeCats(st.list[target], data);
   } catch (_) { /* sigue en el actual */ }
@@ -1630,13 +1639,25 @@ function b64text(s) {
   }
 }
 
+// Kino asks the guide for up to 50 channels per call (the first 40 of a category, as it lists them) and calls to a plugin
+// run one at a time: a guide call that sent 50 programme requests at once, each through api() (its own backHome probe, and
+// the walk to other accounts, whose stream ids are another panel's channels), held native En vivo's categories behind it
+// for 2.4-4.4 s (measured on a Redmi: 25-51 panel requests). Now the first GUIDE_MAX channels (the ones on screen first),
+// on the active server only, at most GUIDE_PARALLEL at once (Kino's requests per host), each with GUIDE_TIMEOUT_MS: one
+// call holds the queue about a second. Kino keeps what it got for 30 min.
+const GUIDE_MAX = 12;
+const GUIDE_PARALLEL = 4;
+const GUIDE_TIMEOUT_MS = 3000;
 export async function guide({ channelIds, from, to }) {
-  const ids = (Array.isArray(channelIds) ? channelIds : []).slice(0, 50);
-  const lists = await Promise.all(ids.map(async (cid) => {
+  const ids = (Array.isArray(channelIds) ? channelIds : []).slice(0, GUIDE_MAX);
+  const st = readSrvs();
+  const srv = st && Array.isArray(st.list) ? st.list[st.idx] : null;
+  if (!srv || !usable(srv)) return [];
+  const lists = await pool(ids, GUIDE_PARALLEL, async (cid) => {
     const streamId = String(cid).replace(/^live-/, "");
     if (!/^\d+$/.test(streamId)) return [];
     try {
-      const data = await api("get_short_epg", { stream_id: streamId, limit: "20" });
+      const data = await callServer(srv, "get_short_epg", { stream_id: streamId, limit: "20" }, { timeoutMs: GUIDE_TIMEOUT_MS });
       const rows = Array.isArray(data) ? data : (data && (data.epg_listings || data.listings || data.epg)) || [];
       return rows.map((e) => ({
         channelId: String(cid),
@@ -1648,7 +1669,7 @@ export async function guide({ channelIds, from, to }) {
     } catch (_) {
       return [];
     }
-  }));
+  });
   return lists.flat();
 }
 

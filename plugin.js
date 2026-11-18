@@ -3188,13 +3188,21 @@ function backTarget(st) {
   }
   return homeIdx(st);
 }
-async function backHome() {
+var BACK_HOME_TIMEOUT_MS = 4e3;
+var backHomeRun = null;
+function backHome() {
+  if (!backHomeRun) backHomeRun = goBackHome().finally(() => {
+    backHomeRun = null;
+  });
+  return backHomeRun;
+}
+async function goBackHome() {
   const st = await loadServers(false);
   const target = backTarget(st);
   if (st.idx === target || Date.now() - (st.homeAt || 0) < 3e5 || !usable(st.list[target])) return;
   st.homeAt = Date.now();
   try {
-    const data = await callServer(st.list[target], PROBE, {});
+    const data = await callServer(st.list[target], PROBE, {}, { timeoutMs: BACK_HOME_TIMEOUT_MS });
     st.idx = target;
     st.ok = true;
     st.okAt = Date.now();
@@ -4372,13 +4380,19 @@ function b64text(s) {
     return str;
   }
 }
+var GUIDE_MAX = 12;
+var GUIDE_PARALLEL = 4;
+var GUIDE_TIMEOUT_MS = 3e3;
 async function guide({ channelIds, from, to }) {
-  const ids = (Array.isArray(channelIds) ? channelIds : []).slice(0, 50);
-  const lists = await Promise.all(ids.map(async (cid) => {
+  const ids = (Array.isArray(channelIds) ? channelIds : []).slice(0, GUIDE_MAX);
+  const st = readSrvs();
+  const srv = st && Array.isArray(st.list) ? st.list[st.idx] : null;
+  if (!srv || !usable(srv)) return [];
+  const lists = await pool(ids, GUIDE_PARALLEL, async (cid) => {
     const streamId = String(cid).replace(/^live-/, "");
     if (!/^\d+$/.test(streamId)) return [];
     try {
-      const data = await api("get_short_epg", { stream_id: streamId, limit: "20" });
+      const data = await callServer(srv, "get_short_epg", { stream_id: streamId, limit: "20" }, { timeoutMs: GUIDE_TIMEOUT_MS });
       const rows = Array.isArray(data) ? data : data && (data.epg_listings || data.listings || data.epg) || [];
       return rows.map((e) => ({
         channelId: String(cid),
@@ -4390,7 +4404,7 @@ async function guide({ channelIds, from, to }) {
     } catch (_) {
       return [];
     }
-  }));
+  });
   return lists.flat();
 }
 var AVAIL_KEY = "avail:v1";
