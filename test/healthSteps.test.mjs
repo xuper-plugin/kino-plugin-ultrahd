@@ -16,9 +16,10 @@ test.afterEach(() => { Date.now = realNow; });
 const { sealV2: seal, withCrypto } = sealer();
 
 // hosts: [{ id, does: "ok" | "hang" | "dead", ms }]; each its own host. feeds: serve the account's home and live feeds.
+// listAgeH: how old the cached server list is (the bootstrap serves the same list, in 300 ms).
 // The screen's catalog module is shared by every test of this file (its memory of who answered lately too): each test
 // names its hosts apart (hosts(n, prefix)).
-function world(hosts, { storage = {}, feeds = false, active = 0 } = {}) {
+function world(hosts, { storage = {}, feeds = false, active = 0, listAgeH = 0 } = {}) {
   const net = virtualNet({ start: Date.UTC(2026, 10, 17, 12) });
   Date.now = net.now;
   const srv = (h) => ({ url: `http://${h.id}.example`, username: "u" + h.id, password: "p" + h.id, name: "🇲🇽" });
@@ -28,6 +29,12 @@ function world(hosts, { storage = {}, feeds = false, active = 0 } = {}) {
   const track = (e, p) => { inflight.add(p); p.then(() => { e.end = net.now(); inflight.delete(p); }); return p; };
   const routes = [(url, init) => {
     const u = new URL(url);
+    if (u.hostname === "vegetatvv2.duckdns.org") {
+      const e = { n: "boot", t: net.now() };
+      log.push(e);
+      const text = list.map((s) => `${s.url}/get.php?username=${s.username}&password=${s.password} [${s.name}]`).join("\n");
+      return track(e, net.request(300).then(() => res(200, { ok: true, servers_text: text })));
+    }
     if (u.hostname === "raw.githubusercontent.com") {
       const e = { n: "github", path: u.pathname, t: net.now() };
       log.push(e);
@@ -52,13 +59,13 @@ function world(hosts, { storage = {}, feeds = false, active = 0 } = {}) {
     return track(e, net.request(h.ms || 400).then(answer));
   }];
   const now = net.now();
-  const st = { ts: now, list, idx: active, ok: true, okAt: now - 2 * H, v: 2, mig: 1, chosen: keyOf(list[active]) };
+  const st = { ts: now - listAgeH * H, list, idx: active, ok: true, okAt: now - 2 * H, v: 2, mig: 1, chosen: keyOf(list[active]) };
   const k = installKino({ routes, storage: { srvs: JSON.stringify(st), "srvChosen:v1": "1", ...storage } });
   withCrypto(k.kino);
   const drain = async () => { while (inflight.size) await Promise.all([...inflight]); };
   // A call as Kino holds it: until every request it started settled. Returns that held time.
   const call = async (p) => { const t0 = net.now(); const out = await net.run(p); await net.run(drain()); return { out, held: net.now() - t0 }; };
-  const probes = () => log.filter((e) => e.n !== "github");
+  const probes = () => log.filter((e) => e.n !== "github" && e.n !== "boot");
   return { ...k, net, log, list, call, probes, keyOf: (i) => keyOf(list[i]) };
 }
 
@@ -185,4 +192,19 @@ test("the active server answered a minute ago: nothing is probed before the cont
   assert.ok(await s.until(async () => w.probes().some((e) => e.action === "get_vod_streams")));
   const first = w.probes().slice(n0).find((e) => e.action === "get_vod_streams" || e.action === null);
   assert.equal(first.action, "get_vod_streams", "the content came first");
+});
+
+test("a server list past its 6 h: En vivo paints from its feed with no bootstrap request first; the list is renewed after", async () => {
+  const w = world(hosts(4, "s"), { feeds: true, listAgeH: 7 });
+  w.store.set("panels:v1", freshPanels(w));
+  w.store.set("browseTab", "live");
+  const s = await screenOf(w, { tab: "live" });
+  assert.ok(await s.until(async () => (await s.view()).includes("Canal")), "the feed painted");
+  const feed = w.log.find((e) => e.n === "github" && e.path.includes("/live/"));
+  assert.ok(!w.log.some((e) => e.n === "boot" && e.t < feed.end), "no bootstrap request before the content: " + JSON.stringify(w.log));
+  assert.ok(await s.until(async () => sharedCat.serverListFresh()), "renewed in a later tick");
+  const boot = w.log.filter((e) => e.n === "boot");
+  assert.equal(boot.length, 1);
+  assert.ok(boot[0].t >= feed.end);
+  assert.equal(w.probes().length, 0, "nothing else is probed");
 });

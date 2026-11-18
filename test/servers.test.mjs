@@ -400,6 +400,28 @@ test("index results: the index panel's account that missed one check is looked u
   assert.equal(await onN(), true, "past 30 min n answers index results again");
 });
 
+test("a server list past its 6 h: content calls keep it (no bootstrap before an En vivo page); the screen's renewal asks it", async () => {
+  const w = world();
+  const cat = await fresh("catalog.js");
+  await cat.serverList();
+  setActive(w, "a1", { chosen: keyOf(srvOf("a1")) });
+  advance(7 * H);
+  assert.equal(cat.serverListFresh(), false);
+  w.log.length = 0;
+  await cat.liveCategories(); // the plugin's En vivo page, or Kino's own En vivo
+  await cat.resolve("vod:123:mp4~matrix");
+  assert.deepEqual(w.log.map((e) => e.n + ":" + e.action), ["a1:get_live_categories"], "the page's own request only (it was 1-4 bootstrap requests first)");
+  assert.equal(await cat.renewServerList(), true, "after the content, the screen renews it");
+  assert.deepEqual(w.log.filter((e) => e.n === "boot").length, 1);
+  assert.ok(cat.serverListFresh());
+  assert.equal(activeName(w), "a1", "the active server and the choice carry over");
+  // Someone who never opens the screen: past 24 h a content call renews it itself, as before.
+  advance(25 * H);
+  w.log.length = 0;
+  await cat.liveCategories();
+  assert.equal(w.log[0].n, "boot");
+});
+
 test("first run: the auto-pick races the Spanish accounts before any health check and never picks a dead one; a lost flag heals", async () => {
   const w = world();
   const screen = await fresh("screen.js");

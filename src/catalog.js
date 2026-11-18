@@ -185,11 +185,19 @@ function carryOver(prev, st) {
   return st;
 }
 
+// The list is asked again once it is CACHE_TTL_MS old, by the screen after its content (renewServerList) and by the checks.
+// A call that loads content (opts.stale: api(), backHome, a movie's resolve, a check's quick first step) takes the cached list
+// up to SRVS_STALE_MS old instead: the 1-4 bootstrap requests in a row went before the content of whichever call came first
+// after 6 h (an En vivo page took 2.85 s with 4 requests instead of 2.02 s with 1). Past SRVS_STALE_MS (someone who never
+// opens the screen) the call refreshes it as before, and api()'s second pass, when no account answered, always does.
+const SRVS_STALE_MS = 24 * 60 * 60 * 1000;
+const STALE_OK = { stale: true };
 // Estado en storage: { ts, list, idx (servidor activo), ok (idx ya comprobado), chosen (clave del elegido por la persona) }.
 async function loadServers(force, opts) {
   const cached = migrate(readSrvs());
   const usableList = cached && Array.isArray(cached.list) && cached.list.length;
-  if (!force && usableList && cached.ts && cached.v === SRVS_V && Date.now() - cached.ts < CACHE_TTL_MS) return cached;
+  const ttl = opts && opts.stale ? SRVS_STALE_MS : CACHE_TTL_MS;
+  if (!force && usableList && cached.ts && cached.v === SRVS_V && Date.now() - cached.ts < ttl) return cached;
   try {
     const list = await fetchServerList(opts);
     const st = carryOver(usableList ? cached : null, { ts: Date.now(), list, idx: 0, ok: false, v: SRVS_V });
@@ -309,7 +317,7 @@ function backHome() {
   return backHomeRun;
 }
 async function goBackHome() {
-  const st = await loadServers(false);
+  const st = await loadServers(false, STALE_OK);
   const target = backTarget(st);
   if (st.idx === target || Date.now() - (st.homeAt || 0) < 300000 || !usable(st.list[target])) return;
   st.homeAt = Date.now();
@@ -340,7 +348,7 @@ async function api(action, extra = {}, opts = {}) {
   const until = opts.until || 0;
   let last = "";
   for (let pass = 0; pass < (until ? 1 : 2); pass++) {
-    const st = await loadServers(pass === 1);
+    const st = await loadServers(pass === 1, pass === 0 ? STALE_OK : undefined);
     if (pass === 0 && !until) await backHome();
     const st2 = readSrvs();
     if (st2 && pass === 0) { st.idx = st2.idx; st.ok = st2.ok; st.okAt = st2.okAt; st.homeAt = st2.homeAt; }
@@ -369,7 +377,7 @@ async function api(action, extra = {}, opts = {}) {
 }
 
 async function activeServer() {
-  let st = await loadServers(false);
+  let st = await loadServers(false, STALE_OK);
   if (!st.ok) {
     await api(PROBE);
     st = readSrvs();
@@ -673,6 +681,17 @@ export function serverListFresh() {
   return !!(st && Array.isArray(st.list) && st.list.length && st.ts && st.v === SRVS_V && Date.now() - st.ts < CACHE_TTL_MS);
 }
 
+/**
+ * The screen's renewal of a server list CACHE_TTL_MS old, after its content (content calls keep the cached one meanwhile,
+ * loadServers' opts.stale), with short timeouts. Never throws: true when the list is fresh now (a bootstrap that failed
+ * leaves the cached list as it was).
+ */
+export async function renewServerList() {
+  if (serverListFresh()) return true;
+  try { await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS }); } catch (_) { /* no list at all: the next visit tries again */ }
+  return serverListFresh();
+}
+
 // ---- chequeo de salud: para que el selector muestre solo los servidores que responden ----------------
 const HEALTH_KEY = "health:v1";
 // Which accounts answer is checked again after this. It was 30 min: up to 30 full category lists on the screen's path every
@@ -924,7 +943,8 @@ export async function healthStep({ kind = "live" } = {}) {
   healthRunning = true;
   try {
     if (!round || Date.now() - round.ts > ROUND_MAX_MS || (round.kind !== kind && round.kind !== "full")) {
-      const st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS });
+      // The cached list (the screen renews it after its content): a round's first step runs before the content.
+      const st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS, stale: true });
       const order = checkOrder(st).filter((s) => usable(s));
       const head = new Set([keyOf(st.list[st.idx]), st.chosen].filter(Boolean));
       round = { kind, ts: Date.now(), st, order, next: 0, head: order.filter((s) => head.has(keyOf(s))).length, sets: new Map(), answers: new Map(), answered: new Set() };

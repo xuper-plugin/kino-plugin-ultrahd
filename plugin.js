@@ -3179,10 +3179,13 @@ function carryOver(prev, st) {
   }
   return st;
 }
+var SRVS_STALE_MS = 24 * 60 * 60 * 1e3;
+var STALE_OK = { stale: true };
 async function loadServers(force, opts) {
   const cached = migrate(readSrvs());
   const usableList = cached && Array.isArray(cached.list) && cached.list.length;
-  if (!force && usableList && cached.ts && cached.v === SRVS_V && Date.now() - cached.ts < CACHE_TTL_MS) return cached;
+  const ttl = opts && opts.stale ? SRVS_STALE_MS : CACHE_TTL_MS;
+  if (!force && usableList && cached.ts && cached.v === SRVS_V && Date.now() - cached.ts < ttl) return cached;
   try {
     const list = await fetchServerList(opts);
     const st = carryOver(usableList ? cached : null, { ts: Date.now(), list, idx: 0, ok: false, v: SRVS_V });
@@ -3284,7 +3287,7 @@ function backHome() {
   return backHomeRun;
 }
 async function goBackHome() {
-  const st = await loadServers(false);
+  const st = await loadServers(false, STALE_OK);
   const target = backTarget(st);
   if (st.idx === target || Date.now() - (st.homeAt || 0) < 3e5 || !usable(st.list[target])) return;
   st.homeAt = Date.now();
@@ -3311,7 +3314,7 @@ async function api(action3, extra = {}, opts = {}) {
   const until = opts.until || 0;
   let last = "";
   for (let pass = 0; pass < (until ? 1 : 2); pass++) {
-    const st = await loadServers(pass === 1);
+    const st = await loadServers(pass === 1, pass === 0 ? STALE_OK : void 0);
     if (pass === 0 && !until) await backHome();
     const st2 = readSrvs();
     if (st2 && pass === 0) {
@@ -3342,7 +3345,7 @@ async function api(action3, extra = {}, opts = {}) {
   throw kino.error("unavailable", "ning\xFAn servidor respondi\xF3 (" + action3 + "): " + last, { userMessage: "Error al contactar el servidor." });
 }
 async function activeServer() {
-  let st = await loadServers(false);
+  let st = await loadServers(false, STALE_OK);
   if (!st.ok) {
     await api(PROBE);
     st = readSrvs();
@@ -3596,6 +3599,14 @@ function serverListFresh() {
   const st = readSrvs();
   return !!(st && Array.isArray(st.list) && st.list.length && st.ts && st.v === SRVS_V && Date.now() - st.ts < CACHE_TTL_MS);
 }
+async function renewServerList() {
+  if (serverListFresh()) return true;
+  try {
+    await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS });
+  } catch (_) {
+  }
+  return serverListFresh();
+}
 var HEALTH_KEY = "health:v1";
 var HEALTH_TTL_MS = 6 * 60 * 60 * 1e3;
 var HEALTH_TIMEOUT_MS = 1e4;
@@ -3800,7 +3811,7 @@ async function healthStep({ kind = "live" } = {}) {
   healthRunning = true;
   try {
     if (!round || Date.now() - round.ts > ROUND_MAX_MS || round.kind !== kind && round.kind !== "full") {
-      const st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS });
+      const st = await loadServers(false, { timeoutMs: LIST_TIMEOUT_MS, stale: true });
       const order = checkOrder(st).filter((s) => usable(s));
       const head = new Set([keyOf(st.list[st.idx]), st.chosen].filter(Boolean));
       round = { kind, ts: Date.now(), st, order, next: 0, head: order.filter((s) => head.has(keyOf(s))).length, sets: /* @__PURE__ */ new Map(), answers: /* @__PURE__ */ new Map(), answered: /* @__PURE__ */ new Set() };
@@ -5411,6 +5422,8 @@ var raceTried = false;
 var deferred = /* @__PURE__ */ new Set();
 var autoPickTried = false;
 var pickedNow = false;
+var SRVS_RETRY_MS = 30 * 60 * 1e3;
+var srvsRetryAt = 0;
 var SRVCHOSEN_KEY2 = "srvChosen:v1";
 var markServerChosen = () => {
   try {
@@ -5723,24 +5736,25 @@ async function autoPick(opts) {
 }
 var dailyHealth = () => panelsStale() ? ["panels"] : [];
 var checkKind = (unit) => unit === "panels" || panelsStale() ? "full" : "live";
+var SRVS = "srvs";
 function unitsFor(tab, lang) {
   if (!serverChosen()) return raceTried ? ["health", "autopick", "pick"] : ["race"];
   const hBefore = pickedNow ? [] : ["hcheck"];
-  const hAfter = ["health", ...dailyHealth()];
+  const hAfter = [SRVS, "health", ...dailyHealth()];
   if (tab === "home") {
-    if (homeFeedData.has(lang)) return [`hfeed:${lang}`, ...countryOn() ? ["country"] : [], "recent", "index", ...dailyHealth()];
+    if (homeFeedData.has(lang)) return [`hfeed:${lang}`, ...countryOn() ? ["country"] : [], "recent", SRVS, "index", ...dailyHealth()];
     const plan = homePlan.get(lang) || [];
     const railUnits = plan.map((p) => `hrail:${p.kind}:${lang}:${p.id}`);
     const heroUnit = railUnits.length ? [`hhero:${lang}`] : [];
-    return [`hfeed:${lang}`, ...hBefore, `hplan:${lang}`, ...railUnits, ...heroUnit, ...countryOn() ? ["country"] : [], "recent", "index", ...hAfter];
+    return [`hfeed:${lang}`, ...hBefore, `hplan:${lang}`, ...railUnits, ...heroUnit, ...countryOn() ? ["country"] : [], "recent", SRVS, "index", "health", ...dailyHealth()];
   }
   if (tab === "movies" || tab === "series") {
-    if (feedTabFor(tab, lang)) return [`hfeed:${lang}`, ...dailyHealth()];
+    if (feedTabFor(tab, lang)) return [`hfeed:${lang}`, SRVS, ...dailyHealth()];
     if (!homeFeedTried.has(lang)) return [`hfeed:${lang}`, ...hBefore, `tab:${tab}:${lang}`, ...hAfter];
     return [...hBefore, `tab:${tab}:${lang}`, ...hAfter];
   }
   if (tab === "live") {
-    if (liveFeedData) return ["lfeed", ...dailyHealth()];
+    if (liveFeedData) return ["lfeed", SRVS, ...dailyHealth()];
     if (!liveFeedTried) return ["lfeed", ...hBefore, "tab:live", ...hAfter];
     return [...hBefore, "tab:live", ...hAfter];
   }
@@ -5758,6 +5772,7 @@ function isDone(unit) {
   if (unit === "health") return healthReady();
   if (unit === "hcheck") return activeConfirmed();
   if (unit === "panels") return !panelsStale();
+  if (unit === SRVS) return Date.now() < srvsRetryAt || serverListFresh();
   if (unit === "race") return raceTried;
   if (unit === "autopick") return autoPickTried;
   if (unit === "pick") return pickServers !== null;
@@ -5795,6 +5810,8 @@ async function runUnit(unit, opts) {
     console.log("[dbg] " + unit + " step -> " + out);
     if (out === "failed") throw new Error("health");
     if (out === "done") pickedNow = false;
+  } else if (unit === SRVS) {
+    if (!await renewServerList()) srvsRetryAt = Date.now() + SRVS_RETRY_MS;
   } else if (unit === "race") await race(opts);
   else if (unit === "autopick") await autoPick(opts);
   else if (unit === "pick") pickServers = await serverList();

@@ -80,6 +80,10 @@ let raceTried = false; // first run: the race for a server ran (Spanish first, w
 const deferred = new Set(); // first run: the race or the automatic pick once found no time left in its tick (next tick)
 let autoPickTried = false; // first run, the race found none: the automatic pick over the health check's online list ran
 let pickedNow = false; // the first run's race just picked the server: the health check comes after the first content, once
+// The server list past its 6 h is renewed by the `srvs` unit, after the content (content calls keep the cached one); a
+// renewal that left it stale (the bootstrap did not answer) is tried again SRVS_RETRY_MS later, not every tick.
+const SRVS_RETRY_MS = 30 * 60 * 1000;
+let srvsRetryAt = 0;
 
 // La persona ya eligió servidor al menos una vez: se recuerda para no volver a mostrar el selector inicial (se cambia con 🌐).
 // The flag, or the chosen server kept with the server list (both never evicted); a missing flag is written again.
@@ -382,6 +386,8 @@ async function autoPick(opts) {
 const dailyHealth = () => (cat.panelsStale() ? ["panels"] : []);
 // The screen's checks run in short steps (cat.healthStep), the full kind while the panel map is stale (it serves both).
 const checkKind = (unit) => (unit === "panels" || cat.panelsStale() ? "full" : "live");
+// After the content in every plan: the server list renewed once it is 6 h old (`srvs`), before the checks that probe it.
+const SRVS = "srvs";
 
 function unitsFor(tab, lang) {
   // First run: the race picks the server (Spanish first); if it found none, the health check, the automatic pick over the
@@ -390,9 +396,10 @@ function unitsFor(tab, lang) {
   // Loading from the panel: first `hcheck`, done as soon as the active server is known to answer (it answered in the last
   // minutes, or a fresh check found it online; else one quick step probes it and the chosen one). The rest of the check
   // (`health`, which accounts answer, every 6 h) and the daily panel map come after the content. Right after the race the
-  // picked server has just answered: nothing before the content.
+  // picked server has just answered: nothing before the content. Right after the content, the server list once it is 6 h
+  // old (SRVS; the content's own calls keep the cached list).
   const hBefore = pickedNow ? [] : ["hcheck"];
-  const hAfter = ["health", ...dailyHealth()];
+  const hAfter = [SRVS, "health", ...dailyHealth()];
   if (tab === "home") {
     // El Home carga fila por fila: primero el plan (categorías ordenadas), luego UNA unidad por fila (`hrail:...`), que aparece
     // apenas carga; país, recientes e índice van al final. Hasta tener el plan, solo health + plan.
@@ -400,24 +407,24 @@ function unitsFor(tab, lang) {
     // Si el feed falta/está viejo/falló, se cae a la carga en vivo progresiva (plan + una unidad por fila + hero).
     // Con el feed ya no se sondean los servidores (`health`): la pantalla está pintada y la verificación real ocurre antes de reproducir.
     // Only once a day, last (dailyHealth): the panel map and the index's server go stale otherwise.
-    if (homeFeedData.has(lang)) return [`hfeed:${lang}`, ...(countryOn() ? ["country"] : []), "recent", "index", ...dailyHealth()];
+    if (homeFeedData.has(lang)) return [`hfeed:${lang}`, ...(countryOn() ? ["country"] : []), "recent", SRVS, "index", ...dailyHealth()];
     const plan = homePlan.get(lang) || [];
     const railUnits = plan.map((p) => `hrail:${p.kind}:${lang}:${p.id}`);
     const heroUnit = railUnits.length ? [`hhero:${lang}`] : [];
     // hfeed va primero (no necesita el chequeo): si está el feed, el Home sale sin esperar los ~3s de "Verificando…".
-    return [`hfeed:${lang}`, ...hBefore, `hplan:${lang}`, ...railUnits, ...heroUnit, ...(countryOn() ? ["country"] : []), "recent", "index", ...hAfter];
+    return [`hfeed:${lang}`, ...hBefore, `hplan:${lang}`, ...railUnits, ...heroUnit, ...(countryOn() ? ["country"] : []), "recent", SRVS, "index", "health", ...dailyHealth()];
   }
   // Películas/Series: el feed (v2) también trae estas pestañas pre-armadas. Si la de este idioma ya está, se pinta al instante
   // y no se recorre el IPTV; si falta, se intenta el feed una vez (hfeed) y, si no llega o es v1, cae a la carga en vivo.
   if (tab === "movies" || tab === "series") {
-    if (feedTabFor(tab, lang)) return [`hfeed:${lang}`, ...dailyHealth()];
+    if (feedTabFor(tab, lang)) return [`hfeed:${lang}`, SRVS, ...dailyHealth()];
     if (!homeFeedTried.has(lang)) return [`hfeed:${lang}`, ...hBefore, `tab:${tab}:${lang}`, ...hAfter];
     return [...hBefore, `tab:${tab}:${lang}`, ...hAfter];
   }
   // En vivo: primero el feed pre-armado (1x/día); si está, la primera pantalla sale al instante. Cambiar de categoría es en vivo.
   // With the feed no check runs on this tab but the daily panel map (it used to run the whole check every 30 min here).
   if (tab === "live") {
-    if (liveFeedData) return ["lfeed", ...dailyHealth()];
+    if (liveFeedData) return ["lfeed", SRVS, ...dailyHealth()];
     if (!liveFeedTried) return ["lfeed", ...hBefore, "tab:live", ...hAfter];
     return [...hBefore, "tab:live", ...hAfter];
   }
@@ -437,6 +444,7 @@ function isDone(unit) {
   if (unit === "health") return cat.healthReady();
   if (unit === "hcheck") return cat.activeConfirmed();
   if (unit === "panels") return !cat.panelsStale();
+  if (unit === SRVS) return Date.now() < srvsRetryAt || cat.serverListFresh();
   if (unit === "race") return raceTried;
   if (unit === "autopick") return autoPickTried;
   if (unit === "pick") return pickServers !== null;
@@ -480,6 +488,7 @@ async function runUnit(unit, opts) {
     if (out === "failed") throw new Error("health");
     if (out === "done") pickedNow = false;
   }
+  else if (unit === SRVS) { if (!(await cat.renewServerList())) srvsRetryAt = Date.now() + SRVS_RETRY_MS; }
   else if (unit === "race") await race(opts);
   else if (unit === "autopick") await autoPick(opts);
   else if (unit === "pick") pickServers = await cat.serverList();
