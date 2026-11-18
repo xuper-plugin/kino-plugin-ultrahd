@@ -292,6 +292,22 @@ test("the failover's category lists are the screen's: a list it fetched serves E
   assert.ok(!w.log.some((e) => e.action === "get_live_streams"), "no second download: " + JSON.stringify(w.log));
 });
 
+test("and the other way: a list En vivo fetched on an account serves the failover's check there with no request", async () => {
+  const w = world({ probe: { a1: "509" } });
+  const cat = await fresh("catalog.js");
+  await cat.healthCheck();
+  // a2 was the active server a minute ago: En vivo listed 2956 from it.
+  setActive(w, "a2", { chosen: keyOf(srvOf("a2")) });
+  await cat.liveChannels({ categoryId: "2956" });
+  setActive(w, "a1", { chosen: keyOf(srvOf("a1")) });
+  w.log.length = 0;
+  const ref = "live:201583~2956~es.dazn~es.hd.dazn.1";
+  await cat.resolve(ref);
+  const moved = await cat.resolve(ref); // a cut: the failover checks a2's list of 2956, already in memory
+  assert.ok(moved.url.startsWith(SRV.a2.url + "/live/"), moved.url);
+  assert.ok(!w.log.some((e) => e.n === "a2" && e.action === "get_live_streams"), "no second download: " + JSON.stringify(w.log));
+});
+
 test("the 'no server' message follows Kino's language tag", async () => {
   const w = world({ probe: { a1: "509", a2: "509", c: "509", n: "509" }, lang: "en-US" });
   const cat = await fresh("catalog.js");
