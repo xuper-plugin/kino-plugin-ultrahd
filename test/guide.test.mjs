@@ -14,7 +14,8 @@ const H = 3600000;
 const realNow = Date.now;
 test.afterEach(() => { Date.now = realNow; });
 
-function world({ prefix, active = 0, chosen = 0, epgMs = 250, hangIds = [], storage = {} } = {}) {
+// errIds: channels the panel answers with an HTTP error at once (it does not know them), before any other answer.
+function world({ prefix, active = 0, chosen = 0, epgMs = 250, hangIds = [], errIds = [], storage = {} } = {}) {
   const net = virtualNet({ start: Date.UTC(2026, 10, 18, 0) });
   Date.now = net.now;
   const list = ["a", "b", "c"].map((id) => ({ url: `http://${prefix}${id}.example`, username: "u" + id, password: "p" + id, name: "🇲🇽" }));
@@ -33,6 +34,7 @@ function world({ prefix, active = 0, chosen = 0, epgMs = 250, hangIds = [], stor
     // Kino ends a request at its timeoutMs: a hanging channel, or one slower than the time it was given.
     const late = e.action === "get_short_epg" && (hangIds.includes(e.id) || (init && init.timeoutMs && epgMs >= init.timeoutMs));
     if (late) p = net.request(init.timeoutMs).then(() => kinoError("timeout", "the request took too long"));
+    else if (e.action === "get_short_epg" && errIds.includes(e.id)) p = net.request(100).then(() => res(500, "error"));
     else if (e.action === "get_short_epg") p = net.request(epgMs).then(() => res(200, { epg_listings: [{ title: btoa("Noticias"), description: "", start_timestamp: String(Math.floor(net.now() / 1000) - 600), stop_timestamp: String(Math.floor(net.now() / 1000) + 1800) }] }));
     else if (e.action === "get_vod_categories") p = net.request(500).then(() => res(200, [{ category_id: "1", category_name: "ACCION" }, { category_id: "2", category_name: "DRAMA" }, { category_id: "3", category_name: "TERROR" }]));
     else p = net.request(400).then(() => res(200, [{ stream_id: 1, name: "Uno", container_extension: "mp4" }]));
@@ -104,6 +106,15 @@ test("guide: a channel whose programme never comes costs its own 2.5 s; every ot
   assert.equal(answeredIds(out).size, 39);
   assert.ok(!answeredIds(out).has("live-503"));
   assert.ok(w.log.every((e) => e.host === "g2a.example"), "never another account (its stream ids are another panel's channels)");
+});
+
+test("guide: channels the panel answers with an error first (it answered nothing yet) do not stop the others", async () => {
+  const w = world({ prefix: "g7", errIds: ["500", "501"] });
+  const cat = await fresh("catalog.js");
+  const { out, held } = await w.call(cat.guide({ channelIds: channels(40), ...window(w.net) }));
+  assert.equal(w.log.length, 40, "every channel asked: an answer, even an error, means the server is there");
+  assert.equal(answeredIds(out).size, 38);
+  assert.ok(held <= 3500, `${held} ms`);
 });
 
 test("guide: the active server stopped answering: one wave of 4, the call ends after one 2.5 s timeout", async () => {
