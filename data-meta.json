@@ -1,0 +1,436 @@
+{
+ "$comment": "Written by the Home pre-armado job of this repo. This branch is force-pushed on every run with the complete current set; it has no history. Each <path>.v2.enc.json is the compressed copy (feed v2: gzip before sealing) of <path>.enc.json.",
+ "v": 1,
+ "at": 1795261312925,
+ "maxAgeMs": 259200000,
+ "files": {
+  "home/182wy7g.enc.json": {
+   "builtAt": 1795260690705,
+   "bytes": 192717
+  },
+  "home/182wy7g.es-419.enc.json": {
+   "builtAt": 1795260728634,
+   "bytes": 193129
+  },
+  "home/182wy7g.es-419.v2.enc.json": {
+   "builtAt": 1795260728634,
+   "bytes": 48897
+  },
+  "home/182wy7g.v2.enc.json": {
+   "builtAt": 1795260690705,
+   "bytes": 48705
+  },
+  "home/1gainyz.enc.json": {
+   "builtAt": 1795261258622,
+   "bytes": 234629
+  },
+  "home/1gainyz.es-419.enc.json": {
+   "builtAt": 1795261287596,
+   "bytes": 236377
+  },
+  "home/1gainyz.es-419.v2.enc.json": {
+   "builtAt": 1795261287596,
+   "bytes": 64457
+  },
+  "home/1gainyz.v2.enc.json": {
+   "builtAt": 1795261258622,
+   "bytes": 64213
+  },
+  "home/1jdauya.enc.json": {
+   "builtAt": 1795260777107,
+   "bytes": 293601
+  },
+  "home/1jdauya.es-419.enc.json": {
+   "builtAt": 1795260777757,
+   "bytes": 295285
+  },
+  "home/1jdauya.es-419.v2.enc.json": {
+   "builtAt": 1795260777757,
+   "bytes": 72581
+  },
+  "home/1jdauya.v2.enc.json": {
+   "builtAt": 1795260777107,
+   "bytes": 72309
+  },
+  "home/1ntbt4k.enc.json": {
+   "builtAt": 1795260606021,
+   "bytes": 179517
+  },
+  "home/1ntbt4k.es-419.enc.json": {
+   "builtAt": 1795260647744,
+   "bytes": 179913
+  },
+  "home/1ntbt4k.es-419.v2.enc.json": {
+   "builtAt": 1795260647744,
+   "bytes": 46493
+  },
+  "home/1ntbt4k.v2.enc.json": {
+   "builtAt": 1795260606021,
+   "bytes": 46305
+  },
+  "home/1oij252.enc.json": {
+   "builtAt": 1795260555765,
+   "bytes": 293601
+  },
+  "home/1oij252.es-419.enc.json": {
+   "builtAt": 1795260557271,
+   "bytes": 295285
+  },
+  "home/1oij252.es-419.v2.enc.json": {
+   "builtAt": 1795260557271,
+   "bytes": 72581
+  },
+  "home/1oij252.v2.enc.json": {
+   "builtAt": 1795260555765,
+   "bytes": 72309
+  },
+  "home/1ovu7wq.enc.json": {
+   "builtAt": 1795261088662,
+   "bytes": 258877
+  },
+  "home/1ovu7wq.es-419.enc.json": {
+   "builtAt": 1795261124854,
+   "bytes": 260929
+  },
+  "home/1ovu7wq.es-419.v2.enc.json": {
+   "builtAt": 1795261124854,
+   "bytes": 62817
+  },
+  "home/1ovu7wq.v2.enc.json": {
+   "builtAt": 1795261088662,
+   "bytes": 62449
+  },
+  "home/1pj87nj.enc.json": {
+   "builtAt": 1795261175777,
+   "bytes": 198601
+  },
+  "home/1pj87nj.es-419.enc.json": {
+   "builtAt": 1795261219836,
+   "bytes": 198845
+  },
+  "home/1pj87nj.es-419.v2.enc.json": {
+   "builtAt": 1795261219836,
+   "bytes": 53541
+  },
+  "home/1pj87nj.v2.enc.json": {
+   "builtAt": 1795261175777,
+   "bytes": 53441
+  },
+  "home/1y25z2t.enc.json": {
+   "builtAt": 1795260946111,
+   "bytes": 207721
+  },
+  "home/1y25z2t.es-419.enc.json": {
+   "builtAt": 1795260947503,
+   "bytes": 209541
+  },
+  "home/1y25z2t.es-419.v2.enc.json": {
+   "builtAt": 1795260947503,
+   "bytes": 55221
+  },
+  "home/1y25z2t.v2.enc.json": {
+   "builtAt": 1795260946111,
+   "bytes": 54985
+  },
+  "home/1ykpmip.enc.json": {
+   "builtAt": 1795261308796,
+   "bytes": 192169
+  },
+  "home/1ykpmip.es-419.enc.json": {
+   "builtAt": 1795261312842,
+   "bytes": 193921
+  },
+  "home/1ykpmip.es-419.v2.enc.json": {
+   "builtAt": 1795261312842,
+   "bytes": 54805
+  },
+  "home/1ykpmip.v2.enc.json": {
+   "builtAt": 1795261308796,
+   "bytes": 54569
+  },
+  "home/4wup92.enc.json": {
+   "builtAt": 1795137710265,
+   "bytes": 235685,
+   "carried": true
+  },
+  "home/4wup92.es-419.enc.json": {
+   "builtAt": 1795137718769,
+   "bytes": 237337,
+   "carried": true
+  },
+  "home/4wup92.es-419.v2.enc.json": {
+   "builtAt": 1795137718769,
+   "bytes": 59609,
+   "carried": true
+  },
+  "home/4wup92.es-ES.enc.json": {
+   "builtAt": 1795137730930,
+   "bytes": 238401,
+   "carried": true
+  },
+  "home/4wup92.es-ES.v2.enc.json": {
+   "builtAt": 1795137730930,
+   "bytes": 60085,
+   "carried": true
+  },
+  "home/4wup92.v2.enc.json": {
+   "builtAt": 1795137710265,
+   "bytes": 59297,
+   "carried": true
+  },
+  "home/7ynvir.enc.json": {
+   "builtAt": 1795260833134,
+   "bytes": 226541
+  },
+  "home/7ynvir.es-419.enc.json": {
+   "builtAt": 1795260876956,
+   "bytes": 228773
+  },
+  "home/7ynvir.es-419.v2.enc.json": {
+   "builtAt": 1795260876956,
+   "bytes": 58585
+  },
+  "home/7ynvir.v2.enc.json": {
+   "builtAt": 1795260833134,
+   "bytes": 58157
+  },
+  "home/n2lgvq.enc.json": {
+   "builtAt": 1795261016890,
+   "bytes": 227993
+  },
+  "home/n2lgvq.es-ES.enc.json": {
+   "builtAt": 1795261050764,
+   "bytes": 229805
+  },
+  "home/n2lgvq.es-ES.v2.enc.json": {
+   "builtAt": 1795261050764,
+   "bytes": 57801
+  },
+  "home/n2lgvq.v2.enc.json": {
+   "builtAt": 1795261016890,
+   "bytes": 57529
+  },
+  "home/p3smij.enc.json": {
+   "builtAt": 1795260975427,
+   "bytes": 207769
+  },
+  "home/p3smij.es-419.enc.json": {
+   "builtAt": 1795260976801,
+   "bytes": 209593
+  },
+  "home/p3smij.es-419.v2.enc.json": {
+   "builtAt": 1795260976801,
+   "bytes": 55241
+  },
+  "home/p3smij.v2.enc.json": {
+   "builtAt": 1795260975427,
+   "bytes": 55005
+  },
+  "home/piqpj1.enc.json": {
+   "builtAt": 1795260748978,
+   "bytes": 184769
+  },
+  "home/piqpj1.es-419.enc.json": {
+   "builtAt": 1795260749817,
+   "bytes": 186113
+  },
+  "home/piqpj1.es-419.v2.enc.json": {
+   "builtAt": 1795260749817,
+   "bytes": 48825
+  },
+  "home/piqpj1.v2.enc.json": {
+   "builtAt": 1795260748978,
+   "bytes": 48673
+  },
+  "home/vinhiu.enc.json": {
+   "builtAt": 1795260757340,
+   "bytes": 176513
+  },
+  "home/vinhiu.es-419.enc.json": {
+   "builtAt": 1795260757786,
+   "bytes": 179929
+  },
+  "home/vinhiu.es-419.v2.enc.json": {
+   "builtAt": 1795260757786,
+   "bytes": 43337
+  },
+  "home/vinhiu.v2.enc.json": {
+   "builtAt": 1795260757340,
+   "bytes": 42717
+  },
+  "home/vucghl.enc.json": {
+   "builtAt": 1795260530236,
+   "bytes": 239965
+  },
+  "home/vucghl.es-419.enc.json": {
+   "builtAt": 1795260531616,
+   "bytes": 242477
+  },
+  "home/vucghl.es-419.v2.enc.json": {
+   "builtAt": 1795260531616,
+   "bytes": 58937
+  },
+  "home/vucghl.v2.enc.json": {
+   "builtAt": 1795260530236,
+   "bytes": 58457
+  },
+  "live/182wy7g.enc.json": {
+   "builtAt": 1795260733495,
+   "bytes": 27773
+  },
+  "live/182wy7g.v2.enc.json": {
+   "builtAt": 1795260733495,
+   "bytes": 4893
+  },
+  "live/1gainyz.enc.json": {
+   "builtAt": 1795223287234,
+   "bytes": 48309,
+   "carried": true
+  },
+  "live/1gainyz.v2.enc.json": {
+   "builtAt": 1795223287234,
+   "bytes": 9625,
+   "carried": true
+  },
+  "live/1jdauya.enc.json": {
+   "builtAt": 1795222750924,
+   "bytes": 65145,
+   "carried": true
+  },
+  "live/1jdauya.v2.enc.json": {
+   "builtAt": 1795222750924,
+   "bytes": 7729,
+   "carried": true
+  },
+  "live/1ntbt4k.enc.json": {
+   "builtAt": 1795222586965,
+   "bytes": 27773,
+   "carried": true
+  },
+  "live/1ntbt4k.v2.enc.json": {
+   "builtAt": 1795222586965,
+   "bytes": 4889,
+   "carried": true
+  },
+  "live/1oij252.enc.json": {
+   "builtAt": 1795222450592,
+   "bytes": 51397,
+   "carried": true
+  },
+  "live/1oij252.v2.enc.json": {
+   "builtAt": 1795222450592,
+   "bytes": 6085,
+   "carried": true
+  },
+  "live/1ovu7wq.enc.json": {
+   "builtAt": 1795223082430,
+   "bytes": 50173,
+   "carried": true
+  },
+  "live/1ovu7wq.v2.enc.json": {
+   "builtAt": 1795223082430,
+   "bytes": 7517,
+   "carried": true
+  },
+  "live/1pj87nj.enc.json": {
+   "builtAt": 1795223228190,
+   "bytes": 49673,
+   "carried": true
+  },
+  "live/1pj87nj.v2.enc.json": {
+   "builtAt": 1795223228190,
+   "bytes": 7333,
+   "carried": true
+  },
+  "live/1y25z2t.enc.json": {
+   "builtAt": 1795222921065,
+   "bytes": 36833,
+   "carried": true
+  },
+  "live/1y25z2t.v2.enc.json": {
+   "builtAt": 1795222921065,
+   "bytes": 5341,
+   "carried": true
+  },
+  "live/1ykpmip.enc.json": {
+   "builtAt": 1795223302568,
+   "bytes": 66533,
+   "carried": true
+  },
+  "live/1ykpmip.v2.enc.json": {
+   "builtAt": 1795223302568,
+   "bytes": 12185,
+   "carried": true
+  },
+  "live/4wup92.enc.json": {
+   "builtAt": 1795137732848,
+   "bytes": 68333,
+   "carried": true
+  },
+  "live/4wup92.v2.enc.json": {
+   "builtAt": 1795137732848,
+   "bytes": 12761,
+   "carried": true
+  },
+  "live/7ynvir.enc.json": {
+   "builtAt": 1795222867644,
+   "bytes": 61821,
+   "carried": true
+  },
+  "live/7ynvir.v2.enc.json": {
+   "builtAt": 1795222867644,
+   "bytes": 11565,
+   "carried": true
+  },
+  "live/n2lgvq.enc.json": {
+   "builtAt": 1795223015320,
+   "bytes": 66241,
+   "carried": true
+  },
+  "live/n2lgvq.v2.enc.json": {
+   "builtAt": 1795223015320,
+   "bytes": 11093,
+   "carried": true
+  },
+  "live/p3smij.enc.json": {
+   "builtAt": 1795222952152,
+   "bytes": 43449,
+   "carried": true
+  },
+  "live/p3smij.v2.enc.json": {
+   "builtAt": 1795222952152,
+   "bytes": 7141,
+   "carried": true
+  },
+  "live/piqpj1.enc.json": {
+   "builtAt": 1795222724757,
+   "bytes": 47429,
+   "carried": true
+  },
+  "live/piqpj1.v2.enc.json": {
+   "builtAt": 1795222724757,
+   "bytes": 7341,
+   "carried": true
+  },
+  "live/vinhiu.enc.json": {
+   "builtAt": 1795222732737,
+   "bytes": 59165,
+   "carried": true
+  },
+  "live/vinhiu.v2.enc.json": {
+   "builtAt": 1795222732737,
+   "bytes": 13617,
+   "carried": true
+  },
+  "live/vucghl.enc.json": {
+   "builtAt": 1795222435955,
+   "bytes": 60145,
+   "carried": true
+  },
+  "live/vucghl.v2.enc.json": {
+   "builtAt": 1795222435955,
+   "bytes": 14009,
+   "carried": true
+  }
+ }
+}
