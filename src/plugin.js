@@ -3,6 +3,7 @@
 import * as cat from "./catalog.js";
 import * as scr from "./screen.js";
 import { flush } from "./store.js";
+import { catalogDoor } from "./door.js";
 
 const once = (fn) => async (...args) => { try { return await fn(...args); } finally { flush(); } };
 
@@ -20,3 +21,5 @@ export const action = once(cat.action);
 export const screen = once(scr.screen);
 export const screenEvent = once(scr.screenEvent);
 export const section = once(scr.section);
+// The catalog door (Kino's plugin protocol, manifest "provides" at apiVersion 20+): the title index answers Da-Video's search.
+export const proto_catalog_search = once(catalogDoor(cat.catalogSearch));

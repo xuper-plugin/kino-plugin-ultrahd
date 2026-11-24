@@ -1538,6 +1538,23 @@ export async function search(query) {
   return (await searchDetailed(query)).items;
 }
 
+// The catalog door's search (Da-Video and the author's other plugins, through Kino's plugin protocol): the title index only,
+// never the live walk over the servers' categories and never a server probe, so another plugin's search gets an answer in
+// moments or nothing. An index not downloaded yet (or a day old) takes one short step, as the plugin's own search does; the
+// first results get their TMDB poster within the same 2.5 s budget. The refs are the index's `idx:` ones: Kino opens and plays
+// them here, with this plugin's own episodes and resolve, on whichever server is active.
+export async function catalogSearch(query) {
+  const q = String((query && query.q) || "").trim().toLowerCase();
+  if (!q) return [];
+  const type = String((query && query.type) || "any");
+  if (!indexReady() || indexStale()) await indexStep({ budgetMs: 1500 }).catch(() => null);
+  if (!indexReady()) return [];
+  const res = await indexSearch(q, type, 40).catch(() => null);
+  if (!res || !res.items.length) return [];
+  await enrichTmdb(res.items.slice(0, 20), { max: 20, budgetMs: 2500 });
+  return res.items;
+}
+
 // ---- episodes -------------------------------------------------------------------
 
 // Categorías de este servidor (los ids del índice son de otro servidor): primero géneros y estrenos, que es donde más se repite.

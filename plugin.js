@@ -4377,6 +4377,17 @@ async function searchDetailed(query, { budgetMs = 11e3 } = {}) {
 async function search(query) {
   return (await searchDetailed(query)).items;
 }
+async function catalogSearch(query) {
+  const q = String(query && query.q || "").trim().toLowerCase();
+  if (!q) return [];
+  const type = String(query && query.type || "any");
+  if (!indexReady() || indexStale()) await indexStep({ budgetMs: 1500 }).catch(() => null);
+  if (!indexReady()) return [];
+  const res = await indexSearch(q, type, 40).catch(() => null);
+  if (!res || !res.items.length) return [];
+  await enrichTmdb(res.items.slice(0, 20), { max: 20, budgetMs: 2500 });
+  return res.items;
+}
 var serverCats = async (kind, wanted = [], srv, opts) => {
   const all = searchOrder(await mergedVod(kind === "movies" ? "vod" : "series", srv, opts));
   const key = (title2) => String(title2).toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -6372,6 +6383,40 @@ async function section2(arg) {
   return { tabs: SECTION_TABS.map((t) => ({ id: t.id, label: english ? t.en : t.label })), tab, ...hero2 ? { hero: hero2 } : {}, rows };
 }
 
+// src/door.js
+var CATALOG_MAX = 40;
+var OVERVIEW_MAX = 300;
+var HTTPS2 = /^https:\/\//;
+function catalogItems(found2) {
+  const out = [];
+  const list = Array.isArray(found2) ? found2 : found2 && Array.isArray(found2.items) ? found2.items : [];
+  for (const it of list) {
+    if (out.length >= CATALOG_MAX) break;
+    if (!it || typeof it.id !== "string" || !it.id || typeof it.ref !== "string" || !it.ref || typeof it.title !== "string" || !it.title) continue;
+    const item = { id: it.id, ref: it.ref, title: it.title, kind: typeof it.kind === "string" && it.kind ? it.kind : "movie" };
+    if (typeof it.poster === "string" && HTTPS2.test(it.poster)) item.poster = it.poster;
+    if (typeof it.backdrop === "string" && HTTPS2.test(it.backdrop)) item.backdrop = it.backdrop;
+    if (it.year !== void 0 && it.year !== null && String(it.year)) item.year = String(it.year);
+    if (typeof it.overview === "string" && it.overview.trim()) item.overview = it.overview.trim().slice(0, OVERVIEW_MAX);
+    const tmdb = it.ids && Number.isInteger(it.ids.tmdb) ? it.ids.tmdb : Number.isInteger(it.tmdb) ? it.tmdb : 0;
+    if (tmdb > 0) item.tmdb = tmdb;
+    out.push(item);
+  }
+  return out;
+}
+function catalogQuery(arg) {
+  const q = String(arg && arg.q || "").trim().slice(0, 200);
+  const type = arg && (arg.type === "movie" || arg.type === "series") ? arg.type : "any";
+  return { q, type, season: 0, episode: 0, tmdbId: 0, year: 0, originalTitle: "", altTitles: [], cursor: null };
+}
+function catalogDoor(search3) {
+  return async (arg) => {
+    const query = catalogQuery(arg);
+    if (!query.q) return [];
+    return catalogItems(await search3(query));
+  };
+}
+
 // src/plugin.js
 var once = (fn) => async (...args) => {
   try {
@@ -6394,6 +6439,7 @@ var action2 = once(action);
 var screen2 = once(screen);
 var screenEvent2 = once(screenEvent);
 var section3 = once(section2);
+var proto_catalog_search = once(catalogDoor(catalogSearch));
 export {
   action2 as action,
   browse2 as browse,
@@ -6403,6 +6449,7 @@ export {
   liveCategories2 as liveCategories,
   liveChannels2 as liveChannels,
   liveSearch2 as liveSearch,
+  proto_catalog_search,
   resolve2 as resolve,
   screen2 as screen,
   screenEvent2 as screenEvent,
