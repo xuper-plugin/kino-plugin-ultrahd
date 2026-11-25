@@ -534,6 +534,11 @@ test("'Canales de tu país': the person's own country is never repeated on its c
   const row = await cat.countryRow(20);
   assert.deepEqual(row.items.map((i) => i.title), ["DAZN 1 HD", "DAZN 1 HD", "M+ DEPORTES"]);
   assert.equal(row.items[0].ref, "live:201583~196~es.dazn~es.hd.dazn.1");
+  // "Ver más": the row opens its category's whole list through browse.
+  assert.equal(row.ref, "lcat:196");
+  const page = await cat.browse(row.ref, null);
+  assert.deepEqual(page.items.map((i) => i.ref).sort(), row.items.map((i) => i.ref).sort());
+  assert.equal(page.next, undefined);
 });
 
 test("an En vivo snapshot written by an older build shows clean titles", async () => {

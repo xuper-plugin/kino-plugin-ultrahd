@@ -1408,7 +1408,7 @@ export async function home() {
     if (feed && feed.rows.length) {
       const rows = feed.rows.map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items }));
       const live = isCountryCode(homeCountry()) ? await countryRow(20, { until: Date.now() + COUNTRY_ROW_MS }).catch(() => null) : null;
-      if (live) rows.push({ id: live.id, title: live.title, genre: "tv", items: live.items });
+      if (live) rows.push({ id: live.id, title: live.title, genre: "tv", ref: live.ref, items: live.items });
       indexStep({ budgetMs: 1500 }).catch(() => {}); // el índice sigue poblándose en segundo plano, sin esperarlo
       console.log("[dbg] home() de Kino: DESDE EL FEED rows=" + rows.length + " " + (Date.now() - dbgT) + "ms");
       return rows;
@@ -1423,7 +1423,7 @@ export async function home() {
   await indexing;
   const rows = [...vod.rails, ...series.rails].map(({ lang, ...r }) => r);
   if (!rows.length) throw kino.error("unavailable", "sin contenido", { userMessage: "Sin contenido disponible por ahora." });
-  if (live) rows.push({ id: live.id, title: live.title, genre: "tv", items: live.items });
+  if (live) rows.push({ id: live.id, title: live.title, genre: "tv", ref: live.ref, items: live.items });
   console.log("[dbg] home() de Kino: fin rows=" + rows.length + " " + (Date.now() - dbgT) + "ms");
   return rows;
 }
@@ -1759,6 +1759,7 @@ export async function countryRow(limit = 20, opts = {}) {
     .slice(0, 3);
   const items = [];
   const seen = new Set();
+  let refCat = null;
   for (const { c } of ranked) {
     if (items.length >= limit) break;
     if (opts.until && opts.until - Date.now() < 1000) break;
@@ -1767,12 +1768,14 @@ export async function countryRow(limit = 20, opts = {}) {
       const it = liveItem(s, c.id, c.adult);
       if (!it || items.length >= limit || seen.has(it.id)) continue;
       seen.add(it.id);
+      if (!refCat) refCat = c;
       items.push({ id: it.id, ref: it.ref, title: it.title, kind: "live", poster: it.logo, ...(c.adult ? { adult: true } : {}) });
     }
   }
   const shown = shownTitles(items.map((it) => ({ name: it.title })), cc.toLowerCase());
   items.forEach((it, i) => { it.title = shown[i]; });
-  return items.length ? { id: "live-country", title: "Canales en vivo", items } : null;
+  // "Ver más" pages the first category that gave the row channels (the best matching one): browse's "lcat:" walks one category.
+  return items.length ? { id: "live-country", title: "Canales en vivo", ref: "lcat:" + refCat.id, items } : null;
 }
 
 function b64text(s) {

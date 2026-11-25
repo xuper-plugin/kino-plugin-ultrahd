@@ -1844,7 +1844,7 @@ var say = (key, lang, vars) => {
 };
 
 // src/version.js
-var PLUGIN_VERSION = "0.8.8";
+var PLUGIN_VERSION = "0.8.9";
 
 // src/panels.js
 var PANELS_KEY = "panels:v1";
@@ -4259,7 +4259,7 @@ async function home() {
     if (feed && feed.rows.length) {
       const rows2 = feed.rows.map((r) => ({ id: r.id, title: r.title, ref: r.ref, items: r.items }));
       const live2 = isCountryCode(homeCountry()) ? await countryRow(20, { until: Date.now() + COUNTRY_ROW_MS }).catch(() => null) : null;
-      if (live2) rows2.push({ id: live2.id, title: live2.title, genre: "tv", items: live2.items });
+      if (live2) rows2.push({ id: live2.id, title: live2.title, genre: "tv", ref: live2.ref, items: live2.items });
       indexStep({ budgetMs: 1500 }).catch(() => {
       });
       console.log("[dbg] home() de Kino: DESDE EL FEED rows=" + rows2.length + " " + (Date.now() - dbgT) + "ms");
@@ -4275,7 +4275,7 @@ async function home() {
   await indexing;
   const rows = [...vod.rails, ...series.rails].map(({ lang, ...r }) => r);
   if (!rows.length) throw kino.error("unavailable", "sin contenido", { userMessage: "Sin contenido disponible por ahora." });
-  if (live) rows.push({ id: live.id, title: live.title, genre: "tv", items: live.items });
+  if (live) rows.push({ id: live.id, title: live.title, genre: "tv", ref: live.ref, items: live.items });
   console.log("[dbg] home() de Kino: fin rows=" + rows.length + " " + (Date.now() - dbgT) + "ms");
   return rows;
 }
@@ -4555,6 +4555,7 @@ async function countryRow(limit = 20, opts = {}) {
   const ranked = visibleLive(await liveCats(opts)).filter((c) => c.country === cc).map((c) => ({ c, m: countryMatch(c.title) })).sort((a, b) => (a.m && a.m.exact ? 0 : a.m && a.m.starts ? 1 : 2) - (b.m && b.m.exact ? 0 : b.m && b.m.starts ? 1 : 2) || a.c.order - b.c.order).slice(0, 3);
   const items = [];
   const seen = /* @__PURE__ */ new Set();
+  let refCat = null;
   for (const { c } of ranked) {
     if (items.length >= limit) break;
     if (opts.until && opts.until - Date.now() < 1e3) break;
@@ -4563,6 +4564,7 @@ async function countryRow(limit = 20, opts = {}) {
       const it = liveItem(s, c.id, c.adult);
       if (!it || items.length >= limit || seen.has(it.id)) continue;
       seen.add(it.id);
+      if (!refCat) refCat = c;
       items.push({ id: it.id, ref: it.ref, title: it.title, kind: "live", poster: it.logo, ...c.adult ? { adult: true } : {} });
     }
   }
@@ -4570,7 +4572,7 @@ async function countryRow(limit = 20, opts = {}) {
   items.forEach((it, i) => {
     it.title = shown[i];
   });
-  return items.length ? { id: "live-country", title: "Canales en vivo", items } : null;
+  return items.length ? { id: "live-country", title: "Canales en vivo", ref: "lcat:" + refCat.id, items } : null;
 }
 function b64text(s) {
   const str = String(s || "");
