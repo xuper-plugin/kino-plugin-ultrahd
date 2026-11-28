@@ -1,0 +1,330 @@
+{
+ "$comment": "Written by the Home pre-armado job of this repo. This branch is force-pushed on every run with the complete current set; it has no history. Each <path>.v2.enc.json is the compressed copy (feed v2: gzip before sealing) of <path>.enc.json.",
+ "v": 1,
+ "at": 1795868237707,
+ "maxAgeMs": 259200000,
+ "files": {
+  "home/182wy7g.enc.json": {
+   "builtAt": 1795867627074,
+   "bytes": 192745
+  },
+  "home/182wy7g.es-419.enc.json": {
+   "builtAt": 1795867690989,
+   "bytes": 193097
+  },
+  "home/182wy7g.es-419.v2.enc.json": {
+   "builtAt": 1795867690989,
+   "bytes": 48897
+  },
+  "home/182wy7g.v2.enc.json": {
+   "builtAt": 1795867627074,
+   "bytes": 48725
+  },
+  "home/1gainyz.enc.json": {
+   "builtAt": 1795868197132,
+   "bytes": 234401
+  },
+  "home/1gainyz.es-419.enc.json": {
+   "builtAt": 1795868225189,
+   "bytes": 236153
+  },
+  "home/1gainyz.es-419.v2.enc.json": {
+   "builtAt": 1795868225189,
+   "bytes": 64125
+  },
+  "home/1gainyz.v2.enc.json": {
+   "builtAt": 1795868197132,
+   "bytes": 63865
+  },
+  "home/1ntbt4k.enc.json": {
+   "builtAt": 1795867479015,
+   "bytes": 179301
+  },
+  "home/1ntbt4k.es-419.enc.json": {
+   "builtAt": 1795867550496,
+   "bytes": 179701
+  },
+  "home/1ntbt4k.es-419.v2.enc.json": {
+   "builtAt": 1795867550496,
+   "bytes": 46389
+  },
+  "home/1ntbt4k.v2.enc.json": {
+   "builtAt": 1795867479015,
+   "bytes": 46233
+  },
+  "home/1oij252.enc.json": {
+   "builtAt": 1795867398028,
+   "bytes": 270249
+  },
+  "home/1oij252.es-419.enc.json": {
+   "builtAt": 1795867398679,
+   "bytes": 272185
+  },
+  "home/1oij252.es-419.v2.enc.json": {
+   "builtAt": 1795867398679,
+   "bytes": 64249
+  },
+  "home/1oij252.v2.enc.json": {
+   "builtAt": 1795867398028,
+   "bytes": 63845
+  },
+  "home/1ovu7wq.enc.json": {
+   "builtAt": 1795867975897,
+   "bytes": 257809
+  },
+  "home/1ovu7wq.es-419.enc.json": {
+   "builtAt": 1795868011041,
+   "bytes": 260057
+  },
+  "home/1ovu7wq.es-419.v2.enc.json": {
+   "builtAt": 1795868011041,
+   "bytes": 62785
+  },
+  "home/1ovu7wq.v2.enc.json": {
+   "builtAt": 1795867975897,
+   "bytes": 62257
+  },
+  "home/1pj87nj.enc.json": {
+   "builtAt": 1795868092561,
+   "bytes": 198813
+  },
+  "home/1pj87nj.es-419.enc.json": {
+   "builtAt": 1795868160150,
+   "bytes": 199089
+  },
+  "home/1pj87nj.es-419.v2.enc.json": {
+   "builtAt": 1795868160150,
+   "bytes": 53693
+  },
+  "home/1pj87nj.v2.enc.json": {
+   "builtAt": 1795868092561,
+   "bytes": 53577
+  },
+  "home/1y25z2t.enc.json": {
+   "builtAt": 1795867834349,
+   "bytes": 209097
+  },
+  "home/1y25z2t.es-419.enc.json": {
+   "builtAt": 1795867835749,
+   "bytes": 210917
+  },
+  "home/1y25z2t.es-419.v2.enc.json": {
+   "builtAt": 1795867835749,
+   "bytes": 55697
+  },
+  "home/1y25z2t.v2.enc.json": {
+   "builtAt": 1795867834349,
+   "bytes": 55461
+  },
+  "home/1ykpmip.enc.json": {
+   "builtAt": 1795868235564,
+   "bytes": 192849
+  },
+  "home/1ykpmip.es-419.enc.json": {
+   "builtAt": 1795868237389,
+   "bytes": 194601
+  },
+  "home/1ykpmip.es-419.v2.enc.json": {
+   "builtAt": 1795868237389,
+   "bytes": 55093
+  },
+  "home/1ykpmip.v2.enc.json": {
+   "builtAt": 1795868235564,
+   "bytes": 54845
+  },
+  "home/7ynvir.enc.json": {
+   "builtAt": 1795867329892,
+   "bytes": 226641
+  },
+  "home/7ynvir.es-419.enc.json": {
+   "builtAt": 1795867373121,
+   "bytes": 228861
+  },
+  "home/7ynvir.es-419.v2.enc.json": {
+   "builtAt": 1795867373121,
+   "bytes": 58681
+  },
+  "home/7ynvir.v2.enc.json": {
+   "builtAt": 1795867329892,
+   "bytes": 58273
+  },
+  "home/n2lgvq.enc.json": {
+   "builtAt": 1795867907274,
+   "bytes": 227993
+  },
+  "home/n2lgvq.es-ES.enc.json": {
+   "builtAt": 1795867935491,
+   "bytes": 229805
+  },
+  "home/n2lgvq.es-ES.v2.enc.json": {
+   "builtAt": 1795867935491,
+   "bytes": 57801
+  },
+  "home/n2lgvq.v2.enc.json": {
+   "builtAt": 1795867907274,
+   "bytes": 57529
+  },
+  "home/p3smij.enc.json": {
+   "builtAt": 1795867866149,
+   "bytes": 209145
+  },
+  "home/p3smij.es-419.enc.json": {
+   "builtAt": 1795867867553,
+   "bytes": 210965
+  },
+  "home/p3smij.es-419.v2.enc.json": {
+   "builtAt": 1795867867553,
+   "bytes": 55717
+  },
+  "home/p3smij.v2.enc.json": {
+   "builtAt": 1795867866149,
+   "bytes": 55481
+  },
+  "home/vinhiu.enc.json": {
+   "builtAt": 1795867706351,
+   "bytes": 176513
+  },
+  "home/vinhiu.es-419.enc.json": {
+   "builtAt": 1795867706929,
+   "bytes": 179929
+  },
+  "home/vinhiu.es-419.v2.enc.json": {
+   "builtAt": 1795867706929,
+   "bytes": 43337
+  },
+  "home/vinhiu.v2.enc.json": {
+   "builtAt": 1795867706351,
+   "bytes": 42717
+  },
+  "home/vucghl.enc.json": {
+   "builtAt": 1795831480634,
+   "bytes": 239965,
+   "carried": true
+  },
+  "home/vucghl.es-419.enc.json": {
+   "builtAt": 1795831482055,
+   "bytes": 242477,
+   "carried": true
+  },
+  "home/vucghl.es-419.v2.enc.json": {
+   "builtAt": 1795831482055,
+   "bytes": 58937,
+   "carried": true
+  },
+  "home/vucghl.v2.enc.json": {
+   "builtAt": 1795831480634,
+   "bytes": 58457,
+   "carried": true
+  },
+  "live/182wy7g.enc.json": {
+   "builtAt": 1795867697909,
+   "bytes": 27773
+  },
+  "live/182wy7g.v2.enc.json": {
+   "builtAt": 1795867697909,
+   "bytes": 4889
+  },
+  "live/1gainyz.enc.json": {
+   "builtAt": 1795868228745,
+   "bytes": 48505
+  },
+  "live/1gainyz.v2.enc.json": {
+   "builtAt": 1795868228745,
+   "bytes": 9765
+  },
+  "live/1ntbt4k.enc.json": {
+   "builtAt": 1795746086346,
+   "bytes": 27773,
+   "carried": true
+  },
+  "live/1ntbt4k.v2.enc.json": {
+   "builtAt": 1795746086346,
+   "bytes": 4889,
+   "carried": true
+  },
+  "live/1oij252.enc.json": {
+   "builtAt": 1795867400340,
+   "bytes": 52957
+  },
+  "live/1oij252.v2.enc.json": {
+   "builtAt": 1795867400340,
+   "bytes": 8637
+  },
+  "live/1ovu7wq.enc.json": {
+   "builtAt": 1795868012573,
+   "bytes": 50173
+  },
+  "live/1ovu7wq.v2.enc.json": {
+   "builtAt": 1795868012573,
+   "bytes": 7517
+  },
+  "live/1pj87nj.enc.json": {
+   "builtAt": 1795832155099,
+   "bytes": 49785,
+   "carried": true
+  },
+  "live/1pj87nj.v2.enc.json": {
+   "builtAt": 1795832155099,
+   "bytes": 7389,
+   "carried": true
+  },
+  "live/1y25z2t.enc.json": {
+   "builtAt": 1795867838949,
+   "bytes": 30405
+  },
+  "live/1y25z2t.v2.enc.json": {
+   "builtAt": 1795867838949,
+   "bytes": 4369
+  },
+  "live/1ykpmip.enc.json": {
+   "builtAt": 1795868237687,
+   "bytes": 66533
+  },
+  "live/1ykpmip.v2.enc.json": {
+   "builtAt": 1795868237687,
+   "bytes": 12185
+  },
+  "live/7ynvir.enc.json": {
+   "builtAt": 1795867384585,
+   "bytes": 61789
+  },
+  "live/7ynvir.v2.enc.json": {
+   "builtAt": 1795867384585,
+   "bytes": 11573
+  },
+  "live/n2lgvq.enc.json": {
+   "builtAt": 1795867939729,
+   "bytes": 66301
+  },
+  "live/n2lgvq.v2.enc.json": {
+   "builtAt": 1795867939729,
+   "bytes": 11101
+  },
+  "live/p3smij.enc.json": {
+   "builtAt": 1795867870802,
+   "bytes": 36629
+  },
+  "live/p3smij.v2.enc.json": {
+   "builtAt": 1795867870802,
+   "bytes": 6129
+  },
+  "live/vinhiu.enc.json": {
+   "builtAt": 1795867708549,
+   "bytes": 59165
+  },
+  "live/vinhiu.v2.enc.json": {
+   "builtAt": 1795867708549,
+   "bytes": 13621
+  },
+  "live/vucghl.enc.json": {
+   "builtAt": 1795783825811,
+   "bytes": 60145,
+   "carried": true
+  },
+  "live/vucghl.v2.enc.json": {
+   "builtAt": 1795783825811,
+   "bytes": 14009,
+   "carried": true
+  }
+ }
+}
